@@ -12,6 +12,12 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import { CHIPS, UPGRADES } from './chips.js';
 
+// ---------- Config ----------
+const USAGE_BOT_IDS = (process.env.USAGE_BOT_IDS || '159985870458322944') // default includes MEE6
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
 // Ensure data dir exists
 if (!fs.existsSync('./data')) fs.mkdirSync('./data');
 
@@ -24,13 +30,9 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message]
 });
 
-// Official MEE6 bot user ID
-const MEE6_ID = '159985870458322944';
-
-// SQLite DB (persistent)
+// ---------- DB ----------
 const db = new Database('./data/data.sqlite');
 
-// --- DB setup ---
 db.exec(`
 CREATE TABLE IF NOT EXISTS navis (
   user_id TEXT PRIMARY KEY,
@@ -52,12 +54,10 @@ CREATE TABLE IF NOT EXISTS duel_state (
   started_at INTEGER NOT NULL
 );
 `);
-
-// Backward‑compatible: if your table existed before wins/losses
-try { db.exec(`ALTER TABLE navis ADD COLUMN wins INTEGER NOT NULL DEFAULT 0;`); } catch {}
+// Backward compatible if wins/losses were missing
+try { db.exec(`ALTER TABLE navis ADD COLUMN wins   INTEGER NOT NULL DEFAULT 0;`); } catch {}
 try { db.exec(`ALTER TABLE navis ADD COLUMN losses INTEGER NOT NULL DEFAULT 0;`); } catch {}
 
-// --- Statements & helpers ---
 const getNavi = db.prepare(`SELECT * FROM navis WHERE user_id=?`);
 const upsertNavi = db.prepare(`
 INSERT INTO navis (user_id,max_hp,dodge,crit,wins,losses) VALUES (?,?,?,?,?,?)
@@ -66,26 +66,29 @@ ON CONFLICT(user_id) DO UPDATE SET
   dodge=excluded.dodge,
   crit=excluded.crit
 `);
-
 function ensureNavi(uid) {
   const row = getNavi.get(uid);
   if (row) return row;
   upsertNavi.run(uid, 250, 20, 5, 0, 0);
   return { user_id: uid, max_hp: 250, dodge: 20, crit: 5, wins: 0, losses: 0 };
 }
-
 const setRecord = db.prepare(`UPDATE navis SET wins = wins + ?, losses = losses + ? WHERE user_id = ?`);
 function awardResult(winnerId, loserId) {
   setRecord.run(1, 0, winnerId);
   setRecord.run(0, 1, loserId);
 }
 
-const getFight  = db.prepare(`SELECT * FROM duel_state WHERE channel_id=?`);
+const getFight   = db.prepare(`SELECT * FROM duel_state WHERE channel_id=?`);
 const startFight = db.prepare(`INSERT INTO duel_state (channel_id,p1_id,p2_id,turn,p1_hp,p2_hp,started_at) VALUES (?,?,?,?,?,?,?)`);
-const updFight  = db.prepare(`UPDATE duel_state SET p1_hp=?,p2_hp=?,turn=?,last_hit_p1=?,last_hit_p2=? WHERE channel_id=?`);
-const endFight  = db.prepare(`DELETE FROM duel_state WHERE channel_id=?`);
+const updFight   = db.prepare(`UPDATE duel_state SET p1_hp=?,p2_hp=?,turn=?,last_hit_p1=?,last_hit_p2=? WHERE channel_id=?`);
+const endFight   = db.prepare(`DELETE FROM duel_state WHERE channel_id=?`);
 
-// ---- Slash commands handling ----
+// Helpers
+function hpLine(fight, p1hp, p2hp) {
+  return `HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}`;
+}
+
+// ---------- Slash commands ----------
 client.on('interactionCreate', async (ix) => {
   if (!ix.isChatInputCommand()) return;
 
@@ -151,7 +154,7 @@ client.on('interactionCreate', async (ix) => {
 
       const p1 = ensureNavi(ix.user.id), p2 = ensureNavi(target.id);
       startFight.run(ix.channel.id, ix.user.id, target.id, ix.user.id, p1.max_hp, p2.max_hp, Date.now());
-      return ix.followUp(`🔔 **Duel started!** ${ix.user} vs ${target}\n${ix.user} goes first. Use your MEE6 \`/use\` chips here.`);
+      return ix.followUp(`🔔 **Duel started!** ${ix.user} vs ${target}\n${ix.user} goes first. Use your MEE6/NumberMan \`/use\` chips here.`);
     } catch {
       await prompt.edit({ content: `⌛ Duel request to <@${target.id}> timed out.`, components: [] });
     }
@@ -168,9 +171,10 @@ client.on('interactionCreate', async (ix) => {
   }
 });
 
-// ---- MEE6 listener (upgrades + combat) ----
+// ---------- Message listener (chips + upgrades) ----------
 client.on('messageCreate', async (msg) => {
-  if (msg.author.id !== MEE6_ID) return;
+  // Only process messages from allowed chip/economy bots
+  if (!USAGE_BOT_IDS.includes(msg.author.id)) return;
   if (!msg.guild || !msg.embeds?.length) return;
 
   const emb = msg.embeds[0];
@@ -220,7 +224,7 @@ client.on('messageCreate', async (msg) => {
     }
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
     updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
-    return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores damage from the opponent’s last attack. ➡️ <@${nextTurn}>`);
+    return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores the last damage.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
   // Attack: dodge + crit (exact 1.5x using integer math)
@@ -231,25 +235,28 @@ client.on('messageCreate', async (msg) => {
   if (dodged) {
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
     updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
-    return msg.channel.send(`💨 <@${defenderId}> dodged the attack! ➡️ <@${nextTurn}>`);
+    return msg.channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
   const base = CHIPS[chipKey].dmg;
   const isCrit = (Math.random() * 100) < attStats.crit;
-  const dmg = isCrit ? Math.floor((base * 3) / 2) : base; // 1.5x, stays integer for multiples of 10/5
+  const dmg = isCrit ? Math.floor((base * 3) / 2) : base; // 1.5x
 
   if (attackerIsP1) { p2hp = Math.max(0, p2hp - dmg); last2 = dmg; }
   else { p1hp = Math.max(0, p1hp - dmg); last1 = dmg; }
 
   const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-  await msg.channel.send(`💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.  HP — <@${defenderId}>: ${attackerIsP1 ? p2hp : p1hp}`);
+
+  await msg.channel.send(
+    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.  ${hpLine(fight, p1hp, p2hp)}`
+  );
 
   if (p1hp === 0 || p2hp === 0) {
     const winnerId = p1hp === 0 ? fight.p2_id : fight.p1_id;
     const loserId  = p1hp === 0 ? fight.p1_id : fight.p2_id;
     awardResult(winnerId, loserId);
     endFight.run(msg.channel.id);
-    const wRow = getNavi.get(winnerId); // fetch updated record
+    const wRow = getNavi.get(winnerId);
     return msg.channel.send(`🏆 **<@${winnerId}> wins!** (W‑L: ${wRow?.wins ?? '—'}-${wRow?.losses ?? '—'})`);
   }
 
@@ -257,8 +264,8 @@ client.on('messageCreate', async (msg) => {
   msg.channel.send(`➡️ <@${nextTurn}>, your turn.`);
 });
 
+// ---------- Boot ----------
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 });
-
 client.login(process.env.DISCORD_TOKEN);
