@@ -179,9 +179,15 @@ client.on('interactionCreate', async (ix) => {
 
 // ---------- Message listener (chips + upgrades) ----------
 client.on('messageCreate', async (msg) => {
-  // Only process messages from allowed chip/economy bots
-  if (!USAGE_BOT_IDS.includes(msg.author.id)) return;
   if (!msg.guild) return;
+
+  // Some bots (APP badge) send via application-owned responses.
+  // Let through if author.id OR applicationId is in our whitelist.
+  const isUsageBot =
+    USAGE_BOT_IDS.includes(msg.author?.id) ||
+    (msg.applicationId && USAGE_BOT_IDS.includes(msg.applicationId));
+
+  if (!isUsageBot) return;
 
   // Build unified searchable text from content + embed bits
   const embedBits = (msg.embeds || []).flatMap(e => [
@@ -190,24 +196,27 @@ client.on('messageCreate', async (msg) => {
     ...(e.fields || []).flatMap(f => [f.name || '', f.value || '']),
     e.footer?.text || ''
   ]);
-  const allText = [msg.content || '', ...embedBits].join(' ').toLowerCase();
+  const contentLower = (msg.content || '').toLowerCase();
+  const embedsLower = embedBits.join(' ').toLowerCase();
+  const allText = [contentLower, embedsLower].join(' ');
 
-  // Accept action line in content OR embeds (NumberMan sometimes puts it in embeds)
-  const isActionContentMsg = (msg.content || '').toLowerCase().includes(' used ');
-  const isActionInEmbeds = embedBits.join(' ').toLowerCase().includes(' used ');
-  if (msg.embeds?.length && !(isActionContentMsg || isActionInEmbeds)) {
-    return; // likely a follow-up visual-only embed
+  // Accept action-line in content OR embeds
+  const isActionLine = contentLower.includes(' used ') || embedsLower.includes(' used ');
+  if (msg.embeds?.length && !isActionLine) {
+    // Likely a follow-up visual-only embed ("Deals 90 damage")
+    return;
   }
 
-  // Actor: from mention, interaction user (slash/ctx), or embeds
+  // ---- Who used the chip? ----
+  // Try: mention in content → interaction user (slash invoker) → mention inside embeds
   const actorId =
-    msg.mentions.users.first()?.id ||
-    msg.interaction?.user?.id ||
     (msg.content?.match(/<@!?(\d+)>/)?.[1]) ||
-    embedBits.join(' ').match(/<@!?(\d+)>/)?.[1];
+    msg.interaction?.user?.id ||
+    (embedBits.join(' ').match(/<@!?(\d+)>/)?.[1]);
+
   if (!actorId) return;
 
-  // --- Upgrades anywhere ---
+  // ---- Upgrades anywhere ----
   for (const key of Object.keys(UPGRADES)) {
     if (allText.includes(key.toLowerCase())) {
       const row = ensureNavi(actorId);
@@ -222,14 +231,26 @@ client.on('messageCreate', async (msg) => {
     }
   }
 
-  // --- Combat only if this channel has an active duel ---
+  // ---- Combat only if a duel is active in this channel ----
   const fight = getFight.get(msg.channel.id);
   if (!fight) return;
 
-  // Which chip was used? (case-insensitive), longer names first to prevent partial capture
-  const chipKeyLower = CHIP_KEYS_LOWER.find(k => allText.includes(k));
+  // Try to read chip name from the bold **Name** first, then fallback to substring
+  const boldChip = (msg.content.match(/\*\*([A-Za-z0-9]+)\*\*/) ||
+                    embedBits.join(' ').match(/\*\*([A-Za-z0-9]+)\*\*/))?.[1];
+
+  let chipKeyLower;
+  if (boldChip) {
+    chipKeyLower = boldChip.toLowerCase();
+  } else {
+    // fallback: match longer keys first to avoid "sword" vs "widesword"
+    const CHIP_KEYS_LOWER = Object.keys(CHIPS).map(k => k.toLowerCase()).sort((a,b)=>b.length-a.length);
+    chipKeyLower = CHIP_KEYS_LOWER.find(k => allText.includes(k));
+  }
   if (!chipKeyLower) return;
+
   const chipKey = Object.keys(CHIPS).find(k => k.toLowerCase() === chipKeyLower);
+  if (!chipKey) return;
 
   if (actorId !== fight.turn) {
     return msg.channel.send(`⏳ Not your turn, <@${actorId}>.`);
@@ -250,10 +271,10 @@ client.on('messageCreate', async (msg) => {
     }
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
     updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
-    return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores the last damage.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
+    return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores the last damage.  HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}  ➡️ <@${nextTurn}>`);
   }
 
-  // Attack: dodge + crit (1.5x crit, integer math)
+  // Attack: dodge + crit
   const defStats = ensureNavi(defenderId);
   const attStats = ensureNavi(attackerId);
 
@@ -261,7 +282,7 @@ client.on('messageCreate', async (msg) => {
   if (dodged) {
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
     updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
-    return msg.channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
+    return msg.channel.send(`💨 <@${defenderId}> dodged the attack!  HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}  ➡️ <@${nextTurn}>`);
   }
 
   const base = CHIPS[chipKey].dmg;
@@ -274,7 +295,7 @@ client.on('messageCreate', async (msg) => {
   const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
 
   await msg.channel.send(
-    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.  ${hpLine(fight, p1hp, p2hp)}`
+    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.  HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}`
   );
 
   if (p1hp === 0 || p2hp === 0) {
@@ -289,6 +310,7 @@ client.on('messageCreate', async (msg) => {
   updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
   msg.channel.send(`➡️ <@${nextTurn}>, your turn.`);
 });
+
 
 // ---------- Boot ----------
 client.once('ready', () => {
