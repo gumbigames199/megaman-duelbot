@@ -13,7 +13,8 @@ import fs from 'node:fs';
 import { CHIPS, UPGRADES } from './chips.js';
 
 // ---------- Config ----------
-const USAGE_BOT_IDS = (process.env.USAGE_BOT_IDS || '159985870458322944') // default includes MEE6
+// Defaults: NumberMan#3954 and ToadMan#0810
+const USAGE_BOT_IDS = (process.env.USAGE_BOT_IDS || '1110053775911162056,1403989752432037898')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
