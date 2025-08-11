@@ -93,6 +93,17 @@ const CHIP_KEYS_LOWER = Object.keys(CHIPS)
   .map(k => k.toLowerCase())
   .sort((a, b) => b.length - a.length);
 
+// --- Micro-debounce to avoid double-processing near-duplicate action lines ---
+const recentActions = new Map(); // key => timestamp
+function shouldDebounce(channelId, actorId, chipKey, ms = 2000) {
+  const now = Date.now();
+  const key = `${channelId}:${actorId}:${chipKey}`;
+  const last = recentActions.get(key) || 0;
+  if (now - last < ms) return true;
+  recentActions.set(key, now);
+  return false;
+}
+
 // ---------- Slash commands ----------
 client.on('interactionCreate', async (ix) => {
   if (!ix.isChatInputCommand()) return;
@@ -189,7 +200,19 @@ client.on('messageCreate', async (msg) => {
 
   if (!isUsageBot) return;
 
-  // ---- DIAGNOSTIC LOG (keep while testing) ----
+  // ---- Gather text from content + ALL embed bits ----
+  const embedBits = (msg.embeds || []).flatMap(e => [
+    e.title || '',
+    e.description || '',
+    ...(e.fields || []).flatMap(f => [f.name || '', f.value || '']),
+    e.footer?.text || ''
+  ]);
+  const embedsJoined = embedBits.join(' ');
+  const contentLower = (msg.content || '').toLowerCase();
+  const embedsLower  = embedsJoined.toLowerCase();
+  const allText      = [contentLower, embedsLower].join(' ');
+
+  // ---- DIAGNOSTIC LOG ----
   console.log('[USAGE MSG]', {
     authorId: msg.author?.id,
     authorBot: msg.author?.bot,
@@ -207,29 +230,15 @@ client.on('messageCreate', async (msg) => {
     })));
   }
 
-  // Build unified searchable text from content + embed bits
-  const embedBits = (msg.embeds || []).flatMap(e => [
-    e.title || '',
-    e.description || '',
-    ...(e.fields || []).flatMap(f => [f.name || '', f.value || '']),
-    e.footer?.text || ''
-  ]);
-  const contentLower = (msg.content || '').toLowerCase();
-  const embedsLower = embedBits.join(' ').toLowerCase();
-  const allText = [contentLower, embedsLower].join(' ');
-
-  // Accept action-line in content OR embeds
+  // Accept action line if it appears in content OR any embed text
   const isActionLine = contentLower.includes(' used ') || embedsLower.includes(' used ');
-  if (msg.embeds?.length && !isActionLine) {
-    return; // likely a follow-up visual-only embed
-  }
+  if (msg.embeds?.length && !isActionLine) return;
 
   // Who used the chip? mention → interaction user → mention in embeds
   const actorId =
     (msg.content?.match(/<@!?(\d+)>/)?.[1]) ||
     msg.interaction?.user?.id ||
-    (embedBits.join(' ').match(/<@!?(\d+)>/)?.[1]);
-
+    (embedsJoined.match(/<@!?(\d+)>/)?.[1]);
   if (!actorId) {
     console.log('[USAGE MSG] No actorId resolved');
     return;
@@ -254,54 +263,32 @@ client.on('messageCreate', async (msg) => {
   const fight = getFight.get(msg.channel.id);
   if (!fight) return;
 
-  // === CHIP DETECTION (bold -> embed title -> fallback substring) ===
-  // 1) Bold in content/embeds
+  // Prefer the bold chip name from content OR any embed description/field/footer (supports spaces & hyphens)
   const boldChip = (
-    (msg.content || '').match(/\*\*\s*([A-Za-z0-9 _-]+?)\s*\*\*/) ||
-    (embedBits.join(' ') || '').match(/\*\*\s*([A-Za-z0-9 _-]+?)\s*\*\*/)
+    msg.content.match(/\*\*\s*([A-Za-z0-9 _-]+?)\s*\*\*/) ||
+    embedsJoined.match(/\*\*\s*([A-Za-z0-9 _-]+?)\s*\*\*/)
   )?.[1]?.trim();
 
-  // 2) Titles from embeds
-  const embedTitles = (msg.embeds || [])
-    .map(e => (e.title || '').trim())
-    .filter(Boolean);
-
-  // Helpers to resolve a candidate string to a CHIPS key
-  const chipKeys = Object.keys(CHIPS);
-  const chipKeysLower = chipKeys.map(k => k.toLowerCase());
-  const byLenDesc = (a, b) => b.length - a.length;
-
-  function resolveCandidate(raw) {
-    if (!raw) return null;
-    const c = raw.trim();
-    const cl = c.toLowerCase();
-
-    // exact match
-    let i = chipKeysLower.indexOf(cl);
-    if (i !== -1) return chipKeys[i];
-
-    // handle titles like "Spreader" -> "Spreader1"
-    i = chipKeysLower.indexOf(cl + '1');
-    if (i !== -1) return chipKeys[i];
-
-    // startsWith (avoid Sword vs WideSword by preferring longer keys)
-    const k = chipKeys.sort(byLenDesc).find(key => key.toLowerCase().startsWith(cl));
-    return k || null;
+  let chipKeyLower;
+  if (boldChip) {
+    chipKeyLower = boldChip.toLowerCase();
+  } else {
+    chipKeyLower = CHIP_KEYS_LOWER.find(k => allText.includes(k));
+  }
+  if (!chipKeyLower) {
+    console.log('[USAGE MSG] No chip matched. allText=', allText);
+    return;
   }
 
-  let chipKey =
-    resolveCandidate(boldChip) ||
-    embedTitles.map(resolveCandidate).find(Boolean) ||
-    // 3) Fallback: substring across all text, longer keys first
-    (function () {
-      const found = CHIP_KEYS_LOWER.find(k => allText.includes(k));
-      if (!found) return null;
-      const idx = chipKeysLower.indexOf(found);
-      return idx !== -1 ? chipKeys[idx] : null;
-    })();
-
+  const chipKey = Object.keys(CHIPS).find(k => k.toLowerCase() === chipKeyLower);
   if (!chipKey) {
-    console.log('[USAGE MSG] No chip matched. allText=', allText);
+    console.log('[USAGE MSG] chipKeyLower found, but CHIPS has no key:', chipKeyLower);
+    return;
+  }
+
+  // Debounce near-duplicate actions (channel + actor + chip within 2s)
+  if (shouldDebounce(msg.channel.id, actorId, chipKey)) {
+    console.log('[DEBOUNCE] Skipping duplicate action', { channel: msg.channel.id, actorId, chipKey });
     return;
   }
 
