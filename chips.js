@@ -13,6 +13,6 @@ export const CHIPS = {
 
 export const UPGRADES = {
   'HP Memory': { stat: 'hp', step: 50, max: 500 },
-  'Code Refinement': { stat: 'dodge', step: 5, max: 40 },
+  'Data Reconfig': { stat: 'dodge', step: 5, max: 40 },
   'Lucky Data': { stat: 'crit', step: 5, max: 25 }
 };
