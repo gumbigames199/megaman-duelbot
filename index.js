@@ -7,7 +7,10 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  REST,
+  Routes,
+  SlashCommandBuilder
 } from 'discord.js';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -39,6 +42,75 @@ const client = new Client({
   ],
   partials: [Partials.Channel, Partials.Message]
 });
+
+// ---------- Auto-register slash commands (guild-scoped) ----------
+async function registerCommands() {
+  const TOKEN    = process.env.DISCORD_TOKEN;
+  const APP_ID   = process.env.CLIENT_ID || process.env.APPLICATION_ID;
+  const GUILD_ID = process.env.GUILD_ID; // set this in Railway for your server
+
+  if (!TOKEN || !APP_ID || !GUILD_ID) {
+    console.warn('[commands] Skipping register: missing DISCORD_TOKEN / CLIENT_ID(APPLICATION_ID) / GUILD_ID');
+    return;
+  }
+
+  const cmds = [
+    new SlashCommandBuilder()
+      .setName('navi_register')
+      .setDescription('Register your Navi'),
+
+    new SlashCommandBuilder()
+      .setName('navi_upgrade')
+      .setDescription('Upgrade your Navi (points/admin)')
+      .addStringOption(o =>
+        o.setName('stat').setDescription('Stat to upgrade').setRequired(true)
+         .addChoices({ name: 'hp', value: 'hp' }, { name: 'dodge', value: 'dodge' }, { name: 'crit', value: 'crit' })
+      )
+      .addIntegerOption(o =>
+        o.setName('amount').setDescription('Optional amount (may be ignored in points mode)').setRequired(false)
+      ),
+
+    new SlashCommandBuilder()
+      .setName('navi_stats')
+      .setDescription('Show Navi stats')
+      .addUserOption(o => o.setName('user').setDescription('User to inspect').setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName('duel')
+      .setDescription('Challenge someone to a duel')
+      .addUserOption(o => o.setName('opponent').setDescription('Who to duel').setRequired(true)),
+
+    new SlashCommandBuilder()
+      .setName('forfeit')
+      .setDescription('Forfeit the current duel'),
+
+    new SlashCommandBuilder()
+      .setName('stat_override')
+      .setDescription('Admin-only: set or add to a player stat')
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+      .addStringOption(o =>
+        o.setName('stat').setDescription('Stat to modify').setRequired(true).addChoices(
+          { name: 'HP', value: 'hp' },
+          { name: 'Dodge', value: 'dodge' },
+          { name: 'Crit', value: 'crit' },
+          { name: 'Wins', value: 'wins' },
+          { name: 'Losses', value: 'losses' },
+          { name: 'Points', value: 'points' }
+        )
+      )
+      .addStringOption(o =>
+        o.setName('mode').setDescription('How to apply the value').setRequired(true)
+          .addChoices({ name: 'Set exact value', value: 'set' }, { name: 'Add to current', value: 'add' })
+      )
+      .addIntegerOption(o => o.setName('value').setDescription('Value to set/add').setRequired(true)),
+  ].map(c => c.toJSON());
+
+  const rest = new REST({ version: '10' }).setToken(TOKEN);
+  console.log(`[commands] Registering ${cmds.length} commands to guild ${GUILD_ID}…`);
+  await rest.put(Routes.applicationGuildCommands(APP_ID, GUILD_ID), { body: cmds });
+  console.log('[commands] Guild commands registered.');
+}
 
 // ---------- DB ----------
 const db = new Database('./data/data.sqlite');
@@ -511,7 +583,12 @@ client.on('messageCreate', async (msg) => {
 });
 
 // ---------- Boot ----------
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
+  try {
+    await registerCommands();
+  } catch (e) {
+    console.error('Command registration failed:', e);
+  }
 });
 client.login(process.env.DISCORD_TOKEN);
