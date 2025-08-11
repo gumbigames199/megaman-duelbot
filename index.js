@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS duel_state (
   started_at INTEGER NOT NULL
 );
 `);
-// Backward compatible if wins/losses were missing
+// Backward compatible if wins/losses were missing before
 try { db.exec(`ALTER TABLE navis ADD COLUMN wins   INTEGER NOT NULL DEFAULT 0;`); } catch {}
 try { db.exec(`ALTER TABLE navis ADD COLUMN losses INTEGER NOT NULL DEFAULT 0;`); } catch {}
 
@@ -72,6 +72,7 @@ function ensureNavi(uid) {
   upsertNavi.run(uid, 250, 20, 5, 0, 0);
   return { user_id: uid, max_hp: 250, dodge: 20, crit: 5, wins: 0, losses: 0 };
 }
+
 const setRecord = db.prepare(`UPDATE navis SET wins = wins + ?, losses = losses + ? WHERE user_id = ?`);
 function awardResult(winnerId, loserId) {
   setRecord.run(1, 0, winnerId);
@@ -87,6 +88,7 @@ const endFight   = db.prepare(`DELETE FROM duel_state WHERE channel_id=?`);
 function hpLine(fight, p1hp, p2hp) {
   return `HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}`;
 }
+const CHIP_KEYS_LOWER = Object.keys(CHIPS).map(k => k.toLowerCase());
 
 // ---------- Slash commands ----------
 client.on('interactionCreate', async (ix) => {
@@ -135,7 +137,8 @@ client.on('interactionCreate', async (ix) => {
 
     const prompt = await ix.reply({
       content: `⚔️ <@${target.id}>, **${ix.user.username}** challenges you to a duel! Do you accept?`,
-      components: [row]
+      components: [row],
+      fetchReply: true,
     });
 
     try {
@@ -175,17 +178,34 @@ client.on('interactionCreate', async (ix) => {
 client.on('messageCreate', async (msg) => {
   // Only process messages from allowed chip/economy bots
   if (!USAGE_BOT_IDS.includes(msg.author.id)) return;
-  if (!msg.guild || !msg.embeds?.length) return;
+  if (!msg.guild) return;
 
-  const emb = msg.embeds[0];
-  const actorId = msg.mentions.users.first()?.id || emb?.description?.match(/<@!?(\d+)>/)?.[1];
+  // Build unified searchable text from content + embed bits (title/description/fields/footer)
+  const embedBits = (msg.embeds || []).flatMap(e => [
+    e.title || '',
+    e.description || '',
+    ...(e.fields || []).flatMap(f => [f.name || '', f.value || '']),
+    e.footer?.text || ''
+  ]);
+  const allText = [msg.content || '', ...embedBits].join(' ').toLowerCase();
+
+  // Prefer to act only on the content action line "X used Y" to avoid double-processing the follow-up embed
+  const isActionContentMsg = (msg.content || '').toLowerCase().includes(' used ');
+  if (msg.embeds?.length && !isActionContentMsg) {
+    // Likely the visual embed ("Deals 80 damage") following the action line — ignore
+    return;
+  }
+
+  // Actor: from mention in content or embeds
+  const actorId =
+    msg.mentions.users.first()?.id ||
+    (msg.content?.match(/<@!?(\d+)>/)?.[1]) ||
+    embedBits.join(' ').match(/<@!?(\d+)>/)?.[1];
   if (!actorId) return;
-
-  const text = `${emb?.title || ''} ${emb?.description || ''} ${msg.content || ''}`.toLowerCase();
 
   // --- Upgrades anywhere ---
   for (const key of Object.keys(UPGRADES)) {
-    if (text.includes(key)) {
+    if (allText.includes(key.toLowerCase())) { // case-insensitive
       const row = ensureNavi(actorId);
       let { max_hp, dodge, crit, wins, losses } = row;
       const up = UPGRADES[key];
@@ -202,8 +222,10 @@ client.on('messageCreate', async (msg) => {
   const fight = getFight.get(msg.channel.id);
   if (!fight) return;
 
-  const chipKey = Object.keys(CHIPS).find(k => text.includes(k));
-  if (!chipKey) return;
+  // Which chip was used? (case-insensitive)
+  const chipKeyLower = CHIP_KEYS_LOWER.find(k => allText.includes(k));
+  if (!chipKeyLower) return;
+  const chipKey = Object.keys(CHIPS).find(k => k.toLowerCase() === chipKeyLower);
 
   if (actorId !== fight.turn) {
     return msg.channel.send(`⏳ Not your turn, <@${actorId}>.`);
@@ -227,7 +249,7 @@ client.on('messageCreate', async (msg) => {
     return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores the last damage.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
-  // Attack: dodge + crit (exact 1.5x using integer math)
+  // Attack: dodge + crit (1.5x crit, integer math)
   const defStats = ensureNavi(defenderId);
   const attStats = ensureNavi(attackerId);
 
@@ -240,7 +262,7 @@ client.on('messageCreate', async (msg) => {
 
   const base = CHIPS[chipKey].dmg;
   const isCrit = (Math.random() * 100) < attStats.crit;
-  const dmg = isCrit ? Math.floor((base * 3) / 2) : base; // 1.5x
+  const dmg = isCrit ? Math.floor((base * 3) / 2) : base;
 
   if (attackerIsP1) { p2hp = Math.max(0, p2hp - dmg); last2 = dmg; }
   else { p1hp = Math.max(0, p1hp - dmg); last1 = dmg; }
@@ -257,7 +279,7 @@ client.on('messageCreate', async (msg) => {
     awardResult(winnerId, loserId);
     endFight.run(msg.channel.id);
     const wRow = getNavi.get(winnerId);
-    return msg.channel.send(`🏆 **<@${winnerId}> wins!** (W‑L: ${wRow?.wins ?? '—'}-${wRow?.losses ?? '—'})`);
+    return msg.channel.send(`🏆 **<@${winnerId}> wins!** (W-L: ${wRow?.wins ?? '—'}-${wRow?.losses ?? '—'})`);
   }
 
   updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
