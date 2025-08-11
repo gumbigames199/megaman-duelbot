@@ -6,7 +6,8 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ComponentType
+  ComponentType,
+  PermissionFlagsBits
 } from 'discord.js';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -20,6 +21,11 @@ const USAGE_BOT_IDS = (process.env.USAGE_BOT_IDS || '1110053775911162056,1403989
   .filter(Boolean);
 
 const NUMBERMAN_ID = '1110053775911162056';
+
+// Upgrades mode: 'points' (default), 'admin', or 'disabled'
+const MANUAL_UPGRADES_MODE = (process.env.MANUAL_UPGRADES_MODE || 'points').toLowerCase();
+// Points awarded per win (default 1)
+const POINTS_PER_WIN = parseInt(process.env.POINTS_PER_WIN || '1', 10);
 
 // Ensure data dir exists
 if (!fs.existsSync('./data')) fs.mkdirSync('./data');
@@ -43,7 +49,8 @@ CREATE TABLE IF NOT EXISTS navis (
   dodge  INTEGER NOT NULL DEFAULT 20,
   crit   INTEGER NOT NULL DEFAULT 5,
   wins   INTEGER NOT NULL DEFAULT 0,
-  losses INTEGER NOT NULL DEFAULT 0
+  losses INTEGER NOT NULL DEFAULT 0,
+  upgrade_pts INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS duel_state (
   channel_id TEXT PRIMARY KEY,
@@ -57,12 +64,14 @@ CREATE TABLE IF NOT EXISTS duel_state (
   started_at INTEGER NOT NULL
 );
 `);
-try { db.exec(`ALTER TABLE navis ADD COLUMN wins   INTEGER NOT NULL DEFAULT 0;`); } catch {}
-try { db.exec(`ALTER TABLE navis ADD COLUMN losses INTEGER NOT NULL DEFAULT 0;`); } catch {}
+// Safe migrations for older DBs
+try { db.exec(`ALTER TABLE navis ADD COLUMN wins         INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE navis ADD COLUMN losses       INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE navis ADD COLUMN upgrade_pts  INTEGER NOT NULL DEFAULT 0;`); } catch {}
 
 const getNavi = db.prepare(`SELECT * FROM navis WHERE user_id=?`);
 const upsertNavi = db.prepare(`
-INSERT INTO navis (user_id,max_hp,dodge,crit,wins,losses) VALUES (?,?,?,?,?,?)
+INSERT INTO navis (user_id,max_hp,dodge,crit,wins,losses,upgrade_pts) VALUES (?,?,?,?,?,?,?)
 ON CONFLICT(user_id) DO UPDATE SET
   max_hp=excluded.max_hp,
   dodge=excluded.dodge,
@@ -71,14 +80,23 @@ ON CONFLICT(user_id) DO UPDATE SET
 function ensureNavi(uid) {
   const row = getNavi.get(uid);
   if (row) return row;
-  upsertNavi.run(uid, 250, 20, 5, 0, 0);
-  return { user_id: uid, max_hp: 250, dodge: 20, crit: 5, wins: 0, losses: 0 };
+  upsertNavi.run(uid, 250, 20, 5, 0, 0, 0);
+  return { user_id: uid, max_hp: 250, dodge: 20, crit: 5, wins: 0, losses: 0, upgrade_pts: 0 };
 }
 
-const setRecord = db.prepare(`UPDATE navis SET wins = wins + ?, losses = losses + ? WHERE user_id = ?`);
+const setRecord  = db.prepare(`UPDATE navis SET wins = wins + ?, losses = losses + ? WHERE user_id = ?`);
+const addPoints  = db.prepare(`UPDATE navis SET upgrade_pts = upgrade_pts + ? WHERE user_id = ?`);
+const updHP      = db.prepare(`UPDATE navis SET max_hp=?      WHERE user_id=?`);
+const updDodge   = db.prepare(`UPDATE navis SET dodge=?       WHERE user_id=?`);
+const updCrit    = db.prepare(`UPDATE navis SET crit=?        WHERE user_id=?`);
+const updWins    = db.prepare(`UPDATE navis SET wins=?        WHERE user_id=?`);
+const updLosses  = db.prepare(`UPDATE navis SET losses=?      WHERE user_id=?`);
+const updPts     = db.prepare(`UPDATE navis SET upgrade_pts=? WHERE user_id=?`);
+
 function awardResult(winnerId, loserId) {
   setRecord.run(1, 0, winnerId);
   setRecord.run(0, 1, loserId);
+  if (POINTS_PER_WIN > 0) addPoints.run(POINTS_PER_WIN, winnerId); // +points to winner
 }
 
 const getFight   = db.prepare(`SELECT * FROM duel_state WHERE channel_id=?`);
@@ -118,23 +136,64 @@ client.on('interactionCreate', async (ix) => {
     return ix.reply({ content: `✅ Registered with **${row.max_hp} HP**, **${row.dodge}%** dodge, **${row.crit}%** crit.`, ephemeral: true });
   }
 
+  // Points-based, admin-guardable upgrade
   if (ix.commandName === 'navi_upgrade') {
-    const stat = ix.options.getString('stat', true); // hp|dodge|crit
-    const amount = ix.options.getInteger('amount', true);
+    if (MANUAL_UPGRADES_MODE === 'disabled') {
+      return ix.reply({ content: 'Manual upgrades are disabled. Earn upgrades via wins or upgrade chips.', ephemeral: true });
+    }
+    if (MANUAL_UPGRADES_MODE === 'admin' && !ix.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      return ix.reply({ content: 'Only admins can use this command.', ephemeral: true });
+    }
+
+    const stat = ix.options.getString('stat', true); // 'hp' | 'dodge' | 'crit'
+    if (!['hp','dodge','crit'].includes(stat)) {
+      return ix.reply({ content: 'Stat must be one of: hp, dodge, crit.', ephemeral: true });
+    }
+
     const row = ensureNavi(ix.user.id);
-    let { max_hp, dodge, crit, wins, losses } = row;
-    if (stat === 'hp')    max_hp = Math.min(500, max_hp + amount);
-    if (stat === 'dodge') dodge  = Math.min(40,  dodge  + amount);
-    if (stat === 'crit')  crit   = Math.min(25,  crit   + amount);
-    upsertNavi.run(ix.user.id, max_hp, dodge, crit, wins ?? 0, losses ?? 0);
-    return ix.reply(`⬆️ ${stat.toUpperCase()} upgraded: HP ${max_hp} | Dodge ${dodge}% | Crit ${crit}%`);
+    let { max_hp, dodge, crit, wins, losses, upgrade_pts } = row;
+
+    if (MANUAL_UPGRADES_MODE === 'points') {
+      if ((upgrade_pts ?? 0) < 1) {
+        return ix.reply({ content: 'You have no upgrade points. Win duels to earn them!', ephemeral: true });
+      }
+    }
+
+    const STEP = { hp: 10, dodge: 1, crit: 1 }[stat];
+    const CAP  = { hp: 500, dodge: 40, crit: 25 }[stat];
+
+    let before, after;
+    if (stat === 'hp')    { before = max_hp; max_hp = Math.min(CAP, max_hp + STEP); after = max_hp; }
+    if (stat === 'dodge') { before = dodge;  dodge  = Math.min(CAP,  dodge  + STEP); after = dodge;  }
+    if (stat === 'crit')  { before = crit;   crit   = Math.min(CAP,  crit   + STEP); after = crit;   }
+
+    if (after === before) {
+      return ix.reply({ content: `Your ${stat.toUpperCase()} is already at the cap (${CAP}).`, ephemeral: true });
+    }
+
+    // Save new stats
+    upsertNavi.run(ix.user.id, max_hp, dodge, crit, wins ?? 0, losses ?? 0, upgrade_pts ?? 0);
+
+    // Spend a point only in points mode
+    if (MANUAL_UPGRADES_MODE === 'points') {
+      db.prepare(`UPDATE navis SET upgrade_pts = upgrade_pts - 1 WHERE user_id = ?`).run(ix.user.id);
+      upgrade_pts = (upgrade_pts ?? 0) - 1;
+    }
+
+    return ix.reply(
+      `⬆️ ${stat.toUpperCase()} +${STEP} (now **${after}**) — ` +
+      (MANUAL_UPGRADES_MODE === 'points'
+        ? `Points left: **${Math.max(0, upgrade_pts)}**`
+        : `Admin-applied.`)
+    );
   }
 
   if (ix.commandName === 'navi_stats') {
     const user = ix.options.getUser('user') || ix.user;
     const row = ensureNavi(user.id);
     return ix.reply(
-      `📊 **${user.username}** — HP ${row.max_hp} | Dodge ${row.dodge}% | Crit ${row.crit}% | Record: **${row.wins ?? 0}-${row.losses ?? 0}**`
+      `📊 **${user.username}** — HP ${row.max_hp} | Dodge ${row.dodge}% | Crit ${row.crit}% | ` +
+      `Record: **${row.wins ?? 0}-${row.losses ?? 0}** | Points: **${row.upgrade_pts ?? 0}**`
     );
   }
 
@@ -191,6 +250,59 @@ client.on('interactionCreate', async (ix) => {
     endFight.run(ix.channel.id);
     return ix.reply(`🏳️ <@${loserId}> forfeits. 🏆 <@${winnerId}> wins!`);
   }
+
+  // ----- Admin-only stat override -----
+  if (ix.commandName === 'stat_override') {
+    const isAdmin =
+      ix.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ||
+      ix.member?.permissions?.has?.(PermissionFlagsBits.ManageGuild);
+    if (!isAdmin) {
+      return ix.reply({ content: 'Only admins can use this command.', ephemeral: true });
+    }
+
+    const user = ix.options.getUser('user', true);
+    const stat = ix.options.getString('stat', true);   // hp|dodge|crit|wins|losses|points
+    const mode = ix.options.getString('mode', true);   // set|add
+    const value = ix.options.getInteger('value', true);
+
+    const row = ensureNavi(user.id);
+
+    const CAPS = { hp: 500, dodge: 40, crit: 25 };
+    const MINS = { hp: 1, dodge: 0, crit: 0, wins: 0, losses: 0, points: 0 };
+
+    const cur = {
+      hp: row.max_hp,
+      dodge: row.dodge,
+      crit: row.crit,
+      wins: row.wins ?? 0,
+      losses: row.losses ?? 0,
+      points: row.upgrade_pts ?? 0
+    };
+
+    if (!Object.prototype.hasOwnProperty.call(cur, stat)) {
+      return ix.reply({ content: 'Stat must be one of: hp, dodge, crit, wins, losses, points.', ephemeral: true });
+    }
+    if (!['set','add'].includes(mode)) {
+      return ix.reply({ content: 'Mode must be "set" or "add".', ephemeral: true });
+    }
+
+    let next = mode === 'set' ? value : (cur[stat] + value);
+    if (stat === 'hp')    next = Math.min(CAPS.hp,    Math.max(MINS.hp,    next));
+    if (stat === 'dodge') next = Math.min(CAPS.dodge, Math.max(MINS.dodge, next));
+    if (stat === 'crit')  next = Math.min(CAPS.crit,  Math.max(MINS.crit,  next));
+    if (stat === 'wins')      next = Math.max(MINS.wins,   next);
+    if (stat === 'losses')    next = Math.max(MINS.losses, next);
+    if (stat === 'points')    next = Math.max(MINS.points, next);
+
+    if (stat === 'hp')        updHP.run(next, user.id);
+    else if (stat === 'dodge') updDodge.run(next, user.id);
+    else if (stat === 'crit')  updCrit.run(next, user.id);
+    else if (stat === 'wins')  updWins.run(next, user.id);
+    else if (stat === 'losses') updLosses.run(next, user.id);
+    else if (stat === 'points') updPts.run(next, user.id);
+
+    return ix.reply(`🛠️ Overrode **${stat.toUpperCase()}** for <@${user.id}>: ${cur[stat]} → **${next}** (mode: ${mode}).`);
+  }
 });
 
 // ---------- Message listener (trigger from NumberMan EMBED) ----------
@@ -238,7 +350,7 @@ client.on('messageCreate', async (msg) => {
       if (up.stat === 'hp')    max_hp = Math.min(up.max, max_hp + up.step);
       if (up.stat === 'dodge') dodge  = Math.min(up.max, dodge  + up.step);
       if (up.stat === 'crit')  crit   = Math.min(up.max, crit   + up.step);
-      upsertNavi.run(actorId, max_hp, dodge, crit, wins ?? 0, losses ?? 0);
+      upsertNavi.run(actorId, max_hp, dodge, crit, wins ?? 0, losses ?? 0, row.upgrade_pts ?? 0);
       await msg.channel.send(`🧩 <@${actorId}> used **${key.toUpperCase()}** → HP ${max_hp} | Dodge ${dodge}% | Crit ${crit}%`);
       return;
     }
