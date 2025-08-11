@@ -88,7 +88,7 @@ const endFight   = db.prepare(`DELETE FROM duel_state WHERE channel_id=?`);
 function hpLine(fight, p1hp, p2hp) {
   return `HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}`;
 }
-// Match longer chip names first to avoid "sword" grabbing "widesword"
+// Sort longer chip names first to avoid "sword" grabbing "widesword"
 const CHIP_KEYS_LOWER = Object.keys(CHIPS)
   .map(k => k.toLowerCase())
   .sort((a, b) => b.length - a.length);
@@ -181,13 +181,24 @@ client.on('interactionCreate', async (ix) => {
 client.on('messageCreate', async (msg) => {
   if (!msg.guild) return;
 
-  // Some bots (APP badge) send via application-owned responses.
-  // Let through if author.id OR applicationId is in our whitelist.
+  // Allow messages from usage bots via author, application, or webhook IDs
   const isUsageBot =
     USAGE_BOT_IDS.includes(msg.author?.id) ||
-    (msg.applicationId && USAGE_BOT_IDS.includes(msg.applicationId));
+    (msg.applicationId && USAGE_BOT_IDS.includes(msg.applicationId)) ||
+    (msg.webhookId && USAGE_BOT_IDS.includes(msg.webhookId));
 
   if (!isUsageBot) return;
+
+  // ---- DIAGNOSTIC LOG (one-time while testing) ----
+  console.log('[USAGE MSG]', {
+    authorId: msg.author?.id,
+    authorBot: msg.author?.bot,
+    appId: msg.applicationId,
+    webhookId: msg.webhookId,
+    hasEmbeds: !!msg.embeds?.length,
+    interactionUser: msg.interaction?.user?.id,
+    content: msg.content
+  });
 
   // Build unified searchable text from content + embed bits
   const embedBits = (msg.embeds || []).flatMap(e => [
@@ -203,18 +214,19 @@ client.on('messageCreate', async (msg) => {
   // Accept action-line in content OR embeds
   const isActionLine = contentLower.includes(' used ') || embedsLower.includes(' used ');
   if (msg.embeds?.length && !isActionLine) {
-    // Likely a follow-up visual-only embed ("Deals 90 damage")
-    return;
+    return; // likely a follow-up visual-only embed
   }
 
-  // ---- Who used the chip? ----
-  // Try: mention in content → interaction user (slash invoker) → mention inside embeds
+  // Who used the chip? mention → interaction user → mention in embeds
   const actorId =
     (msg.content?.match(/<@!?(\d+)>/)?.[1]) ||
     msg.interaction?.user?.id ||
     (embedBits.join(' ').match(/<@!?(\d+)>/)?.[1]);
 
-  if (!actorId) return;
+  if (!actorId) {
+    console.log('[USAGE MSG] No actorId resolved');
+    return;
+  }
 
   // ---- Upgrades anywhere ----
   for (const key of Object.keys(UPGRADES)) {
@@ -236,21 +248,25 @@ client.on('messageCreate', async (msg) => {
   if (!fight) return;
 
   // Try to read chip name from the bold **Name** first, then fallback to substring
-  const boldChip = (msg.content.match(/\*\*([A-Za-z0-9]+)\*\*/) ||
-                    embedBits.join(' ').match(/\*\*([A-Za-z0-9]+)\*\*/))?.[1];
+  const boldChip = (msg.content.match(/\*\*\s*([A-Za-z0-9]+)\s*\*\*/) ||
+                    embedBits.join(' ').match(/\*\*\s*([A-Za-z0-9]+)\s*\*\*/))?.[1];
 
   let chipKeyLower;
   if (boldChip) {
     chipKeyLower = boldChip.toLowerCase();
   } else {
-    // fallback: match longer keys first to avoid "sword" vs "widesword"
-    const CHIP_KEYS_LOWER = Object.keys(CHIPS).map(k => k.toLowerCase()).sort((a,b)=>b.length-a.length);
     chipKeyLower = CHIP_KEYS_LOWER.find(k => allText.includes(k));
   }
-  if (!chipKeyLower) return;
+  if (!chipKeyLower) {
+    console.log('[USAGE MSG] No chip matched. allText=', allText);
+    return;
+  }
 
   const chipKey = Object.keys(CHIPS).find(k => k.toLowerCase() === chipKeyLower);
-  if (!chipKey) return;
+  if (!chipKey) {
+    console.log('[USAGE MSG] chipKeyLower found, but CHIPS has no key:', chipKeyLower);
+    return;
+  }
 
   if (actorId !== fight.turn) {
     return msg.channel.send(`⏳ Not your turn, <@${actorId}>.`);
@@ -271,7 +287,7 @@ client.on('messageCreate', async (msg) => {
     }
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
     updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
-    return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores the last damage.  HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}  ➡️ <@${nextTurn}>`);
+    return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores the last damage.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
   // Attack: dodge + crit
@@ -282,7 +298,7 @@ client.on('messageCreate', async (msg) => {
   if (dodged) {
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
     updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
-    return msg.channel.send(`💨 <@${defenderId}> dodged the attack!  HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}  ➡️ <@${nextTurn}>`);
+    return msg.channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
   const base = CHIPS[chipKey].dmg;
@@ -295,7 +311,7 @@ client.on('messageCreate', async (msg) => {
   const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
 
   await msg.channel.send(
-    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.  HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}`
+    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.  ${hpLine(fight, p1hp, p2hp)}`
   );
 
   if (p1hp === 0 || p2hp === 0) {
@@ -310,7 +326,6 @@ client.on('messageCreate', async (msg) => {
   updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
   msg.channel.send(`➡️ <@${nextTurn}>, your turn.`);
 });
-
 
 // ---------- Boot ----------
 client.once('ready', () => {
