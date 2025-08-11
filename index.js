@@ -189,7 +189,7 @@ client.on('messageCreate', async (msg) => {
 
   if (!isUsageBot) return;
 
-  // ---- DIAGNOSTIC LOG (one-time while testing) ----
+  // ---- DIAGNOSTIC LOG (keep while testing) ----
   console.log('[USAGE MSG]', {
     authorId: msg.author?.id,
     authorBot: msg.author?.bot,
@@ -199,6 +199,13 @@ client.on('messageCreate', async (msg) => {
     interactionUser: msg.interaction?.user?.id,
     content: msg.content
   });
+  if (msg.embeds?.length) {
+    console.log('[USAGE EMBEDS]', msg.embeds.map(e => ({
+      title: e.title, desc: e.description,
+      fields: e.fields?.map(f => ({ name: f.name, value: f.value })),
+      footer: e.footer?.text
+    })));
+  }
 
   // Build unified searchable text from content + embed bits
   const embedBits = (msg.embeds || []).flatMap(e => [
@@ -247,41 +254,54 @@ client.on('messageCreate', async (msg) => {
   const fight = getFight.get(msg.channel.id);
   if (!fight) return;
 
-  // === CHIP DETECTION (bold -> title -> fallback substring) ===
+  // === CHIP DETECTION (bold -> embed title -> fallback substring) ===
   // 1) Bold in content/embeds
   const boldChip = (
     (msg.content || '').match(/\*\*\s*([A-Za-z0-9 _-]+?)\s*\*\*/) ||
     (embedBits.join(' ') || '').match(/\*\*\s*([A-Za-z0-9 _-]+?)\s*\*\*/)
   )?.[1]?.trim();
 
-  // 2) Any embed title that exactly equals a CHIPS key (case-insensitive)
+  // 2) Titles from embeds
   const embedTitles = (msg.embeds || [])
     .map(e => (e.title || '').trim())
     .filter(Boolean);
 
-  let chipKeyLower;
-  if (boldChip) {
-    chipKeyLower = boldChip.toLowerCase();
-  } else {
-    const titleMatch = embedTitles
-      .map(t => t.toLowerCase())
-      .find(t => Object.keys(CHIPS).some(k => k.toLowerCase() === t));
-    if (titleMatch) {
-      chipKeyLower = titleMatch;
-    } else {
-      // 3) Fallback: substring search across all text, longer keys first
-      chipKeyLower = CHIP_KEYS_LOWER.find(k => allText.includes(k));
-    }
+  // Helpers to resolve a candidate string to a CHIPS key
+  const chipKeys = Object.keys(CHIPS);
+  const chipKeysLower = chipKeys.map(k => k.toLowerCase());
+  const byLenDesc = (a, b) => b.length - a.length;
+
+  function resolveCandidate(raw) {
+    if (!raw) return null;
+    const c = raw.trim();
+    const cl = c.toLowerCase();
+
+    // exact match
+    let i = chipKeysLower.indexOf(cl);
+    if (i !== -1) return chipKeys[i];
+
+    // handle titles like "Spreader" -> "Spreader1"
+    i = chipKeysLower.indexOf(cl + '1');
+    if (i !== -1) return chipKeys[i];
+
+    // startsWith (avoid Sword vs WideSword by preferring longer keys)
+    const k = chipKeys.sort(byLenDesc).find(key => key.toLowerCase().startsWith(cl));
+    return k || null;
   }
 
-  if (!chipKeyLower) {
-    console.log('[USAGE MSG] No chip matched. allText=', allText);
-    return;
-  }
+  let chipKey =
+    resolveCandidate(boldChip) ||
+    embedTitles.map(resolveCandidate).find(Boolean) ||
+    // 3) Fallback: substring across all text, longer keys first
+    (function () {
+      const found = CHIP_KEYS_LOWER.find(k => allText.includes(k));
+      if (!found) return null;
+      const idx = chipKeysLower.indexOf(found);
+      return idx !== -1 ? chipKeys[idx] : null;
+    })();
 
-  const chipKey = Object.keys(CHIPS).find(k => k.toLowerCase() === chipKeyLower);
   if (!chipKey) {
-    console.log('[USAGE MSG] chipKeyLower found, but CHIPS has no key:', chipKeyLower);
+    console.log('[USAGE MSG] No chip matched. allText=', allText);
     return;
   }
 
