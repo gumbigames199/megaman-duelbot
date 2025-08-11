@@ -21,6 +21,7 @@ const USAGE_BOT_IDS = (process.env.USAGE_BOT_IDS || '1110053775911162056,1403989
   .filter(Boolean);
 
 const NUMBERMAN_ID = '1110053775911162056';
+const ADMIN_ROLE_ID = '830126829352386601';
 
 // Upgrades mode: 'points' (default), 'admin', or 'disabled'
 const MANUAL_UPGRADES_MODE = (process.env.MANUAL_UPGRADES_MODE || 'points').toLowerCase();
@@ -109,11 +110,6 @@ function hpLine(fight, p1hp, p2hp) {
   return `HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}`;
 }
 
-// Sort longer chip names first to avoid "sword" grabbing "widesword"
-const CHIP_KEYS_LOWER = Object.keys(CHIPS)
-  .map(k => k.toLowerCase())
-  .sort((a, b) => b.length - a.length);
-
 const normalize = (s) => (s || '').toLowerCase().replace(/[\s_-]/g, '');
 
 // --- Micro-debounce to avoid double-processing near-duplicate action lines ---
@@ -141,7 +137,13 @@ client.on('interactionCreate', async (ix) => {
     if (MANUAL_UPGRADES_MODE === 'disabled') {
       return ix.reply({ content: 'Manual upgrades are disabled. Earn upgrades via wins or upgrade chips.', ephemeral: true });
     }
-    if (MANUAL_UPGRADES_MODE === 'admin' && !ix.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+
+    const hasAdminRole = ix.member?.roles?.cache?.has?.(ADMIN_ROLE_ID);
+    const hasManageGuild =
+      ix.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ||
+      ix.member?.permissions?.has?.(PermissionFlagsBits.ManageGuild);
+
+    if (MANUAL_UPGRADES_MODE === 'admin' && !(hasAdminRole || hasManageGuild)) {
       return ix.reply({ content: 'Only admins can use this command.', ephemeral: true });
     }
 
@@ -234,8 +236,25 @@ client.on('interactionCreate', async (ix) => {
       await click.update({ content: `✅ <@${target.id}> accepted! Setting up the duel...`, components: [] });
 
       const p1 = ensureNavi(ix.user.id), p2 = ensureNavi(target.id);
-      startFight.run(ix.channel.id, ix.user.id, target.id, ix.user.id, p1.max_hp, p2.max_hp, Date.now());
-      return ix.followUp(`🔔 **Duel started!** ${ix.user} vs ${target}\n${ix.user} goes first. Use your MEE6/NumberMan \`/use\` chips here.`);
+
+      // 🎲 Randomize who goes first
+      const firstId = Math.random() < 0.5 ? ix.user.id : target.id;
+
+      startFight.run(
+        ix.channel.id,
+        ix.user.id,          // p1_id stays requester
+        target.id,           // p2_id stays target
+        firstId,             // turn = randomized
+        p1.max_hp,
+        p2.max_hp,
+        Date.now()
+      );
+
+      const firstMention = `<@${firstId}>`;
+      return ix.followUp(
+        `🔔 **Duel started!** ${ix.user} vs ${target}\n` +
+        `🎲 Random roll: ${firstMention} goes first. Use your MEE6/NumberMan \`/use\` chips here.`
+      );
     } catch {
       await prompt.edit({ content: `⌛ Duel request to <@${target.id}> timed out.`, components: [] });
     }
@@ -253,9 +272,12 @@ client.on('interactionCreate', async (ix) => {
 
   // ----- Admin-only stat override -----
   if (ix.commandName === 'stat_override') {
-    const isAdmin =
+    const hasAdminRole = ix.member?.roles?.cache?.has?.(ADMIN_ROLE_ID);
+    const hasManageGuild =
       ix.memberPermissions?.has(PermissionFlagsBits.ManageGuild) ||
       ix.member?.permissions?.has?.(PermissionFlagsBits.ManageGuild);
+
+    const isAdmin = hasAdminRole || hasManageGuild;
     if (!isAdmin) {
       return ix.reply({ content: 'Only admins can use this command.', ephemeral: true });
     }
@@ -343,7 +365,10 @@ client.on('messageCreate', async (msg) => {
         (msg.content?.match(/<@!?(\d+)>/)?.[1]) ||
         (embedBits.join(' ').match(/<@!?(\d+)>/)?.[1]) ||
         msg.interaction?.user?.id;
-      if (!actorId) break;
+      if (!actorId) {
+        console.log('[UPGRADE] Found upgrade word but no actor mention/user.', { mid: msg.id });
+        return; // exit handler
+      }
       const row = ensureNavi(actorId);
       let { max_hp, dodge, crit, wins, losses } = row;
       const up = UPGRADES[key];
@@ -389,16 +414,14 @@ client.on('messageCreate', async (msg) => {
   // 2) If not found, look back a few recent messages to find the preceding "used" line
   if (!actorId) {
     try {
-      const recent = await msg.channel.messages.fetch({ limit: 6 });
-      // messages are a Collection sorted by timestamp desc; find the previous NumberMan message with " used "
+      const recent = await msg.channel.messages.fetch({ limit: 10 });
       const prior = [...recent.values()]
         .filter(m => m.id !== msg.id)
-        .sort((a, b) => a.createdTimestamp - b.createdTimestamp) // oldest -> newest
-        .reverse() // newest -> older
+        .sort((a, b) => b.createdTimestamp - a.createdTimestamp) // newest first
         .find(m =>
           m.author?.id === NUMBERMAN_ID &&
           typeof m.content === 'string' &&
-          m.content.toLowerCase().includes(' used ') &&
+          /\bused\b/i.test(m.content) &&
           (msg.createdTimestamp - m.createdTimestamp) < 10_000 // within 10s window
         );
       actorId = prior?.content?.match(/<@!?(\d+)>/)?.[1] || null;
@@ -431,8 +454,15 @@ client.on('messageCreate', async (msg) => {
   const attackerId = actorId;
   const defenderId = attackerIsP1 ? fight.p2_id : fight.p1_id;
 
+  // Defensive: ensure chip exists
+  const chip = CHIPS[chipKey];
+  if (!chip) {
+    console.warn('Chip key resolved but not in CHIPS:', chipKey);
+    return;
+  }
+
   // Barrier: undo opponent’s last hit
-  if (CHIPS[chipKey].kind === 'barrier') {
+  if (chip.kind === 'barrier') {
     if (attackerIsP1) {
       if (last1 > 0) { p1hp = Math.min(p1hp + last1, ensureNavi(fight.p1_id).max_hp); last1 = 0; }
     } else {
@@ -454,7 +484,7 @@ client.on('messageCreate', async (msg) => {
     return msg.channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
-  const base = CHIPS[chipKey].dmg;
+  const base = Number.isFinite(chip.dmg) ? chip.dmg : 0;
   const isCrit = (Math.random() * 100) < attStats.crit;
   const dmg = isCrit ? Math.floor((base * 3) / 2) : base;
 
@@ -477,7 +507,7 @@ client.on('messageCreate', async (msg) => {
   }
 
   updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
-  msg.channel.send(`➡️ <@${nextTurn}>, your turn.`);
+  await msg.channel.send(`➡️ <@${nextTurn}>, your turn.`);
 });
 
 // ---------- Boot ----------
