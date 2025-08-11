@@ -1,5 +1,5 @@
 export const CHIPS = {
-  Spreader1: { kind: 'attack', dmg: 30 },
+  **Spreader1**: { kind: 'attack', dmg: 30 },
   Vulcan1: { kind: 'attack', dmg: 30 },
   Cannon1: { kind: 'attack', dmg: 40 },
   Sword: { kind: 'attack', dmg: 80 },
