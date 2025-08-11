@@ -19,6 +19,8 @@ const USAGE_BOT_IDS = (process.env.USAGE_BOT_IDS || '1110053775911162056,1403989
   .map(s => s.trim())
   .filter(Boolean);
 
+const NUMBERMAN_ID = '1110053775911162056';
+
 // Ensure data dir exists
 if (!fs.existsSync('./data')) fs.mkdirSync('./data');
 
@@ -88,10 +90,13 @@ const endFight   = db.prepare(`DELETE FROM duel_state WHERE channel_id=?`);
 function hpLine(fight, p1hp, p2hp) {
   return `HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}`;
 }
+
 // Sort longer chip names first to avoid "sword" grabbing "widesword"
 const CHIP_KEYS_LOWER = Object.keys(CHIPS)
   .map(k => k.toLowerCase())
   .sort((a, b) => b.length - a.length);
+
+const normalize = (s) => (s || '').toLowerCase().replace(/[\s_-]/g, '');
 
 // --- Micro-debounce to avoid double-processing near-duplicate action lines ---
 const recentActions = new Map(); // key => timestamp
@@ -188,11 +193,11 @@ client.on('interactionCreate', async (ix) => {
   }
 });
 
-// ---------- Message listener (chips + upgrades) ----------
+// ---------- Message listener (trigger from NumberMan EMBED) ----------
 client.on('messageCreate', async (msg) => {
   if (!msg.guild) return;
 
-  // Allow messages from usage bots via author, application, or webhook IDs
+  // Only react to our usage bots
   const isUsageBot =
     USAGE_BOT_IDS.includes(msg.author?.id) ||
     (msg.applicationId && USAGE_BOT_IDS.includes(msg.applicationId)) ||
@@ -200,53 +205,33 @@ client.on('messageCreate', async (msg) => {
 
   if (!isUsageBot) return;
 
-  // ---- Gather text from content + ALL embed bits ----
+  // ---- DIAGNOSTIC LOG (trim noisy fields) ----
+  console.log('[USAGE MSG]', {
+    authorId: msg.author?.id,
+    hasEmbeds: !!msg.embeds?.length,
+    content: msg.content
+  });
+  if (msg.embeds?.length) {
+    console.log('[USAGE EMBEDS]', msg.embeds.map(e => ({
+      title: e.title, footer: e.footer?.text
+    })));
+  }
+
+  // --- Upgrades: allow detecting anywhere (content or embed text) ---
   const embedBits = (msg.embeds || []).flatMap(e => [
     e.title || '',
     e.description || '',
     ...(e.fields || []).flatMap(f => [f.name || '', f.value || '']),
     e.footer?.text || ''
   ]);
-  const embedsJoined = embedBits.join(' ');
-  const contentLower = (msg.content || '').toLowerCase();
-  const embedsLower  = embedsJoined.toLowerCase();
-  const allText      = [contentLower, embedsLower].join(' ');
-
-  // ---- DIAGNOSTIC LOG ----
-  console.log('[USAGE MSG]', {
-    authorId: msg.author?.id,
-    authorBot: msg.author?.bot,
-    appId: msg.applicationId,
-    webhookId: msg.webhookId,
-    hasEmbeds: !!msg.embeds?.length,
-    interactionUser: msg.interaction?.user?.id,
-    content: msg.content
-  });
-  if (msg.embeds?.length) {
-    console.log('[USAGE EMBEDS]', msg.embeds.map(e => ({
-      title: e.title, desc: e.description,
-      fields: e.fields?.map(f => ({ name: f.name, value: f.value })),
-      footer: e.footer?.text
-    })));
-  }
-
-  // Accept action line if it appears in content OR any embed text
-  const isActionLine = contentLower.includes(' used ') || embedsLower.includes(' used ');
-  if (msg.embeds?.length && !isActionLine) return;
-
-  // Who used the chip? mention → interaction user → mention in embeds
-  const actorId =
-    (msg.content?.match(/<@!?(\d+)>/)?.[1]) ||
-    msg.interaction?.user?.id ||
-    (embedsJoined.match(/<@!?(\d+)>/)?.[1]);
-  if (!actorId) {
-    console.log('[USAGE MSG] No actorId resolved');
-    return;
-  }
-
-  // ---- Upgrades anywhere ----
+  const allTextLower = [msg.content || '', ...embedBits].join(' ').toLowerCase();
   for (const key of Object.keys(UPGRADES)) {
-    if (allText.includes(key.toLowerCase())) {
+    if (allTextLower.includes(key.toLowerCase())) {
+      const actorId =
+        (msg.content?.match(/<@!?(\d+)>/)?.[1]) ||
+        (embedBits.join(' ').match(/<@!?(\d+)>/)?.[1]) ||
+        msg.interaction?.user?.id;
+      if (!actorId) break;
       const row = ensureNavi(actorId);
       let { max_hp, dodge, crit, wins, losses } = row;
       const up = UPGRADES[key];
@@ -259,32 +244,64 @@ client.on('messageCreate', async (msg) => {
     }
   }
 
+  // --- Focus on NumberMan EMBED with chip title ---
+  if (msg.author?.id !== NUMBERMAN_ID || !msg.embeds?.length) return;
+
+  // Find a chip name from the embed TITLE
+  let chipKey = null;
+  const titles = msg.embeds.map(e => e.title).filter(Boolean);
+  if (titles.length) {
+    const keys = Object.keys(CHIPS);
+    const normKeys = keys.map(k => normalize(k));
+    outer: for (const t of titles) {
+      const tn = normalize(t);
+      for (let i = 0; i < keys.length; i++) {
+        const kn = normKeys[i];
+        if (tn === kn || tn.startsWith(kn)) {
+          chipKey = keys[i];
+          break outer;
+        }
+      }
+    }
+  }
+  if (!chipKey) return; // not a chip embed
+
+  // Resolve actor:
+  // 1) Try any mention hidden in embed text/description/fields (some bots include it)
+  const embedJoined = embedBits.join(' ');
+  let actorId =
+    (embedJoined.match(/<@!?(\d+)>/)?.[1]) ||
+    (msg.content?.match(/<@!?(\d+)>/)?.[1]) ||
+    msg.interaction?.user?.id;
+
+  // 2) If not found, look back a few recent messages to find the preceding "used" line
+  if (!actorId) {
+    try {
+      const recent = await msg.channel.messages.fetch({ limit: 6 });
+      // messages are a Collection sorted by timestamp desc; find the previous NumberMan message with " used "
+      const prior = [...recent.values()]
+        .filter(m => m.id !== msg.id)
+        .sort((a, b) => a.createdTimestamp - b.createdTimestamp) // oldest -> newest
+        .reverse() // newest -> older
+        .find(m =>
+          m.author?.id === NUMBERMAN_ID &&
+          typeof m.content === 'string' &&
+          m.content.toLowerCase().includes(' used ') &&
+          (msg.createdTimestamp - m.createdTimestamp) < 10_000 // within 10s window
+        );
+      actorId = prior?.content?.match(/<@!?(\d+)>/)?.[1] || null;
+    } catch (e) {
+      console.warn('Failed to fetch recent messages to resolve actor:', e);
+    }
+  }
+  if (!actorId) {
+    console.log('[USAGE MSG] Could not resolve actor for embed-only chip.');
+    return;
+  }
+
   // ---- Combat only if a duel is active in this channel ----
   const fight = getFight.get(msg.channel.id);
   if (!fight) return;
-
-  // Prefer the bold chip name from content OR any embed description/field/footer (supports spaces & hyphens)
-  const boldChip = (
-    msg.content.match(/\*\*\s*([A-Za-z0-9 _-]+?)\s*\*\*/) ||
-    embedsJoined.match(/\*\*\s*([A-Za-z0-9 _-]+?)\s*\*\*/)
-  )?.[1]?.trim();
-
-  let chipKeyLower;
-  if (boldChip) {
-    chipKeyLower = boldChip.toLowerCase();
-  } else {
-    chipKeyLower = CHIP_KEYS_LOWER.find(k => allText.includes(k));
-  }
-  if (!chipKeyLower) {
-    console.log('[USAGE MSG] No chip matched. allText=', allText);
-    return;
-  }
-
-  const chipKey = Object.keys(CHIPS).find(k => k.toLowerCase() === chipKeyLower);
-  if (!chipKey) {
-    console.log('[USAGE MSG] chipKeyLower found, but CHIPS has no key:', chipKeyLower);
-    return;
-  }
 
   // Debounce near-duplicate actions (channel + actor + chip within 2s)
   if (shouldDebounce(msg.channel.id, actorId, chipKey)) {
