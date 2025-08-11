@@ -88,7 +88,10 @@ const endFight   = db.prepare(`DELETE FROM duel_state WHERE channel_id=?`);
 function hpLine(fight, p1hp, p2hp) {
   return `HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}`;
 }
-const CHIP_KEYS_LOWER = Object.keys(CHIPS).map(k => k.toLowerCase());
+// Match longer chip names first to avoid "sword" grabbing "widesword"
+const CHIP_KEYS_LOWER = Object.keys(CHIPS)
+  .map(k => k.toLowerCase())
+  .sort((a, b) => b.length - a.length);
 
 // ---------- Slash commands ----------
 client.on('interactionCreate', async (ix) => {
@@ -189,15 +192,17 @@ client.on('messageCreate', async (msg) => {
   ]);
   const allText = [msg.content || '', ...embedBits].join(' ').toLowerCase();
 
-  // Prefer to act only on the content action line "X used Y" to avoid double-processing the follow-up embed
+  // Accept action line in content OR embeds (NumberMan sometimes puts it in embeds)
   const isActionContentMsg = (msg.content || '').toLowerCase().includes(' used ');
-  if (msg.embeds?.length && !isActionContentMsg) {
-    return; // likely the visual "Deals 80 damage" embed
+  const isActionInEmbeds = embedBits.join(' ').toLowerCase().includes(' used ');
+  if (msg.embeds?.length && !(isActionContentMsg || isActionInEmbeds)) {
+    return; // likely a follow-up visual-only embed
   }
 
-  // Actor: from mention in content or embeds
+  // Actor: from mention, interaction user (slash/ctx), or embeds
   const actorId =
     msg.mentions.users.first()?.id ||
+    msg.interaction?.user?.id ||
     (msg.content?.match(/<@!?(\d+)>/)?.[1]) ||
     embedBits.join(' ').match(/<@!?(\d+)>/)?.[1];
   if (!actorId) return;
@@ -221,7 +226,7 @@ client.on('messageCreate', async (msg) => {
   const fight = getFight.get(msg.channel.id);
   if (!fight) return;
 
-  // Which chip was used? (case-insensitive)
+  // Which chip was used? (case-insensitive), longer names first to prevent partial capture
   const chipKeyLower = CHIP_KEYS_LOWER.find(k => allText.includes(k));
   if (!chipKeyLower) return;
   const chipKey = Object.keys(CHIPS).find(k => k.toLowerCase() === chipKeyLower);
