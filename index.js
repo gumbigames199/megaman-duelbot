@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS duel_state (
   started_at INTEGER NOT NULL
 );
 `);
-// Backward compatible if wins/losses were missing before
 try { db.exec(`ALTER TABLE navis ADD COLUMN wins   INTEGER NOT NULL DEFAULT 0;`); } catch {}
 try { db.exec(`ALTER TABLE navis ADD COLUMN losses INTEGER NOT NULL DEFAULT 0;`); } catch {}
 
@@ -181,7 +180,7 @@ client.on('messageCreate', async (msg) => {
   if (!USAGE_BOT_IDS.includes(msg.author.id)) return;
   if (!msg.guild) return;
 
-  // Build unified searchable text from content + embed bits (title/description/fields/footer)
+  // Build unified searchable text from content + embed bits
   const embedBits = (msg.embeds || []).flatMap(e => [
     e.title || '',
     e.description || '',
@@ -193,8 +192,7 @@ client.on('messageCreate', async (msg) => {
   // Prefer to act only on the content action line "X used Y" to avoid double-processing the follow-up embed
   const isActionContentMsg = (msg.content || '').toLowerCase().includes(' used ');
   if (msg.embeds?.length && !isActionContentMsg) {
-    // Likely the visual embed ("Deals 80 damage") following the action line — ignore
-    return;
+    return; // likely the visual "Deals 80 damage" embed
   }
 
   // Actor: from mention in content or embeds
@@ -206,7 +204,7 @@ client.on('messageCreate', async (msg) => {
 
   // --- Upgrades anywhere ---
   for (const key of Object.keys(UPGRADES)) {
-    if (allText.includes(key.toLowerCase())) { // case-insensitive
+    if (allText.includes(key.toLowerCase())) {
       const row = ensureNavi(actorId);
       let { max_hp, dodge, crit, wins, losses } = row;
       const up = UPGRADES[key];
