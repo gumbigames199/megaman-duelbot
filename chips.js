@@ -8,7 +8,8 @@ export const CHIPS = {
   LongSword: { kind: 'attack', dmg: 100 },
   ElecMan1: { kind: 'attack', dmg: 120 },
   TorchMan1: { kind: 'attack', dmg: 150 },
-  Barrier: { kind: 'barrier' }
+  Barrier: { kind: 'barrier' },
+  RockCube: {kind: 'defense', def: 40 }
 };
 
 export const UPGRADES = {

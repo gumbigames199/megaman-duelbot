@@ -132,6 +132,8 @@ CREATE TABLE IF NOT EXISTS duel_state (
   turn TEXT NOT NULL,
   p1_hp INTEGER NOT NULL,
   p2_hp INTEGER NOT NULL,
+  p1_def INTEGER NOT NULL DEFAULT 0,  -- NEW
+  p2_def INTEGER NOT NULL DEFAULT 0,  -- NEW
   last_hit_p1 INTEGER NOT NULL DEFAULT 0,
   last_hit_p2 INTEGER NOT NULL DEFAULT 0,
   started_at INTEGER NOT NULL
@@ -141,6 +143,8 @@ CREATE TABLE IF NOT EXISTS duel_state (
 try { db.exec(`ALTER TABLE navis ADD COLUMN wins         INTEGER NOT NULL DEFAULT 0;`); } catch {}
 try { db.exec(`ALTER TABLE navis ADD COLUMN losses       INTEGER NOT NULL DEFAULT 0;`); } catch {}
 try { db.exec(`ALTER TABLE navis ADD COLUMN upgrade_pts  INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE duel_state ADD COLUMN p1_def   INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_def   INTEGER NOT NULL DEFAULT 0;`); } catch {}
 
 const getNavi = db.prepare(`SELECT * FROM navis WHERE user_id=?`);
 const upsertNavi = db.prepare(`
@@ -173,8 +177,17 @@ function awardResult(winnerId, loserId) {
 }
 
 const getFight   = db.prepare(`SELECT * FROM duel_state WHERE channel_id=?`);
-const startFight = db.prepare(`INSERT INTO duel_state (channel_id,p1_id,p2_id,turn,p1_hp,p2_hp,started_at) VALUES (?,?,?,?,?,?,?)`);
-const updFight   = db.prepare(`UPDATE duel_state SET p1_hp=?,p2_hp=?,turn=?,last_hit_p1=?,last_hit_p2=? WHERE channel_id=?`);
+const startFight = db.prepare(`
+  INSERT INTO duel_state (channel_id,p1_id,p2_id,turn,p1_hp,p2_hp,p1_def,p2_def,started_at)
+  VALUES (?,?,?,?,?,?,?,?,?)
+`);
+const updFight   = db.prepare(`
+  UPDATE duel_state
+     SET p1_hp=?, p2_hp=?,
+         p1_def=?, p2_def=?,
+         turn=?, last_hit_p1=?, last_hit_p2=?
+   WHERE channel_id=?
+`);
 const endFight   = db.prepare(`DELETE FROM duel_state WHERE channel_id=?`);
 
 // Helpers
@@ -265,9 +278,18 @@ client.on('interactionCreate', async (ix) => {
   if (ix.commandName === 'navi_stats') {
     const user = ix.options.getUser('user') || ix.user;
     const row = ensureNavi(user.id);
+
+    // Pull current temporary Defense if this channel has an active duel
+    const f = getFight.get(ix.channel.id);
+    let defNow = 0;
+    if (f) {
+      if (user.id === f.p1_id) defNow = f.p1_def ?? 0;
+      else if (user.id === f.p2_id) defNow = f.p2_def ?? 0;
+    }
+
     return ix.reply(
       `📊 **${user.username}** — HP ${row.max_hp} | Dodge ${row.dodge}% | Crit ${row.crit}% | ` +
-      `Record: **${row.wins ?? 0}-${row.losses ?? 0}** | Points: **${row.upgrade_pts ?? 0}**`
+      `Record: **${row.wins ?? 0}-${row.losses ?? 0}** | Points: **${row.upgrade_pts ?? 0}** | Def (temp): **${defNow}**`
     );
   }
 
@@ -319,6 +341,8 @@ client.on('interactionCreate', async (ix) => {
         firstId,             // turn = randomized
         p1.max_hp,
         p2.max_hp,
+        0,                   // p1_def
+        0,                   // p2_def
         Date.now()
       );
 
@@ -522,6 +546,7 @@ client.on('messageCreate', async (msg) => {
 
   const attackerIsP1 = (actorId === fight.p1_id);
   let p1hp = fight.p1_hp, p2hp = fight.p2_hp;
+  let p1def = fight.p1_def ?? 0, p2def = fight.p2_def ?? 0; // NEW
   let last1 = fight.last_hit_p1, last2 = fight.last_hit_p2;
   const attackerId = actorId;
   const defenderId = attackerIsP1 ? fight.p2_id : fight.p1_id;
@@ -541,33 +566,57 @@ client.on('messageCreate', async (msg) => {
       if (last2 > 0) { p2hp = Math.min(p2hp + last2, ensureNavi(fight.p2_id).max_hp); last2 = 0; }
     }
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-    updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
+    // keep defenses as-is
+    updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
     return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores the last damage.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
-  // Attack: dodge + crit
+  // Defense buff: increases your temporary Defense until your next turn
+  if (chip.kind === 'defense') {
+    const val = Number.isFinite(chip.def) ? chip.def : 0; // e.g., RockCube.def
+    if (attackerIsP1) p1def = Math.max(0, p1def + val);
+    else              p2def = Math.max(0, p2def + val);
+
+    const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
+    updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
+    return msg.channel.send(`🧱 <@${attackerId}> raises Defense by **${val}** until their next turn. ➡️ <@${nextTurn}>`);
+  }
+
+  // Attack: dodge + crit + defense absorption
   const defStats = ensureNavi(defenderId);
   const attStats = ensureNavi(attackerId);
 
   const dodged = (Math.random() * 100) < defStats.dodge;
   if (dodged) {
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-    updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
+    // Defense expires for whoever is ABOUT to take their turn
+    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0;
+
+    updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
     return msg.channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
   const base = Number.isFinite(chip.dmg) ? chip.dmg : 0;
   const isCrit = (Math.random() * 100) < attStats.crit;
-  const dmg = isCrit ? Math.floor((base * 3) / 2) : base;
+  const preDef = isCrit ? Math.floor((base * 3) / 2) : base;
+
+  const defenderDef = attackerIsP1 ? p2def : p1def;
+  const dmg = Math.max(0, preDef - defenderDef);
+  const absorbed = preDef - dmg;
 
   if (attackerIsP1) { p2hp = Math.max(0, p2hp - dmg); last2 = dmg; }
   else { p1hp = Math.max(0, p1hp - dmg); last1 = dmg; }
 
   const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
+  // When the turn passes to a player, their defense expires
+  if (nextTurn === fight.p1_id) p1def = 0;
+  else                          p2def = 0;
 
-  await msg.channel.send(
-    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.  ${hpLine(fight, p1hp, p2hp)}`
-  );
+  let line = `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.`;
+  if (absorbed > 0) line += ` 🛡️ Defense absorbed **${absorbed}**.`;
+  line += `  ${hpLine(fight, p1hp, p2hp)}`;
+
+  await msg.channel.send(line);
 
   if (p1hp === 0 || p2hp === 0) {
     const winnerId = p1hp === 0 ? fight.p2_id : fight.p1_id;
@@ -578,7 +627,7 @@ client.on('messageCreate', async (msg) => {
     return msg.channel.send(`🏆 **<@${winnerId}> wins!** (W-L: ${wRow?.wins ?? '—'}-${wRow?.losses ?? '—'})`);
   }
 
-  updFight.run(p1hp, p2hp, nextTurn, last1, last2, msg.channel.id);
+  updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
   await msg.channel.send(`➡️ <@${nextTurn}>, your turn.`);
 });
 
