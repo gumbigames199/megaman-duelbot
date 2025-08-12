@@ -84,6 +84,19 @@ async function registerCommands() {
       .setName('forfeit')
       .setDescription('Forfeit the current duel'),
 
+    // NEW: read-only duel status
+    new SlashCommandBuilder()
+      .setName('duel_state')
+      .setDescription('Show the current duel state (HP, temp Defense, turn, specials used)'),
+
+    // NEW: leaderboard
+    new SlashCommandBuilder()
+      .setName('navi_leaderboard')
+      .setDescription('Show top players by record')
+      .addIntegerOption(o =>
+        o.setName('limit').setDescription('How many to list (5-25, default 10)').setRequired(false)
+      ),
+
     new SlashCommandBuilder()
       .setName('stat_override')
       .setDescription('Admin-only: set or add to a player stat')
@@ -376,6 +389,45 @@ client.on('interactionCreate', async (ix) => {
     return ix.reply(`🏳️ <@${loserId}> forfeits. 🏆 <@${winnerId}> wins!`);
   }
 
+  // NEW: read-only duel state
+  if (ix.commandName === 'duel_state') {
+    const f = getFight.get(ix.channel.id);
+    if (!f) return ix.reply({ content: 'No active duel in this channel.', ephemeral: true });
+
+    const p1Spec = parseList(f.p1_special_used);
+    const p2Spec = parseList(f.p2_special_used);
+    const lines = [
+      `🧭 **Duel State**`,
+      `Turn: <@${f.turn}>`,
+      `P1: <@${f.p1_id}> — HP **${f.p1_hp}** | DEF **${f.p1_def ?? 0}** | Specials: ${p1Spec.length ? p1Spec.join(', ') : '—'}`,
+      `P2: <@${f.p2_id}> — HP **${f.p2_hp}** | DEF **${f.p2_def ?? 0}** | Specials: ${p2Spec.length ? p2Spec.join(', ') : '—'}`
+    ];
+    return ix.reply(lines.join('\n'));
+  }
+
+  // NEW: leaderboard
+  if (ix.commandName === 'navi_leaderboard') {
+    let limit = ix.options.getInteger('limit') ?? 10;
+    limit = Math.min(25, Math.max(5, limit));
+
+    const rows = db.prepare(`
+      SELECT user_id, wins, losses, max_hp, dodge, crit, upgrade_pts
+      FROM navis
+      ORDER BY wins DESC, losses ASC
+      LIMIT ?
+    `).all(limit);
+
+    if (!rows.length) return ix.reply('No players registered yet.');
+
+    const lines = rows.map((r, i) => {
+      const games = (r.wins ?? 0) + (r.losses ?? 0);
+      const wr = games > 0 ? ((r.wins / games) * 100).toFixed(1) : '0.0';
+      return `#${i + 1} — <@${r.user_id}> — **${r.wins}-${r.losses}** (${wr}% WR)`;
+    });
+
+    return ix.reply(`🏆 **Leaderboard (Top ${rows.length})**\n` + lines.join('\n'));
+  }
+
   // ----- Admin-only stat override -----
   if (ix.commandName === 'stat_override') {
     const hasAdminRole = ix.member?.roles?.cache?.has?.(ADMIN_ROLE_ID);
@@ -570,30 +622,39 @@ client.on('messageCreate', async (msg) => {
   }
 
   // --- SPECIAL LIMITER: once per duel (per player) for chips marked special ---
+  let specialJustUsed = false;
   if (chip.special) {
     const usedArr = attackerIsP1 ? p1Spec : p2Spec;
     if (usedArr.includes(chipKey)) {
       return msg.channel.send(`⛔ <@${attackerId}> you’ve already used **${chipKey}** this duel.`);
     }
     usedArr.push(chipKey);
+    specialJustUsed = true;
   }
 
   // Barrier: undo opponent’s last hit (and expire next player's defense)
   if (chip.kind === 'barrier') {
+    const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
+
     if (attackerIsP1) {
       if (last1 > 0) { p1hp = Math.min(p1hp + last1, ensureNavi(fight.p1_id).max_hp); last1 = 0; }
     } else {
       if (last2 > 0) { p2hp = Math.min(p2hp + last2, ensureNavi(fight.p2_id).max_hp); last2 = 0; }
     }
-    const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense at start of next player's turn
+
+    // expire defense when next player begins their turn
+    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0;
+
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, msg.channel.id
     );
-    return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores the last damage.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
+    return msg.channel.send(
+      `🛡️ <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''}! ` +
+      `Restores the last damage.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
+    );
   }
 
   // Defense buff: increases your temporary Defense until your next turn
@@ -609,7 +670,10 @@ client.on('messageCreate', async (msg) => {
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, msg.channel.id
     );
-    return msg.channel.send(`🧱 <@${attackerId}> raises Defense by **${val}** until their next turn. ➡️ <@${nextTurn}>`);
+    return msg.channel.send(
+      `🧱 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
+      `and raises Defense by **${val}** until their next turn. ➡️ <@${nextTurn}>`
+    );
   }
 
   // Recovery: heal the user, up to their max HP; then pass turn and expire next player's defense
@@ -638,7 +702,10 @@ client.on('messageCreate', async (msg) => {
       nextTurn, last1, last2, msg.channel.id
     );
 
-    return msg.channel.send(`💚 <@${attackerId}> recovers **${healed}** HP.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
+    return msg.channel.send(
+      `💚 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
+      `and recovers **${healed}** HP.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
+    );
   }
 
   // Attack: dodge + crit + defense absorption
@@ -672,7 +739,9 @@ client.on('messageCreate', async (msg) => {
   const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
   if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense
 
-  let line = `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.`;
+  let line =
+    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
+    `for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.`;
   if (absorbed > 0) line += ` 🛡️ Defense absorbed **${absorbed}**.`;
   line += `  ${hpLine(fight, p1hp, p2hp)}`;
 
