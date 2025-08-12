@@ -247,8 +247,11 @@ function shouldDebounce(channelId, actorId, chipKey, ms = 2000) {
   return false;
 }
 
+// NEW: Track ToadMan's consecutive chip usage per channel (to avoid 3+ repeats)
+const botLastUse = new Map(); // channelId -> { chip: string|null, streak: number }
+
 // ---------- Bot (ToadMan) turn logic ----------
-function pickBotChip(f) {
+function pickBotChip(channelId, f) {
   const botIsP1 = f.turn === f.p1_id; // on bot turn, f.turn == bot id
   const botHP    = botIsP1 ? f.p1_hp : f.p2_hp;
   const botDef   = botIsP1 ? (f.p1_def ?? 0) : (f.p2_def ?? 0);
@@ -258,7 +261,7 @@ function pickBotChip(f) {
   const botMaxHP = botRow.max_hp;
 
   // Only chips allowed by counters & specials
-  const keys = Object.keys(CHIPS).filter(k => {
+  let keys = Object.keys(CHIPS).filter(k => {
     const c = CHIPS[k];
     if (!c) return false;
     if ((botCounts[k] || 0) >= MAX_PER_CHIP) return false;
@@ -270,6 +273,14 @@ function pickBotChip(f) {
     }
     return true;
   });
+
+  // Avoid same chip 3+ times in a row for ToadMan
+  const lastInfo = botLastUse.get(channelId) || { chip: null, streak: 0 };
+  if (lastInfo.chip && lastInfo.streak >= 2) {
+    const alt = keys.filter(k => k !== lastInfo.chip);
+    if (alt.length) keys = alt; // enforce only if alternatives exist
+  }
+
   if (!keys.length) return null;
 
   // Simple weighting
@@ -302,9 +313,18 @@ async function botTakeTurn(channel) {
   const attackerId = client.user.id;
   const defenderId = attackerIsP1 ? f.p2_id : f.p1_id;
 
-  const chipKey = pickBotChip(f) || Object.keys(CHIPS)[0];
+  const chipKey = pickBotChip(channel.id, f) || Object.keys(CHIPS)[0];
   const chip = CHIPS[chipKey];
   if (!chip) return;
+
+  // Record consecutive usage for ToadMan (avoid >2 in a row)
+  {
+    const prev = botLastUse.get(channel.id) || { chip: null, streak: 0 };
+    const updated = (prev.chip === chipKey)
+      ? { chip: chipKey, streak: prev.streak + 1 }
+      : { chip: chipKey, streak: 1 };
+    botLastUse.set(channel.id, updated);
+  }
 
   // Counter check & increment
   const myCounts = attackerIsP1 ? p1Counts : p2Counts;
@@ -443,6 +463,7 @@ async function botTakeTurn(channel) {
     // Scrimmage end: NO W/L or points awarded
     const winnerId = p1hp === 0 ? f.p2_id : f.p1_id;
     endFight.run(channel.id);
+    botLastUse.delete(channel.id);
     const scrimNote = ' _(scrimmage — no W/L or points)_';
     return channel.send(`🏆 **<@${winnerId}> wins!**${scrimNote}`);
   }
@@ -582,6 +603,9 @@ client.on('interactionCreate', async (ix) => {
         Date.now()
       );
 
+      // reset bot streak tracker for this channel
+      botLastUse.delete(ix.channel.id);
+
       const firstMention = `<@${firstId}>`;
       await ix.reply(
         `🐸 **Scrimmage started!** ${ix.user} vs <@${client.user.id}>\n` +
@@ -642,6 +666,9 @@ client.on('interactionCreate', async (ix) => {
         Date.now()
       );
 
+      // reset bot streak tracker for this channel (no effect unless bot is in this duel later)
+      botLastUse.delete(ix.channel.id);
+
       const firstMention = `<@${firstId}>`;
       return ix.followUp(
         `🔔 **Duel started!** ${ix.user} vs ${target}\n` +
@@ -661,6 +688,7 @@ client.on('interactionCreate', async (ix) => {
     const loserId  = ix.user.id;
     if (!scrim) awardResult(winnerId, loserId); // no penalty in scrimmage
     endFight.run(ix.channel.id);
+    botLastUse.delete(ix.channel.id);
     const note = scrim ? ' (scrimmage — no penalty)' : '';
     return ix.reply(`🏳️ <@${loserId}> forfeits.${note} 🏆 <@${winnerId}> wins!`);
   }
@@ -1048,10 +1076,12 @@ client.on('messageCreate', async (msg) => {
     if (!scrim) {
       awardResult(winnerId, loserId);
       endFight.run(msg.channel.id);
+      botLastUse.delete(msg.channel.id);
       const wRow = getNavi.get(winnerId);
       return msg.channel.send(`🏆 **<@${winnerId}> wins!** (W-L: ${wRow?.wins ?? '—'}-${wRow?.losses ?? '—'})`);
     } else {
       endFight.run(msg.channel.id);
+      botLastUse.delete(msg.channel.id);
       return msg.channel.send(`🏆 **<@${winnerId}> wins!** _(scrimmage — no W/L or points)_`);
     }
   }
