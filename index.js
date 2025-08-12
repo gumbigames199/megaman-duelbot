@@ -31,6 +31,9 @@ const MANUAL_UPGRADES_MODE = (process.env.MANUAL_UPGRADES_MODE || 'points').toLo
 // Points awarded per win (default 1)
 const POINTS_PER_WIN = parseInt(process.env.POINTS_PER_WIN || '1', 10);
 
+// Per-chip cap per duel
+const MAX_PER_CHIP = 4;
+
 // Ensure data dir exists
 if (!fs.existsSync('./data')) fs.mkdirSync('./data');
 
@@ -148,6 +151,8 @@ CREATE TABLE IF NOT EXISTS duel_state (
   p2_hp INTEGER NOT NULL,
   p1_def INTEGER NOT NULL DEFAULT 0,
   p2_def INTEGER NOT NULL DEFAULT 0,
+  p1_counts_json TEXT NOT NULL DEFAULT '{}',
+  p2_counts_json TEXT NOT NULL DEFAULT '{}',
   p1_special_used TEXT NOT NULL DEFAULT '[]',
   p2_special_used TEXT NOT NULL DEFAULT '[]',
   last_hit_p1 INTEGER NOT NULL DEFAULT 0,
@@ -161,6 +166,8 @@ try { db.exec(`ALTER TABLE navis ADD COLUMN losses          INTEGER NOT NULL DEF
 try { db.exec(`ALTER TABLE navis ADD COLUMN upgrade_pts     INTEGER NOT NULL DEFAULT 0;`); } catch {}
 try { db.exec(`ALTER TABLE duel_state ADD COLUMN p1_def      INTEGER NOT NULL DEFAULT 0;`); } catch {}
 try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_def      INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE duel_state ADD COLUMN p1_counts_json TEXT NOT NULL DEFAULT '{}';`); } catch {}
+try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_counts_json TEXT NOT NULL DEFAULT '{}';`); } catch {}
 try { db.exec(`ALTER TABLE duel_state ADD COLUMN p1_special_used TEXT NOT NULL DEFAULT '[]';`); } catch {}
 try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_special_used TEXT NOT NULL DEFAULT '[]';`); } catch {}
 
@@ -196,13 +203,16 @@ function awardResult(winnerId, loserId) {
 
 const getFight   = db.prepare(`SELECT * FROM duel_state WHERE channel_id=?`);
 const startFight = db.prepare(`
-  INSERT INTO duel_state (channel_id,p1_id,p2_id,turn,p1_hp,p2_hp,p1_def,p2_def,p1_special_used,p2_special_used,started_at)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?)
+  INSERT INTO duel_state
+    (channel_id,p1_id,p2_id,turn,p1_hp,p2_hp,p1_def,p2_def,p1_counts_json,p2_counts_json,p1_special_used,p2_special_used,started_at)
+  VALUES
+    (?,?,?,?,?,?,?,?,?,?,?,?,?)
 `);
 const updFight   = db.prepare(`
   UPDATE duel_state
      SET p1_hp=?, p2_hp=?,
          p1_def=?, p2_def=?,
+         p1_counts_json=?, p2_counts_json=?,
          p1_special_used=?, p2_special_used=?,
          turn=?, last_hit_p1=?, last_hit_p2=?
    WHERE channel_id=?
@@ -217,6 +227,12 @@ const normalize = (s) => (s || '').toLowerCase().replace(/[\s_-]/g, '');
 const parseList = (s) => {
   try { const v = JSON.parse(s ?? '[]'); return Array.isArray(v) ? v : []; }
   catch { return []; }
+};
+const parseMap = (s) => {
+  try {
+    const v = JSON.parse(s ?? '{}');
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch { return {}; }
 };
 const isScrimmage = (f) => !!f && (f.p1_id === client.user?.id || f.p2_id === client.user?.id);
 
@@ -233,44 +249,41 @@ function shouldDebounce(channelId, actorId, chipKey, ms = 2000) {
 
 // ---------- Bot (ToadMan) turn logic ----------
 function pickBotChip(f) {
-  // Build eligible list respecting specials-once rule and state (heals if hurt, etc.)
   const botIsP1 = f.turn === f.p1_id; // on bot turn, f.turn == bot id
-  const botId = f.turn;
-  const oppId = botIsP1 ? f.p2_id : f.p1_id;
-
-  const botRow   = ensureNavi(botId);
-  const oppRow   = ensureNavi(oppId);
   const botHP    = botIsP1 ? f.p1_hp : f.p2_hp;
-  const botMaxHP = botRow.max_hp;
-  const lastBotHit = botIsP1 ? f.last_hit_p1 : f.last_hit_p2;
+  const botDef   = botIsP1 ? (f.p1_def ?? 0) : (f.p2_def ?? 0);
+  const botCounts= parseMap(botIsP1 ? f.p1_counts_json : f.p2_counts_json);
   const botSpecUsed = parseList(botIsP1 ? f.p1_special_used : f.p2_special_used);
+  const botRow   = ensureNavi(botIsP1 ? f.p1_id : f.p2_id);
+  const botMaxHP = botRow.max_hp;
 
+  // Only chips allowed by counters & specials
   const keys = Object.keys(CHIPS).filter(k => {
     const c = CHIPS[k];
     if (!c) return false;
+    if ((botCounts[k] || 0) >= MAX_PER_CHIP) return false;
     if (c.special && botSpecUsed.includes(k)) return false;
     if (c.kind === 'recovery' && botHP >= botMaxHP) return false;
-    if (c.kind === 'barrier'  && (lastBotHit || 0) <= 0) return false;
+    if (c.kind === 'barrier') {
+      const lastBotHit = botIsP1 ? f.last_hit_p1 : f.last_hit_p2;
+      if ((lastBotHit || 0) <= 0) return false;
+    }
     return true;
   });
-  if (keys.length === 0) return null;
+  if (!keys.length) return null;
 
-  // Simple weighting: prefer heal if <40% hp, prefer defense if no defense up, otherwise attack
-  const botDef = botIsP1 ? (f.p1_def ?? 0) : (f.p2_def ?? 0);
+  // Simple weighting
   const lowHP = botHP / botMaxHP <= 0.4;
-
   const heals   = keys.filter(k => CHIPS[k].kind === 'recovery');
   const defs    = keys.filter(k => CHIPS[k].kind === 'defense');
   const attacks = keys.filter(k => CHIPS[k].kind === 'attack');
   const barriers= keys.filter(k => CHIPS[k].kind === 'barrier');
-  const specials= keys.filter(k => CHIPS[k].special && !botSpecUsed.includes(k));
 
   let pool = keys;
   if (lowHP && heals.length) pool = heals;
   else if (botDef <= 0 && defs.length) pool = defs;
   else if (attacks.length) pool = attacks;
   else if (barriers.length) pool = barriers;
-  else if (specials.length) pool = specials;
 
   return pool[Math.floor(Math.random() * pool.length)];
 }
@@ -284,6 +297,7 @@ async function botTakeTurn(channel) {
   let p1hp = f.p1_hp, p2hp = f.p2_hp;
   let p1def = f.p1_def ?? 0, p2def = f.p2_def ?? 0;
   let p1Spec = parseList(f.p1_special_used), p2Spec = parseList(f.p2_special_used);
+  let p1Counts = parseMap(f.p1_counts_json), p2Counts = parseMap(f.p2_counts_json);
   let last1 = f.last_hit_p1, last2 = f.last_hit_p2;
   const attackerId = client.user.id;
   const defenderId = attackerIsP1 ? f.p2_id : f.p1_id;
@@ -292,11 +306,20 @@ async function botTakeTurn(channel) {
   const chip = CHIPS[chipKey];
   if (!chip) return;
 
+  // Counter check & increment
+  const myCounts = attackerIsP1 ? p1Counts : p2Counts;
+  const alreadyUsed = myCounts[chipKey] || 0;
+  if (alreadyUsed >= MAX_PER_CHIP) {
+    await sleep(300);
+    return botTakeTurn(channel);
+  }
+  const usedNow = alreadyUsed + 1;
+  myCounts[chipKey] = usedNow;
+
   let specialJustUsed = false;
   if (chip.special) {
     const usedArr = attackerIsP1 ? p1Spec : p2Spec;
     if (usedArr.includes(chipKey)) {
-      // pick a different one next tick
       await sleep(300);
       return botTakeTurn(channel);
     }
@@ -317,11 +340,12 @@ async function botTakeTurn(channel) {
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
+      JSON.stringify(p1Counts), JSON.stringify(p2Counts),
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, channel.id
     );
     return channel.send(
-      `🛡️ <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''}! ` +
+      `🛡️ <@${attackerId}> uses **${chipKey.toUpperCase()}** (${usedNow}/${MAX_PER_CHIP})${specialJustUsed ? ' _(special used)_' : ''}! ` +
       `Restores the last damage.  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
     );
   }
@@ -331,14 +355,16 @@ async function botTakeTurn(channel) {
     if (attackerIsP1) p1def = Math.max(0, p1def + val);
     else              p2def = Math.max(0, p2def + val);
     const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
+
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
+      JSON.stringify(p1Counts), JSON.stringify(p2Counts),
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, channel.id
     );
     return channel.send(
-      `🧱 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
+      `🧱 <@${attackerId}> uses **${chipKey.toUpperCase()}** (${usedNow}/${MAX_PER_CHIP})${specialJustUsed ? ' _(special used)_' : ''} ` +
       `and raises Defense by **${val}** until their next turn. ➡️ <@${nextTurn}>`
     );
   }
@@ -359,14 +385,16 @@ async function botTakeTurn(channel) {
     }
     const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
     if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
+
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
+      JSON.stringify(p1Counts), JSON.stringify(p2Counts),
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, channel.id
     );
     return channel.send(
-      `💚 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
+      `💚 <@${attackerId}> uses **${chipKey.toUpperCase()}** (${usedNow}/${MAX_PER_CHIP})${specialJustUsed ? ' _(special used)_' : ''} ` +
       `and recovers **${healed}** HP.  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
     );
   }
@@ -382,10 +410,11 @@ async function botTakeTurn(channel) {
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
+      JSON.stringify(p1Counts), JSON.stringify(p2Counts),
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, channel.id
     );
-    return channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
+    return channel.send(`💨 <@${defenderId}> dodged **${chipKey}** (${usedNow}/${MAX_PER_CHIP})!  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
   const base = Number.isFinite(chip.dmg) ? chip.dmg : 0;
@@ -403,8 +432,8 @@ async function botTakeTurn(channel) {
   if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
 
   let line =
-    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
-    `for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.`;
+    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** (${usedNow}/${MAX_PER_CHIP})${isCrit ? ' _(CRIT!)_' : ''} ` +
+    `for **${dmg}**.`;
   if (absorbed > 0) line += ` 🛡️ Defense absorbed **${absorbed}**.`;
   line += `  ${hpLine(f, p1hp, p2hp)}`;
 
@@ -413,7 +442,6 @@ async function botTakeTurn(channel) {
   if (p1hp === 0 || p2hp === 0) {
     // Scrimmage end: NO W/L or points awarded
     const winnerId = p1hp === 0 ? f.p2_id : f.p1_id;
-    const loserId  = p1hp === 0 ? f.p1_id : f.p2_id;
     endFight.run(channel.id);
     const scrimNote = ' _(scrimmage — no W/L or points)_';
     return channel.send(`🏆 **<@${winnerId}> wins!**${scrimNote}`);
@@ -422,6 +450,7 @@ async function botTakeTurn(channel) {
   updFight.run(
     p1hp, p2hp,
     p1def, p2def,
+    JSON.stringify(p1Counts), JSON.stringify(p2Counts),
     JSON.stringify(p1Spec), JSON.stringify(p2Spec),
     nextTurn, last1, last2, channel.id
   );
@@ -548,6 +577,7 @@ client.on('interactionCreate', async (ix) => {
         p1.max_hp,
         p2.max_hp,
         0, 0,
+        '{}', '{}',
         '[]', '[]',
         Date.now()
       );
@@ -566,7 +596,7 @@ client.on('interactionCreate', async (ix) => {
     }
 
     // Normal PvP flow (with accept buttons)
-    const requester = ensureNavi(ix.user.id);
+    ensureNavi(ix.user.id);
     ensureNavi(target.id);
 
     const row = new ActionRowBuilder().addComponents(
@@ -607,6 +637,7 @@ client.on('interactionCreate', async (ix) => {
         p1.max_hp,
         p2.max_hp,
         0, 0,
+        '{}', '{}',
         '[]', '[]',
         Date.now()
       );
@@ -853,6 +884,7 @@ client.on('messageCreate', async (msg) => {
   let p1hp = f.p1_hp, p2hp = f.p2_hp;
   let p1def = f.p1_def ?? 0, p2def = f.p2_def ?? 0;
   let p1Spec = parseList(f.p1_special_used), p2Spec = parseList(f.p2_special_used);
+  let p1Counts = parseMap(f.p1_counts_json), p2Counts = parseMap(f.p2_counts_json);
   let last1 = f.last_hit_p1, last2 = f.last_hit_p2;
   const attackerId = actorId;
   const defenderId = attackerIsP1 ? f.p2_id : f.p1_id;
@@ -875,6 +907,15 @@ client.on('messageCreate', async (msg) => {
     specialJustUsed = true;
   }
 
+  // --- PER-CHIP LIMIT (4/duel)
+  const myCounts = attackerIsP1 ? p1Counts : p2Counts;
+  const alreadyUsed = myCounts[chipKey] || 0;
+  if (alreadyUsed >= MAX_PER_CHIP) {
+    return msg.channel.send(`⛔ **${chipKey}** is exhausted (**${MAX_PER_CHIP}/${MAX_PER_CHIP}**) this duel.`);
+  }
+  const usedNow = alreadyUsed + 1;
+  myCounts[chipKey] = usedNow;
+
   // Barrier
   if (chip.kind === 'barrier') {
     const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
@@ -890,11 +931,12 @@ client.on('messageCreate', async (msg) => {
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
+      JSON.stringify(p1Counts), JSON.stringify(p2Counts),
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, msg.channel.id
     );
     await msg.channel.send(
-      `🛡️ <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''}! ` +
+      `🛡️ <@${attackerId}> uses **${chipKey.toUpperCase()}** (${usedNow}/${MAX_PER_CHIP})${specialJustUsed ? ' _(special used)_' : ''}! ` +
       `Restores the last damage.  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
     );
     return maybeBotTurn(msg.channel, nextTurn);
@@ -910,11 +952,12 @@ client.on('messageCreate', async (msg) => {
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
+      JSON.stringify(p1Counts), JSON.stringify(p2Counts),
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, msg.channel.id
     );
     await msg.channel.send(
-      `🧱 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
+      `🧱 <@${attackerId}> uses **${chipKey.toUpperCase()}** (${usedNow}/${MAX_PER_CHIP})${specialJustUsed ? ' _(special used)_' : ''} ` +
       `and raises Defense by **${val}** until their next turn. ➡️ <@${nextTurn}>`
     );
     return maybeBotTurn(msg.channel, nextTurn);
@@ -943,12 +986,13 @@ client.on('messageCreate', async (msg) => {
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
+      JSON.stringify(p1Counts), JSON.stringify(p2Counts),
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, msg.channel.id
     );
 
     await msg.channel.send(
-      `💚 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
+      `💚 <@${attackerId}> uses **${chipKey.toUpperCase()}** (${usedNow}/${MAX_PER_CHIP})${specialJustUsed ? ' _(special used)_' : ''} ` +
       `and recovers **${healed}** HP.  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
     );
     return maybeBotTurn(msg.channel, nextTurn);
@@ -965,10 +1009,11 @@ client.on('messageCreate', async (msg) => {
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
+      JSON.stringify(p1Counts), JSON.stringify(p2Counts),
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, msg.channel.id
     );
-    await msg.channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
+    await msg.channel.send(`💨 <@${defenderId}> dodged **${chipKey}** (${usedNow}/${MAX_PER_CHIP})!  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
     return maybeBotTurn(msg.channel, nextTurn);
   }
 
@@ -987,8 +1032,8 @@ client.on('messageCreate', async (msg) => {
   if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
 
   let line =
-    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
-    `for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.`;
+    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** (${usedNow}/${MAX_PER_CHIP})${isCrit ? ' _(CRIT!)_' : ''} ` +
+    `for **${dmg}**.`;
   if (absorbed > 0) line += ` 🛡️ Defense absorbed **${absorbed}**.`;
   line += `  ${hpLine(f, p1hp, p2hp)}`;
 
@@ -1014,6 +1059,7 @@ client.on('messageCreate', async (msg) => {
   updFight.run(
     p1hp, p2hp,
     p1def, p2def,
+    JSON.stringify(p1Counts), JSON.stringify(p2Counts),
     JSON.stringify(p1Spec), JSON.stringify(p2Spec),
     nextTurn, last1, last2, msg.channel.id
   );
