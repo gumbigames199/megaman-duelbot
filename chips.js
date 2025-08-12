@@ -6,11 +6,11 @@ export const CHIPS = {
   WideSword: { kind: 'attack', dmg: 80 },
   ElecSword: { kind: 'attack', dmg: 90 },
   LongSword: { kind: 'attack', dmg: 100 },
-  ElecMan1: { kind: 'attack', dmg: 120 },
-  TorchMan1: { kind: 'attack', dmg: 150 },
+  ElecMan1: { kind: 'attack', dmg: 120, special: true },
+  TorchMan1: { kind: 'attack', dmg: 150, special: true },
   Barrier: { kind: 'barrier' },
   RockCube: {kind: 'defense', def: 40 },
-  Roll1: {kind: 'recovery', heal:120 }
+  Roll1: {kind: 'recovery', heal:120, special: true }
 };
 
 export const UPGRADES = {

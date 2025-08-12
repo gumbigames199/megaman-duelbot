@@ -134,17 +134,21 @@ CREATE TABLE IF NOT EXISTS duel_state (
   p2_hp INTEGER NOT NULL,
   p1_def INTEGER NOT NULL DEFAULT 0,
   p2_def INTEGER NOT NULL DEFAULT 0,
+  p1_special_used TEXT NOT NULL DEFAULT '[]',
+  p2_special_used TEXT NOT NULL DEFAULT '[]',
   last_hit_p1 INTEGER NOT NULL DEFAULT 0,
   last_hit_p2 INTEGER NOT NULL DEFAULT 0,
   started_at INTEGER NOT NULL
 );
 `);
 // Safe migrations for older DBs
-try { db.exec(`ALTER TABLE navis ADD COLUMN wins         INTEGER NOT NULL DEFAULT 0;`); } catch {}
-try { db.exec(`ALTER TABLE navis ADD COLUMN losses       INTEGER NOT NULL DEFAULT 0;`); } catch {}
-try { db.exec(`ALTER TABLE navis ADD COLUMN upgrade_pts  INTEGER NOT NULL DEFAULT 0;`); } catch {}
-try { db.exec(`ALTER TABLE duel_state ADD COLUMN p1_def   INTEGER NOT NULL DEFAULT 0;`); } catch {}
-try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_def   INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE navis ADD COLUMN wins            INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE navis ADD COLUMN losses          INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE navis ADD COLUMN upgrade_pts     INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE duel_state ADD COLUMN p1_def      INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_def      INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE duel_state ADD COLUMN p1_special_used TEXT NOT NULL DEFAULT '[]';`); } catch {}
+try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_special_used TEXT NOT NULL DEFAULT '[]';`); } catch {}
 
 const getNavi = db.prepare(`SELECT * FROM navis WHERE user_id=?`);
 const upsertNavi = db.prepare(`
@@ -178,24 +182,28 @@ function awardResult(winnerId, loserId) {
 
 const getFight   = db.prepare(`SELECT * FROM duel_state WHERE channel_id=?`);
 const startFight = db.prepare(`
-  INSERT INTO duel_state (channel_id,p1_id,p2_id,turn,p1_hp,p2_hp,p1_def,p2_def,started_at)
-  VALUES (?,?,?,?,?,?,?,?,?)
+  INSERT INTO duel_state (channel_id,p1_id,p2_id,turn,p1_hp,p2_hp,p1_def,p2_def,p1_special_used,p2_special_used,started_at)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?)
 `);
 const updFight   = db.prepare(`
   UPDATE duel_state
      SET p1_hp=?, p2_hp=?,
          p1_def=?, p2_def=?,
+         p1_special_used=?, p2_special_used=?,
          turn=?, last_hit_p1=?, last_hit_p2=?
    WHERE channel_id=?
 `);
 const endFight   = db.prepare(`DELETE FROM duel_state WHERE channel_id=?`);
 
 // Helpers
-function hpLine(fight, p1hp, p2hp) {
-  return `HP — <@${fight.p1_id}>: ${p1hp} | <@${fight.p2_id}>: ${p2hp}`;
+function hpLine(f, p1hp, p2hp) {
+  return `HP — <@${f.p1_id}>: ${p1hp} | <@${f.p2_id}>: ${p2hp}`;
 }
-
 const normalize = (s) => (s || '').toLowerCase().replace(/[\s_-]/g, '');
+const parseList = (s) => {
+  try { const v = JSON.parse(s ?? '[]'); return Array.isArray(v) ? v : []; }
+  catch { return []; }
+};
 
 // --- Micro-debounce to avoid double-processing near-duplicate action lines ---
 const recentActions = new Map(); // key => timestamp
@@ -343,6 +351,8 @@ client.on('interactionCreate', async (ix) => {
         p2.max_hp,
         0,                   // p1_def
         0,                   // p2_def
+        '[]',                // p1_special_used
+        '[]',                // p2_special_used
         Date.now()
       );
 
@@ -547,6 +557,7 @@ client.on('messageCreate', async (msg) => {
   const attackerIsP1 = (actorId === fight.p1_id);
   let p1hp = fight.p1_hp, p2hp = fight.p2_hp;
   let p1def = fight.p1_def ?? 0, p2def = fight.p2_def ?? 0;
+  let p1Spec = parseList(fight.p1_special_used), p2Spec = parseList(fight.p2_special_used);
   let last1 = fight.last_hit_p1, last2 = fight.last_hit_p2;
   const attackerId = actorId;
   const defenderId = attackerIsP1 ? fight.p2_id : fight.p1_id;
@@ -558,6 +569,15 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
+  // --- SPECIAL LIMITER: once per duel (per player) for chips marked special ---
+  if (chip.special) {
+    const usedArr = attackerIsP1 ? p1Spec : p2Spec;
+    if (usedArr.includes(chipKey)) {
+      return msg.channel.send(`⛔ <@${attackerId}> you’ve already used **${chipKey}** this duel.`);
+    }
+    usedArr.push(chipKey);
+  }
+
   // Barrier: undo opponent’s last hit (and expire next player's defense)
   if (chip.kind === 'barrier') {
     if (attackerIsP1) {
@@ -567,7 +587,12 @@ client.on('messageCreate', async (msg) => {
     }
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
     if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense at start of next player's turn
-    updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
+    updFight.run(
+      p1hp, p2hp,
+      p1def, p2def,
+      JSON.stringify(p1Spec), JSON.stringify(p2Spec),
+      nextTurn, last1, last2, msg.channel.id
+    );
     return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores the last damage.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
@@ -578,7 +603,12 @@ client.on('messageCreate', async (msg) => {
     else              p2def = Math.max(0, p2def + val);
 
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-    updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
+    updFight.run(
+      p1hp, p2hp,
+      p1def, p2def,
+      JSON.stringify(p1Spec), JSON.stringify(p2Spec),
+      nextTurn, last1, last2, msg.channel.id
+    );
     return msg.channel.send(`🧱 <@${attackerId}> raises Defense by **${val}** until their next turn. ➡️ <@${nextTurn}>`);
   }
 
@@ -600,8 +630,13 @@ client.on('messageCreate', async (msg) => {
     }
 
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense at the start of next player's turn
-    updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
+    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense
+    updFight.run(
+      p1hp, p2hp,
+      p1def, p2def,
+      JSON.stringify(p1Spec), JSON.stringify(p2Spec),
+      nextTurn, last1, last2, msg.channel.id
+    );
 
     return msg.channel.send(`💚 <@${attackerId}> recovers **${healed}** HP.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
@@ -614,7 +649,12 @@ client.on('messageCreate', async (msg) => {
   if (dodged) {
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
     if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense for next player's turn
-    updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
+    updFight.run(
+      p1hp, p2hp,
+      p1def, p2def,
+      JSON.stringify(p1Spec), JSON.stringify(p2Spec),
+      nextTurn, last1, last2, msg.channel.id
+    );
     return msg.channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
 
@@ -630,7 +670,7 @@ client.on('messageCreate', async (msg) => {
   else { p1hp = Math.max(0, p1hp - dmg); last1 = dmg; }
 
   const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-  if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense at start of next player's turn
+  if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense
 
   let line = `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.`;
   if (absorbed > 0) line += ` 🛡️ Defense absorbed **${absorbed}**.`;
@@ -647,7 +687,12 @@ client.on('messageCreate', async (msg) => {
     return msg.channel.send(`🏆 **<@${winnerId}> wins!** (W-L: ${wRow?.wins ?? '—'}-${wRow?.losses ?? '—'})`);
   }
 
-  updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
+  updFight.run(
+    p1hp, p2hp,
+    p1def, p2def,
+    JSON.stringify(p1Spec), JSON.stringify(p2Spec),
+    nextTurn, last1, last2, msg.channel.id
+  );
   await msg.channel.send(`➡️ <@${nextTurn}>, your turn.`);
 });
 
