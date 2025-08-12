@@ -132,8 +132,8 @@ CREATE TABLE IF NOT EXISTS duel_state (
   turn TEXT NOT NULL,
   p1_hp INTEGER NOT NULL,
   p2_hp INTEGER NOT NULL,
-  p1_def INTEGER NOT NULL DEFAULT 0,  -- NEW
-  p2_def INTEGER NOT NULL DEFAULT 0,  -- NEW
+  p1_def INTEGER NOT NULL DEFAULT 0,
+  p2_def INTEGER NOT NULL DEFAULT 0,
   last_hit_p1 INTEGER NOT NULL DEFAULT 0,
   last_hit_p2 INTEGER NOT NULL DEFAULT 0,
   started_at INTEGER NOT NULL
@@ -546,7 +546,7 @@ client.on('messageCreate', async (msg) => {
 
   const attackerIsP1 = (actorId === fight.p1_id);
   let p1hp = fight.p1_hp, p2hp = fight.p2_hp;
-  let p1def = fight.p1_def ?? 0, p2def = fight.p2_def ?? 0; // NEW
+  let p1def = fight.p1_def ?? 0, p2def = fight.p2_def ?? 0;
   let last1 = fight.last_hit_p1, last2 = fight.last_hit_p2;
   const attackerId = actorId;
   const defenderId = attackerIsP1 ? fight.p2_id : fight.p1_id;
@@ -558,7 +558,7 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  // Barrier: undo opponent’s last hit
+  // Barrier: undo opponent’s last hit (and expire next player's defense)
   if (chip.kind === 'barrier') {
     if (attackerIsP1) {
       if (last1 > 0) { p1hp = Math.min(p1hp + last1, ensureNavi(fight.p1_id).max_hp); last1 = 0; }
@@ -566,7 +566,7 @@ client.on('messageCreate', async (msg) => {
       if (last2 > 0) { p2hp = Math.min(p2hp + last2, ensureNavi(fight.p2_id).max_hp); last2 = 0; }
     }
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-    // keep defenses as-is
+    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense at start of next player's turn
     updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
     return msg.channel.send(`🛡️ <@${attackerId}> **Barrier!** Restores the last damage.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
@@ -582,6 +582,30 @@ client.on('messageCreate', async (msg) => {
     return msg.channel.send(`🧱 <@${attackerId}> raises Defense by **${val}** until their next turn. ➡️ <@${nextTurn}>`);
   }
 
+  // Recovery: heal the user, up to their max HP; then pass turn and expire next player's defense
+  if (chip.kind === 'recovery') {
+    const healVal = Number.isFinite(chip.heal) ? chip.heal : (Number.isFinite(chip.rec) ? chip.rec : 0);
+    const stats = ensureNavi(attackerId);
+    const maxhp = stats.max_hp;
+
+    let healed = 0;
+    if (attackerIsP1) {
+      const before = p1hp;
+      p1hp = Math.min(maxhp, p1hp + healVal);
+      healed = p1hp - before;
+    } else {
+      const before = p2hp;
+      p2hp = Math.min(maxhp, p2hp + healVal);
+      healed = p2hp - before;
+    }
+
+    const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
+    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense at the start of next player's turn
+    updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
+
+    return msg.channel.send(`💚 <@${attackerId}> recovers **${healed}** HP.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
+  }
+
   // Attack: dodge + crit + defense absorption
   const defStats = ensureNavi(defenderId);
   const attStats = ensureNavi(attackerId);
@@ -589,9 +613,7 @@ client.on('messageCreate', async (msg) => {
   const dodged = (Math.random() * 100) < defStats.dodge;
   if (dodged) {
     const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-    // Defense expires for whoever is ABOUT to take their turn
-    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0;
-
+    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense for next player's turn
     updFight.run(p1hp, p2hp, p1def, p2def, nextTurn, last1, last2, msg.channel.id);
     return msg.channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
   }
@@ -608,9 +630,7 @@ client.on('messageCreate', async (msg) => {
   else { p1hp = Math.max(0, p1hp - dmg); last1 = dmg; }
 
   const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-  // When the turn passes to a player, their defense expires
-  if (nextTurn === fight.p1_id) p1def = 0;
-  else                          p2def = 0;
+  if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense at start of next player's turn
 
   let line = `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}** for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.`;
   if (absorbed > 0) line += ` 🛡️ Defense absorbed **${absorbed}**.`;

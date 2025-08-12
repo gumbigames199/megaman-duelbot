@@ -9,7 +9,8 @@ export const CHIPS = {
   ElecMan1: { kind: 'attack', dmg: 120 },
   TorchMan1: { kind: 'attack', dmg: 150 },
   Barrier: { kind: 'barrier' },
-  RockCube: {kind: 'defense', def: 40 }
+  RockCube: {kind: 'defense', def: 40 },
+  Roll1: {kind: 'recovery', heal:120 }
 };
 
 export const UPGRADES = {
