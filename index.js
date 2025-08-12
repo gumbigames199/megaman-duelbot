@@ -43,6 +43,9 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message]
 });
 
+// Small helper
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
 // ---------- Auto-register slash commands (guild-scoped) ----------
 async function registerCommands() {
   const TOKEN    = process.env.DISCORD_TOKEN;
@@ -84,12 +87,10 @@ async function registerCommands() {
       .setName('forfeit')
       .setDescription('Forfeit the current duel'),
 
-    // NEW: read-only duel status
     new SlashCommandBuilder()
       .setName('duel_state')
       .setDescription('Show the current duel state (HP, temp Defense, turn, specials used)'),
 
-    // NEW: leaderboard
     new SlashCommandBuilder()
       .setName('navi_leaderboard')
       .setDescription('Show top players by record')
@@ -217,6 +218,7 @@ const parseList = (s) => {
   try { const v = JSON.parse(s ?? '[]'); return Array.isArray(v) ? v : []; }
   catch { return []; }
 };
+const isScrimmage = (f) => !!f && (f.p1_id === client.user?.id || f.p2_id === client.user?.id);
 
 // --- Micro-debounce to avoid double-processing near-duplicate action lines ---
 const recentActions = new Map(); // key => timestamp
@@ -227,6 +229,210 @@ function shouldDebounce(channelId, actorId, chipKey, ms = 2000) {
   if (now - last < ms) return true;
   recentActions.set(key, now);
   return false;
+}
+
+// ---------- Bot (ToadMan) turn logic ----------
+function pickBotChip(f) {
+  // Build eligible list respecting specials-once rule and state (heals if hurt, etc.)
+  const botIsP1 = f.turn === f.p1_id; // on bot turn, f.turn == bot id
+  const botId = f.turn;
+  const oppId = botIsP1 ? f.p2_id : f.p1_id;
+
+  const botRow   = ensureNavi(botId);
+  const oppRow   = ensureNavi(oppId);
+  const botHP    = botIsP1 ? f.p1_hp : f.p2_hp;
+  const botMaxHP = botRow.max_hp;
+  const lastBotHit = botIsP1 ? f.last_hit_p1 : f.last_hit_p2;
+  const botSpecUsed = parseList(botIsP1 ? f.p1_special_used : f.p2_special_used);
+
+  const keys = Object.keys(CHIPS).filter(k => {
+    const c = CHIPS[k];
+    if (!c) return false;
+    if (c.special && botSpecUsed.includes(k)) return false;
+    if (c.kind === 'recovery' && botHP >= botMaxHP) return false;
+    if (c.kind === 'barrier'  && (lastBotHit || 0) <= 0) return false;
+    return true;
+  });
+  if (keys.length === 0) return null;
+
+  // Simple weighting: prefer heal if <40% hp, prefer defense if no defense up, otherwise attack
+  const botDef = botIsP1 ? (f.p1_def ?? 0) : (f.p2_def ?? 0);
+  const lowHP = botHP / botMaxHP <= 0.4;
+
+  const heals   = keys.filter(k => CHIPS[k].kind === 'recovery');
+  const defs    = keys.filter(k => CHIPS[k].kind === 'defense');
+  const attacks = keys.filter(k => CHIPS[k].kind === 'attack');
+  const barriers= keys.filter(k => CHIPS[k].kind === 'barrier');
+  const specials= keys.filter(k => CHIPS[k].special && !botSpecUsed.includes(k));
+
+  let pool = keys;
+  if (lowHP && heals.length) pool = heals;
+  else if (botDef <= 0 && defs.length) pool = defs;
+  else if (attacks.length) pool = attacks;
+  else if (barriers.length) pool = barriers;
+  else if (specials.length) pool = specials;
+
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+async function botTakeTurn(channel) {
+  // Re-fetch latest fight
+  const f = getFight.get(channel.id);
+  if (!f || f.turn !== client.user.id) return; // not our turn or no fight
+
+  const attackerIsP1 = (client.user.id === f.p1_id);
+  let p1hp = f.p1_hp, p2hp = f.p2_hp;
+  let p1def = f.p1_def ?? 0, p2def = f.p2_def ?? 0;
+  let p1Spec = parseList(f.p1_special_used), p2Spec = parseList(f.p2_special_used);
+  let last1 = f.last_hit_p1, last2 = f.last_hit_p2;
+  const attackerId = client.user.id;
+  const defenderId = attackerIsP1 ? f.p2_id : f.p1_id;
+
+  const chipKey = pickBotChip(f) || Object.keys(CHIPS)[0];
+  const chip = CHIPS[chipKey];
+  if (!chip) return;
+
+  let specialJustUsed = false;
+  if (chip.special) {
+    const usedArr = attackerIsP1 ? p1Spec : p2Spec;
+    if (usedArr.includes(chipKey)) {
+      // pick a different one next tick
+      await sleep(300);
+      return botTakeTurn(channel);
+    }
+    usedArr.push(chipKey);
+    specialJustUsed = true;
+  }
+
+  // Kinds
+  if (chip.kind === 'barrier') {
+    const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
+    if (attackerIsP1) {
+      if (last1 > 0) { p1hp = Math.min(p1hp + last1, ensureNavi(f.p1_id).max_hp); last1 = 0; }
+    } else {
+      if (last2 > 0) { p2hp = Math.min(p2hp + last2, ensureNavi(f.p2_id).max_hp); last2 = 0; }
+    }
+    if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
+
+    updFight.run(
+      p1hp, p2hp,
+      p1def, p2def,
+      JSON.stringify(p1Spec), JSON.stringify(p2Spec),
+      nextTurn, last1, last2, channel.id
+    );
+    return channel.send(
+      `🛡️ <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''}! ` +
+      `Restores the last damage.  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
+    );
+  }
+
+  if (chip.kind === 'defense') {
+    const val = Number.isFinite(chip.def) ? chip.def : 0;
+    if (attackerIsP1) p1def = Math.max(0, p1def + val);
+    else              p2def = Math.max(0, p2def + val);
+    const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
+    updFight.run(
+      p1hp, p2hp,
+      p1def, p2def,
+      JSON.stringify(p1Spec), JSON.stringify(p2Spec),
+      nextTurn, last1, last2, channel.id
+    );
+    return channel.send(
+      `🧱 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
+      `and raises Defense by **${val}** until their next turn. ➡️ <@${nextTurn}>`
+    );
+  }
+
+  if (chip.kind === 'recovery') {
+    const healVal = Number.isFinite(chip.heal) ? chip.heal : (Number.isFinite(chip.rec) ? chip.rec : 0);
+    const stats = ensureNavi(attackerId);
+    const maxhp = stats.max_hp;
+    let healed = 0;
+    if (attackerIsP1) {
+      const before = p1hp;
+      p1hp = Math.min(maxhp, p1hp + healVal);
+      healed = p1hp - before;
+    } else {
+      const before = p2hp;
+      p2hp = Math.min(maxhp, p2hp + healVal);
+      healed = p2hp - before;
+    }
+    const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
+    if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
+    updFight.run(
+      p1hp, p2hp,
+      p1def, p2def,
+      JSON.stringify(p1Spec), JSON.stringify(p2Spec),
+      nextTurn, last1, last2, channel.id
+    );
+    return channel.send(
+      `💚 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
+      `and recovers **${healed}** HP.  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
+    );
+  }
+
+  // Attack: dodge + crit + defense absorption
+  const defStats = ensureNavi(defenderId);
+  const attStats = ensureNavi(attackerId);
+
+  const dodged = (Math.random() * 100) < defStats.dodge;
+  if (dodged) {
+    const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
+    if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
+    updFight.run(
+      p1hp, p2hp,
+      p1def, p2def,
+      JSON.stringify(p1Spec), JSON.stringify(p2Spec),
+      nextTurn, last1, last2, channel.id
+    );
+    return channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
+  }
+
+  const base = Number.isFinite(chip.dmg) ? chip.dmg : 0;
+  const isCrit = (Math.random() * 100) < attStats.crit;
+  const preDef = isCrit ? Math.floor((base * 3) / 2) : base;
+
+  const defenderDef = attackerIsP1 ? p2def : p1def;
+  const dmg = Math.max(0, preDef - defenderDef);
+  const absorbed = preDef - dmg;
+
+  if (attackerIsP1) { p2hp = Math.max(0, p2hp - dmg); last2 = dmg; }
+  else { p1hp = Math.max(0, p1hp - dmg); last1 = dmg; }
+
+  let nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
+  if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
+
+  let line =
+    `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
+    `for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.`;
+  if (absorbed > 0) line += ` 🛡️ Defense absorbed **${absorbed}**.`;
+  line += `  ${hpLine(f, p1hp, p2hp)}`;
+
+  await channel.send(line);
+
+  if (p1hp === 0 || p2hp === 0) {
+    // Scrimmage end: NO W/L or points awarded
+    const winnerId = p1hp === 0 ? f.p2_id : f.p1_id;
+    const loserId  = p1hp === 0 ? f.p1_id : f.p2_id;
+    endFight.run(channel.id);
+    const scrimNote = ' _(scrimmage — no W/L or points)_';
+    return channel.send(`🏆 **<@${winnerId}> wins!**${scrimNote}`);
+  }
+
+  updFight.run(
+    p1hp, p2hp,
+    p1def, p2def,
+    JSON.stringify(p1Spec), JSON.stringify(p2Spec),
+    nextTurn, last1, last2, channel.id
+  );
+  await channel.send(`➡️ <@${nextTurn}>, your turn.`);
+}
+
+// Helper to schedule bot move if next turn is ToadMan
+async function maybeBotTurn(channel, nextTurnId) {
+  if (nextTurnId !== client.user.id) return;
+  await sleep(1200);
+  return botTakeTurn(channel);
 }
 
 // ---------- Slash commands ----------
@@ -316,13 +522,51 @@ client.on('interactionCreate', async (ix) => {
 
   if (ix.commandName === 'duel') {
     const target = ix.options.getUser('opponent', true);
-    if (target.bot || target.id === ix.user.id)
-      return ix.reply({ content: 'Pick a valid opponent.', ephemeral: true });
+    if (target.bot && target.id !== client.user.id) {
+      return ix.reply({ content: 'Pick a valid opponent (no external bots).', ephemeral: true });
+    }
+    if (target.id === ix.user.id) {
+      return ix.reply({ content: 'You can’t duel yourself.', ephemeral: true });
+    }
 
     const existing = getFight.get(ix.channel.id);
     if (existing) return ix.reply({ content: 'A duel is already active in this channel.', ephemeral: true });
 
-    ensureNavi(ix.user.id);
+    // Scrimmage vs ToadMan (this bot)
+    if (target.id === client.user.id) {
+      const p1 = ensureNavi(ix.user.id);
+      const p2 = ensureNavi(client.user.id);
+
+      // random first
+      const firstId = Math.random() < 0.5 ? ix.user.id : client.user.id;
+
+      startFight.run(
+        ix.channel.id,
+        ix.user.id,
+        client.user.id,
+        firstId,
+        p1.max_hp,
+        p2.max_hp,
+        0, 0,
+        '[]', '[]',
+        Date.now()
+      );
+
+      const firstMention = `<@${firstId}>`;
+      await ix.reply(
+        `🐸 **Scrimmage started!** ${ix.user} vs <@${client.user.id}>\n` +
+        `🎲 Random roll: ${firstMention} goes first. *(Scrimmage — no W/L or points)*`
+      );
+
+      if (firstId === client.user.id) {
+        await sleep(1200);
+        return botTakeTurn(ix.channel);
+      }
+      return;
+    }
+
+    // Normal PvP flow (with accept buttons)
+    const requester = ensureNavi(ix.user.id);
     ensureNavi(target.id);
 
     const row = new ActionRowBuilder().addComponents(
@@ -362,10 +606,8 @@ client.on('interactionCreate', async (ix) => {
         firstId,             // turn = randomized
         p1.max_hp,
         p2.max_hp,
-        0,                   // p1_def
-        0,                   // p2_def
-        '[]',                // p1_special_used
-        '[]',                // p2_special_used
+        0, 0,
+        '[]', '[]',
         Date.now()
       );
 
@@ -380,16 +622,19 @@ client.on('interactionCreate', async (ix) => {
   }
 
   if (ix.commandName === 'forfeit') {
-    const fight = getFight.get(ix.channel.id);
-    if (!fight) return ix.reply({ content: 'No active duel in this channel.', ephemeral: true });
-    const winnerId = (ix.user.id === fight.p1_id) ? fight.p2_id : fight.p1_id;
+    const f = getFight.get(ix.channel.id);
+    if (!f) return ix.reply({ content: 'No active duel in this channel.', ephemeral: true });
+
+    const scrim = isScrimmage(f);
+    const winnerId = (ix.user.id === f.p1_id) ? f.p2_id : f.p1_id;
     const loserId  = ix.user.id;
-    awardResult(winnerId, loserId);
+    if (!scrim) awardResult(winnerId, loserId); // no penalty in scrimmage
     endFight.run(ix.channel.id);
-    return ix.reply(`🏳️ <@${loserId}> forfeits. 🏆 <@${winnerId}> wins!`);
+    const note = scrim ? ' (scrimmage — no penalty)' : '';
+    return ix.reply(`🏳️ <@${loserId}> forfeits.${note} 🏆 <@${winnerId}> wins!`);
   }
 
-  // NEW: read-only duel state
+  // read-only duel state
   if (ix.commandName === 'duel_state') {
     const f = getFight.get(ix.channel.id);
     if (!f) return ix.reply({ content: 'No active duel in this channel.', ephemeral: true });
@@ -397,7 +642,7 @@ client.on('interactionCreate', async (ix) => {
     const p1Spec = parseList(f.p1_special_used);
     const p2Spec = parseList(f.p2_special_used);
     const lines = [
-      `🧭 **Duel State**`,
+      `🧭 **Duel State**${isScrimmage(f) ? ' *(Scrimmage)*' : ''}`,
       `Turn: <@${f.turn}>`,
       `P1: <@${f.p1_id}> — HP **${f.p1_hp}** | DEF **${f.p1_def ?? 0}** | Specials: ${p1Spec.length ? p1Spec.join(', ') : '—'}`,
       `P2: <@${f.p2_id}> — HP **${f.p2_hp}** | DEF **${f.p2_def ?? 0}** | Specials: ${p2Spec.length ? p2Spec.join(', ') : '—'}`
@@ -405,13 +650,13 @@ client.on('interactionCreate', async (ix) => {
     return ix.reply(lines.join('\n'));
   }
 
-  // NEW: leaderboard
+  // leaderboard
   if (ix.commandName === 'navi_leaderboard') {
     let limit = ix.options.getInteger('limit') ?? 10;
     limit = Math.min(25, Math.max(5, limit));
 
     const rows = db.prepare(`
-      SELECT user_id, wins, losses, max_hp, dodge, crit, upgrade_pts
+      SELECT user_id, wins, losses
       FROM navis
       ORDER BY wins DESC, losses ASC
       LIMIT ?
@@ -428,7 +673,7 @@ client.on('interactionCreate', async (ix) => {
     return ix.reply(`🏆 **Leaderboard (Top ${rows.length})**\n` + lines.join('\n'));
   }
 
-  // ----- Admin-only stat override -----
+  // Admin-only stat override
   if (ix.commandName === 'stat_override') {
     const hasAdminRole = ix.member?.roles?.cache?.has?.(ADMIN_ROLE_ID);
     const hasManageGuild =
@@ -562,14 +807,12 @@ client.on('messageCreate', async (msg) => {
   if (!chipKey) return; // not a chip embed
 
   // Resolve actor:
-  // 1) Try any mention hidden in embed text/description/fields (some bots include it)
   const embedJoined = embedBits.join(' ');
   let actorId =
     (embedJoined.match(/<@!?(\d+)>/)?.[1]) ||
     (msg.content?.match(/<@!?(\d+)>/)?.[1]) ||
     msg.interaction?.user?.id;
 
-  // 2) If not found, look back a few recent messages to find the preceding "used" line
   if (!actorId) {
     try {
       const recent = await msg.channel.messages.fetch({ limit: 10 });
@@ -593,8 +836,8 @@ client.on('messageCreate', async (msg) => {
   }
 
   // ---- Combat only if a duel is active in this channel ----
-  const fight = getFight.get(msg.channel.id);
-  if (!fight) return;
+  const f = getFight.get(msg.channel.id);
+  if (!f) return;
 
   // Debounce near-duplicate actions (channel + actor + chip within 2s)
   if (shouldDebounce(msg.channel.id, actorId, chipKey)) {
@@ -602,17 +845,17 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  if (actorId !== fight.turn) {
+  if (actorId !== f.turn) {
     return msg.channel.send(`⏳ Not your turn, <@${actorId}>.`);
   }
 
-  const attackerIsP1 = (actorId === fight.p1_id);
-  let p1hp = fight.p1_hp, p2hp = fight.p2_hp;
-  let p1def = fight.p1_def ?? 0, p2def = fight.p2_def ?? 0;
-  let p1Spec = parseList(fight.p1_special_used), p2Spec = parseList(fight.p2_special_used);
-  let last1 = fight.last_hit_p1, last2 = fight.last_hit_p2;
+  const attackerIsP1 = (actorId === f.p1_id);
+  let p1hp = f.p1_hp, p2hp = f.p2_hp;
+  let p1def = f.p1_def ?? 0, p2def = f.p2_def ?? 0;
+  let p1Spec = parseList(f.p1_special_used), p2Spec = parseList(f.p2_special_used);
+  let last1 = f.last_hit_p1, last2 = f.last_hit_p2;
   const attackerId = actorId;
-  const defenderId = attackerIsP1 ? fight.p2_id : fight.p1_id;
+  const defenderId = attackerIsP1 ? f.p2_id : f.p1_id;
 
   // Defensive: ensure chip exists
   const chip = CHIPS[chipKey];
@@ -621,7 +864,7 @@ client.on('messageCreate', async (msg) => {
     return;
   }
 
-  // --- SPECIAL LIMITER: once per duel (per player) for chips marked special ---
+  // --- SPECIAL LIMITER
   let specialJustUsed = false;
   if (chip.special) {
     const usedArr = attackerIsP1 ? p1Spec : p2Spec;
@@ -632,18 +875,17 @@ client.on('messageCreate', async (msg) => {
     specialJustUsed = true;
   }
 
-  // Barrier: undo opponent’s last hit (and expire next player's defense)
+  // Barrier
   if (chip.kind === 'barrier') {
-    const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
+    const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
 
     if (attackerIsP1) {
-      if (last1 > 0) { p1hp = Math.min(p1hp + last1, ensureNavi(fight.p1_id).max_hp); last1 = 0; }
+      if (last1 > 0) { p1hp = Math.min(p1hp + last1, ensureNavi(f.p1_id).max_hp); last1 = 0; }
     } else {
-      if (last2 > 0) { p2hp = Math.min(p2hp + last2, ensureNavi(fight.p2_id).max_hp); last2 = 0; }
+      if (last2 > 0) { p2hp = Math.min(p2hp + last2, ensureNavi(f.p2_id).max_hp); last2 = 0; }
     }
 
-    // expire defense when next player begins their turn
-    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0;
+    if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
 
     updFight.run(
       p1hp, p2hp,
@@ -651,32 +893,34 @@ client.on('messageCreate', async (msg) => {
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, msg.channel.id
     );
-    return msg.channel.send(
+    await msg.channel.send(
       `🛡️ <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''}! ` +
-      `Restores the last damage.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
+      `Restores the last damage.  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
     );
+    return maybeBotTurn(msg.channel, nextTurn);
   }
 
-  // Defense buff: increases your temporary Defense until your next turn
+  // Defense
   if (chip.kind === 'defense') {
-    const val = Number.isFinite(chip.def) ? chip.def : 0; // e.g., RockCube.def
+    const val = Number.isFinite(chip.def) ? chip.def : 0;
     if (attackerIsP1) p1def = Math.max(0, p1def + val);
     else              p2def = Math.max(0, p2def + val);
 
-    const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
+    const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, msg.channel.id
     );
-    return msg.channel.send(
+    await msg.channel.send(
       `🧱 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
       `and raises Defense by **${val}** until their next turn. ➡️ <@${nextTurn}>`
     );
+    return maybeBotTurn(msg.channel, nextTurn);
   }
 
-  // Recovery: heal the user, up to their max HP; then pass turn and expire next player's defense
+  // Recovery
   if (chip.kind === 'recovery') {
     const healVal = Number.isFinite(chip.heal) ? chip.heal : (Number.isFinite(chip.rec) ? chip.rec : 0);
     const stats = ensureNavi(attackerId);
@@ -693,8 +937,9 @@ client.on('messageCreate', async (msg) => {
       healed = p2hp - before;
     }
 
-    const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense
+    const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
+    if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
+
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
@@ -702,27 +947,29 @@ client.on('messageCreate', async (msg) => {
       nextTurn, last1, last2, msg.channel.id
     );
 
-    return msg.channel.send(
+    await msg.channel.send(
       `💚 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
-      `and recovers **${healed}** HP.  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
+      `and recovers **${healed}** HP.  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`
     );
+    return maybeBotTurn(msg.channel, nextTurn);
   }
 
-  // Attack: dodge + crit + defense absorption
+  // Attack
   const defStats = ensureNavi(defenderId);
   const attStats = ensureNavi(attackerId);
 
   const dodged = (Math.random() * 100) < defStats.dodge;
   if (dodged) {
-    const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-    if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense for next player's turn
+    const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
+    if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
     updFight.run(
       p1hp, p2hp,
       p1def, p2def,
       JSON.stringify(p1Spec), JSON.stringify(p2Spec),
       nextTurn, last1, last2, msg.channel.id
     );
-    return msg.channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(fight, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
+    await msg.channel.send(`💨 <@${defenderId}> dodged the attack!  ${hpLine(f, p1hp, p2hp)}  ➡️ <@${nextTurn}>`);
+    return maybeBotTurn(msg.channel, nextTurn);
   }
 
   const base = Number.isFinite(chip.dmg) ? chip.dmg : 0;
@@ -736,24 +983,32 @@ client.on('messageCreate', async (msg) => {
   if (attackerIsP1) { p2hp = Math.max(0, p2hp - dmg); last2 = dmg; }
   else { p1hp = Math.max(0, p1hp - dmg); last1 = dmg; }
 
-  const nextTurn = attackerIsP1 ? fight.p2_id : fight.p1_id;
-  if (nextTurn === fight.p1_id) p1def = 0; else p2def = 0; // expire defense
+  const nextTurn = attackerIsP1 ? f.p2_id : f.p1_id;
+  if (nextTurn === f.p1_id) p1def = 0; else p2def = 0;
 
   let line =
     `💥 <@${attackerId}> uses **${chipKey.toUpperCase()}**${specialJustUsed ? ' _(special used)_' : ''} ` +
     `for **${dmg}**${isCrit ? ' _(CRIT!)_' : ''}.`;
   if (absorbed > 0) line += ` 🛡️ Defense absorbed **${absorbed}**.`;
-  line += `  ${hpLine(fight, p1hp, p2hp)}`;
+  line += `  ${hpLine(f, p1hp, p2hp)}`;
 
   await msg.channel.send(line);
 
   if (p1hp === 0 || p2hp === 0) {
-    const winnerId = p1hp === 0 ? fight.p2_id : fight.p1_id;
-    const loserId  = p1hp === 0 ? fight.p1_id : fight.p2_id;
-    awardResult(winnerId, loserId);
-    endFight.run(msg.channel.id);
-    const wRow = getNavi.get(winnerId);
-    return msg.channel.send(`🏆 **<@${winnerId}> wins!** (W-L: ${wRow?.wins ?? '—'}-${wRow?.losses ?? '—'})`);
+    const winnerId = p1hp === 0 ? f.p2_id : f.p1_id;
+    const loserId  = p1hp === 0 ? f.p1_id : f.p2_id;
+
+    // Award only if not scrimmage
+    const scrim = isScrimmage(f);
+    if (!scrim) {
+      awardResult(winnerId, loserId);
+      endFight.run(msg.channel.id);
+      const wRow = getNavi.get(winnerId);
+      return msg.channel.send(`🏆 **<@${winnerId}> wins!** (W-L: ${wRow?.wins ?? '—'}-${wRow?.losses ?? '—'})`);
+    } else {
+      endFight.run(msg.channel.id);
+      return msg.channel.send(`🏆 **<@${winnerId}> wins!** _(scrimmage — no W/L or points)_`);
+    }
   }
 
   updFight.run(
@@ -763,6 +1018,9 @@ client.on('messageCreate', async (msg) => {
     nextTurn, last1, last2, msg.channel.id
   );
   await msg.channel.send(`➡️ <@${nextTurn}>, your turn.`);
+
+  // If it's ToadMan's turn now, act
+  return maybeBotTurn(msg.channel, nextTurn);
 });
 
 // ---------- Boot ----------
