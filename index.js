@@ -225,7 +225,6 @@ try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_def      INTEGER NOT NULL DE
 try { db.exec(`ALTER TABLE duel_state ADD COLUMN p1_counts_json TEXT NOT NULL DEFAULT '{}';`); } catch {}
 try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_counts_json TEXT NOT NULL DEFAULT '{}';`); } catch {}
 try { db.exec(`ALTER TABLE duel_state ADD COLUMN p1_special_used TEXT NOT NULL DEFAULT '[]';`); } catch {}
-try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_special_used TEXT NOT NULL DEFAULT '[]';`); } catch {}
 
 // PVE migrations
 try { db.exec(`ALTER TABLE pve_state ADD COLUMN virus_zmin INTEGER NOT NULL DEFAULT 0;`); } catch {}
@@ -450,53 +449,164 @@ function weightedPick(rows) {
   return rows[rows.length - 1];
 }
 
-// ---------- Bot (ToadMan) turn logic for scrimmage ----------
-function pickBotChip(channelId, f) {
-  const botIsP1 = f.turn === f.p1_id; // on bot turn, f.turn == bot id
-  const botHP    = botIsP1 ? f.p1_hp : f.p2_hp;
-  const botDef   = botIsP1 ? (f.p1_def ?? 0) : (f.p2_def ?? 0);
-  const botCounts= parseMap(botIsP1 ? f.p1_counts_json : f.p2_counts_json);
-  const botSpecUsed = parseList(botIsP1 ? f.p1_special_used : f.p2_special_used);
-  const botRow   = ensureNavi(botIsP1 ? f.p1_id : f.p2_id);
-  const botMaxHP = botRow.max_hp;
+/* ============================
+   SMART AI MEMORY + SCORERS
+   ============================ */
+// --- AI memory (per channel + actorTag) ---
+const aiMem = new Map(); // key: `${channelId}:${actorTag}` -> { lastMove, repeat, nonAttackStreak }
+function getAIMem(channelId, actorTag) {
+  const key = `${channelId}:${actorTag}`;
+  let m = aiMem.get(key);
+  if (!m) { m = { lastMove: null, repeat: 0, nonAttackStreak: 0 }; aiMem.set(key, m); }
+  return { key, m };
+}
+function clearAIMemForChannel(channelId) {
+  for (const k of aiMem.keys()) if (k.startsWith(`${channelId}:`)) aiMem.delete(k);
+}
 
-  // Only chips allowed by counters & specials
-  let keys = Object.keys(CHIPS).filter(k => {
-    const c = CHIPS[k];
-    if (!c) return false;
-    if ((botCounts[k] || 0) >= MAX_PER_CHIP) return false;
-    if (c.special && botSpecUsed.includes(k)) return false;
-    if (c.kind === 'recovery' && botHP >= botMaxHP) return false;
-    if (c.kind === 'barrier') {
-      const lastBotHit = botIsP1 ? f.last_hit_p1 : f.last_hit_p2;
-      if ((lastBotHit || 0) <= 0) return false;
-    }
+// Generic scorer for CHIPS (ToadMan / PvP bot)
+// tier: 'wild' | 'boss'
+function pickAIMove({ channelId, f, actorId, counts, specialsUsed, tier }) {
+  const isP1   = (actorId === f.p1_id);
+  const myHP   = isP1 ? f.p1_hp : f.p2_hp;
+  const myDEF  = isP1 ? (f.p1_def ?? 0) : (f.p2_def ?? 0);
+  const myMax  = ensureNavi(actorId).max_hp;
+  const oppHP  = isP1 ? f.p2_hp : f.p1_hp;
+  const oppDEF = isP1 ? (f.p2_def ?? 0) : (f.p1_def ?? 0);
+  const lastHitMe = isP1 ? f.last_hit_p1 : f.last_hit_p2;
+
+  const { m } = getAIMem(channelId, actorId);
+
+  let moves = Object.keys(CHIPS).map(name => ({ name, ...CHIPS[name] }));
+  let eligible = moves.filter(x => {
+    if (!x) return false;
+    if ((counts[x.name] || 0) >= MAX_PER_CHIP) return false;
+    if (x.special && specialsUsed.includes(x.name)) return false;
+    if (x.kind === 'recovery' && myHP >= myMax) return false;
+    if (x.kind === 'barrier' && (lastHitMe || 0) <= 0) return false;
     return true;
   });
+  if (!eligible.length) eligible = moves.slice();
 
-  // Avoid same chip 3+ times in a row for ToadMan
-  const lastInfo = botLastUse.get(channelId) || { chip: null, streak: 0 };
-  if (lastInfo.chip && lastInfo.streak >= 2) {
-    const alt = keys.filter(k => k !== lastInfo.chip);
-    if (alt.length) keys = alt; // enforce only if alternatives exist
+  let best = null, bestScore = -1e9;
+  for (const mv of eligible) {
+    const kind = mv.kind;
+    const dmg  = Number.isFinite(mv.dmg)  ? mv.dmg  : 0;
+
+    let s = 0;
+
+    if (kind === 'attack')  s += 50 + dmg;
+    if (kind === 'defense') s += 20 + (tier === 'boss' ? 10 : 0);
+    if (kind === 'recovery') {
+      if (myHP <= myMax * 0.30) s += 55;
+      else if (myHP <= myMax * 0.50) s += 30;
+    }
+    if (kind === 'barrier') s += lastHitMe > 0 ? 35 : 5;
+
+    if (kind === 'attack' && oppHP <= Math.max(0, dmg - oppDEF)) s += 40 + (tier === 'boss' ? 20 : 0);
+    if (kind === 'attack') s += Math.max(0, 20 - oppDEF * 0.5);
+
+    if (kind === 'defense' && lastHitMe > 0) s += Math.min(40, lastHitMe * 0.5);
+    if (kind === 'recovery' && lastHitMe > 0) s += 10;
+
+    if (m.lastMove === mv.name) s -= (m.repeat >= 2 ? 999 : 15 + m.repeat * 10);
+    if (kind !== 'attack' && m.nonAttackStreak >= 2) s -= 60 + (tier === 'boss' ? 20 : 0);
+    if (kind === 'defense' && myDEF > 0) s -= 30;
+
+    if (mv.special && !specialsUsed.includes(mv.name)) {
+      s += 20 + (tier === 'boss' ? 25 : 10);
+      if (kind === 'attack' && oppHP <= Math.max(0, dmg - oppDEF)) s += 50;
+      if (kind === 'recovery' && myHP <= myMax * 0.35) s += 30;
+    }
+
+    s += Math.random() * 6;
+
+    if (s > bestScore) { bestScore = s; best = mv; }
   }
 
-  if (!keys.length) return null;
+  return { move: best };
+}
 
-  // Simple weighting
-  const lowHP = botHP / botMaxHP <= 0.4;
-  const heals   = keys.filter(k => CHIPS[k].kind === 'recovery');
-  const defs    = keys.filter(k => CHIPS[k].kind === 'defense');
-  const attacks = keys.filter(k => CHIPS[k].kind === 'attack');
-  const barriers= keys.filter(k => CHIPS[k].kind === 'barrier');
+// Scorer for BOSS viruses (uses virus move list)
+function pickBossMove(pve) {
+  const moves = parseMoves(pve.virus_moves_json);
+  if (!moves.length) return null;
 
-  let pool = keys;
-  if (lowHP && heals.length) pool = heals;
-  else if (botDef <= 0 && defs.length) pool = defs;
-  else if (attacks.length) pool = attacks;
-  else if (barriers.length) pool = barriers;
+  const usedSet = new Set(parseList(pve.v_special_used));
+  const vHP   = pve.v_hp;
+  const vDEF  = pve.v_def || 0;
+  const vMax  = pve.virus_max_hp;
+  const pHP   = pve.p_hp;
+  const pDEF  = pve.p_def || 0;
+  const lastV = pve.last_hit_v || 0;
 
-  return pool[Math.floor(Math.random() * pool.length)];
+  const { m } = getAIMem(pve.channel_id || 'chan', 'VIRUS');
+
+  // Filter eligibility
+  let eligible = moves.filter(mv => {
+    const kind = String(mv.kind || '').toLowerCase();
+    if (mv.special && usedSet.has(mv.name || mv.label || 'special')) return false;
+    if (kind === 'recovery' && vHP >= vMax) return false;
+    if (kind === 'barrier' && lastV <= 0) return false;
+    return true;
+  });
+  if (!eligible.length) eligible = moves.slice();
+
+  let best = null, bestScore = -1e9;
+  for (const mv of eligible) {
+    const name = mv.name || mv.label || 'Move';
+    const kind = String(mv.kind || '').toLowerCase();
+    const dmg  = Number.isFinite(mv.dmg) ? mv.dmg : 0;
+    const heal = Number.isFinite(mv.heal) ? mv.heal : (Number.isFinite(mv.rec) ? mv.rec : 0);
+
+    let s = 0;
+
+    if (kind === 'attack')  s += 50 + dmg;
+    if (kind === 'defense') s += 30;
+    if (kind === 'recovery') {
+      if (vHP <= vMax * 0.30) s += 60;
+      else if (vHP <= vMax * 0.50) s += 30;
+    }
+    if (kind === 'barrier') s += lastV > 0 ? 40 : 0;
+
+    // Finisher pressure (estimate through player's DEF)
+    if (kind === 'attack' && pHP <= Math.max(0, dmg - pDEF)) s += 60;
+    if (kind === 'attack') s += Math.max(0, 20 - pDEF * 0.5);
+
+    // React to damage taken
+    if (kind === 'defense' && lastV > 0) s += Math.min(45, lastV * 0.5);
+    if (kind === 'recovery' && lastV > 0) s += 10;
+
+    // Anti-spam / anti-turtle
+    if (m.lastMove === name) s -= (m.repeat >= 2 ? 999 : 20 + m.repeat * 12);
+    if (kind !== 'attack' && m.nonAttackStreak >= 2) s -= 75; // bosses avoid stalling
+    if (kind === 'defense' && vDEF > 0) s -= 30;
+
+    // Specials once — prioritize when impactful
+    if (mv.special && !usedSet.has(name)) {
+      s += 35;
+      if (kind === 'attack' && pHP <= Math.max(0, dmg - pDEF)) s += 50;
+      if (kind === 'recovery' && vHP <= vMax * 0.35) s += 30;
+    }
+
+    s += Math.random() * 6;
+    if (s > bestScore) { bestScore = s; best = mv; }
+  }
+
+  return best || null;
+}
+
+/* ============================
+   END SMART AI
+   ============================ */
+
+// ---------- Bot (ToadMan) turn logic for scrimmage ----------
+// REPLACED: uses smart scorer
+function pickBotChip(channelId, f) {
+  const myCounts     = parseMap(f.turn === f.p1_id ? f.p1_counts_json : f.p2_counts_json);
+  const specialsUsed = parseList(f.turn === f.p1_id ? f.p1_special_used : f.p2_special_used);
+  const { move }     = pickAIMove({ channelId, f, actorId: f.turn, counts: myCounts, specialsUsed, tier: 'boss' });
+  return move?.name || Object.keys(CHIPS)[0];
 }
 
 async function botTakeTurn(channel) {
@@ -516,6 +626,16 @@ async function botTakeTurn(channel) {
   const chipKey = pickBotChip(channel.id, f) || Object.keys(CHIPS)[0];
   const chip = CHIPS[chipKey];
   if (!chip) return;
+
+  // Update AI memory (variety & anti-turtle)
+  {
+    const { m } = getAIMem(channel.id, attackerId);
+    if (m.lastMove === chipKey) m.repeat = (m.repeat || 1) + 1;
+    else { m.lastMove = chipKey; m.repeat = 1; }
+    const k = CHIPS[chipKey]?.kind;
+    if (k === 'attack') m.nonAttackStreak = 0;
+    else m.nonAttackStreak = (m.nonAttackStreak || 0) + 1;
+  }
 
   // Record consecutive usage for ToadMan (avoid >2 in a row)
   {
@@ -664,6 +784,7 @@ async function botTakeTurn(channel) {
     const winnerId = p1hp === 0 ? f.p2_id : f.p1_id;
     endFight.run(channel.id);
     botLastUse.delete(channel.id);
+    clearAIMemForChannel(channel.id);
     const scrimNote = ' _(scrimmage — no W/L or points)_';
     return channel.send(`🏆 **<@${winnerId}> wins!**${scrimNote}`);
   }
@@ -685,17 +806,17 @@ async function maybeBotTurn(channel, nextTurnId) {
   return botTakeTurn(channel);
 }
 
-// ---------- Virus (PVE) bot logic ----------
+// ---------- Virus (PVE) bot logic (basic) ----------
 function pickVirusMove(pve) {
   const moves = parseMoves(pve.virus_moves_json);
   if (!moves.length) return null;
 
-  // Enforce boss special once
+  // Enforce boss special once (also applies for non-boss but harmless)
   const used = new Set(parseList(pve.v_special_used));
   const avail = moves.filter(m => !m?.special || !used.has(m.name || m.label || 'special'));
   if (!avail.length) return null;
 
-  // Simple priorities: if low HP and recovery exists -> recovery; if no v_def and defense exists -> defense; else attacks/barrier
+  // Simple priorities for basic viruses
   const vHP = pve.v_hp;
   const vMax = pve.virus_max_hp;
   const lowHP = vHP / vMax <= 0.4;
@@ -714,6 +835,7 @@ function pickVirusMove(pve) {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+// ---------- Boss virus AI uses smart scorer ----------
 async function virusTakeTurn(channel) {
   const f = getPVE.get(channel.id);
   if (!f || f.turn !== 'virus') return;
@@ -725,7 +847,7 @@ async function virusTakeTurn(channel) {
   let vSpec   = parseList(f.v_special_used);
   let lastP   = f.last_hit_p, lastV = f.last_hit_v;
 
-  const mv = pickVirusMove(f);
+  const mv = f.virus_is_boss ? pickBossMove(f) : pickVirusMove(f);
   if (!mv) {
     // pass turn if nothing valid
     const next = 'player';
@@ -746,6 +868,15 @@ async function virusTakeTurn(channel) {
       vSpec.push(tag);
       specialTag = ' _(special used)_';
     }
+  }
+
+  // Update boss memory (variety & anti-turtle)
+  if (f.virus_is_boss) {
+    const { m } = getAIMem(channel.id, 'VIRUS');
+    if (m.lastMove === name) m.repeat = (m.repeat || 1) + 1;
+    else { m.lastMove = name; m.repeat = 1; }
+    if (kind === 'attack') m.nonAttackStreak = 0;
+    else m.nonAttackStreak = (m.nonAttackStreak || 0) + 1;
   }
 
   if (kind === 'barrier') {
@@ -807,6 +938,7 @@ async function virusTakeTurn(channel) {
     const playerWon = vhp === 0;
     const z = playerWon ? Math.max(f.virus_zmin || 0, Math.min(f.virus_zmax || 0, Math.floor(Math.random() * ((f.virus_zmax||0)-(f.virus_zmin||0)+1)) + (f.virus_zmin||0))) : 0;
     endPVE.run(channel.id);
+    clearAIMemForChannel(channel.id);
     if (playerWon && z > 0) addZenny.run(z, f.player_id);
     if (playerWon) {
       return channel.send(`🏆 **<@${f.player_id}> wins!** You earned **${z}** ${zennyIcon()}.`);
@@ -952,6 +1084,9 @@ client.on('interactionCreate', async (ix) => {
       Date.now()
     );
 
+    // Clear any stale AI memory for this channel
+    clearAIMemForChannel(ix.channel.id);
+
     const embed = new EmbedBuilder()
       .setTitle(`👾 Encounter: ${pick.name}`)
       .setDescription(`**HP** ${pick.hp} | **Dodge** ${pick.dodge}% | **Crit** ${pick.crit}%\n${pick.boss ? '⭐ **BOSS** (special once)' : 'Basic Virus'}`)
@@ -1007,8 +1142,9 @@ client.on('interactionCreate', async (ix) => {
         Date.now()
       );
 
-      // reset bot streak tracker for this channel
+      // reset bot streak tracker & AI memory for this channel
       botLastUse.delete(ix.channel.id);
+      clearAIMemForChannel(ix.channel.id);
 
       const firstMention = `<@${firstId}>`;
       await ix.reply(
@@ -1070,8 +1206,9 @@ client.on('interactionCreate', async (ix) => {
         Date.now()
       );
 
-      // reset bot streak tracker for this channel (no effect unless bot is in this duel later)
+      // reset trackers for this channel
       botLastUse.delete(ix.channel.id);
+      clearAIMemForChannel(ix.channel.id);
 
       const firstMention = `<@${firstId}>`;
       return ix.followUp(
@@ -1095,12 +1232,14 @@ client.on('interactionCreate', async (ix) => {
       if (!scrim) awardResult(winnerId, loserId); // no penalty in scrimmage
       endFight.run(ix.channel.id);
       botLastUse.delete(ix.channel.id);
+      clearAIMemForChannel(ix.channel.id);
       const note = scrim ? ' (scrimmage — no penalty)' : '';
       return ix.reply(`🏳️ <@${loserId}> forfeits.${note} 🏆 <@${winnerId}> wins!`);
     }
 
     if (pve) {
       endPVE.run(ix.channel.id);
+      clearAIMemForChannel(ix.channel.id);
       return ix.reply(`🏳️ You fled from **${pve.virus_name}**. No rewards or penalties.`);
     }
   }
@@ -1540,11 +1679,13 @@ client.on('messageCreate', async (msg) => {
         awardResult(winnerId, loserId);
         endFight.run(msg.channel.id);
         botLastUse.delete(msg.channel.id);
+        clearAIMemForChannel(msg.channel.id);
         const wRow = getNavi.get(winnerId);
         return msg.channel.send(`🏆 **<@${winnerId}> wins!** (W-L: ${wRow?.wins ?? '—'}-${wRow?.losses ?? '—'})`);
       } else {
         endFight.run(msg.channel.id);
         botLastUse.delete(msg.channel.id);
+        clearAIMemForChannel(msg.channel.id);
         return msg.channel.send(`🏆 **<@${winnerId}> wins!** _(scrimmage — no W/L or points)_`);
       }
     }
@@ -1682,6 +1823,7 @@ client.on('messageCreate', async (msg) => {
       const playerWon = vhp === 0;
       const z = playerWon ? Math.max(pve.virus_zmin || 0, Math.min(pve.virus_zmax || 0, Math.floor(Math.random() * ((pve.virus_zmax||0)-(pve.virus_zmin||0)+1)) + (pve.virus_zmin||0))) : 0;
       endPVE.run(msg.channel.id);
+      clearAIMemForChannel(msg.channel.id);
       if (playerWon && z > 0) addZenny.run(z, actorId);
       if (playerWon) {
         return msg.channel.send(`🏆 **<@${actorId}> wins!** You earned **${z}** ${zennyIcon()}.`);
