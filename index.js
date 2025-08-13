@@ -16,6 +16,14 @@ import {
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 
+// Optional fetch polyfill for Node < 18 (no-op on >=18)
+try {
+  if (typeof fetch === 'undefined') {
+    // eslint-disable-next-line no-undef
+    await import('node-fetch').then(({ default: f }) => { global.fetch = f; });
+  }
+} catch { /* ignore */ }
+
 // ---------- Config ----------
 const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || '830126829352386601';
 
@@ -25,7 +33,7 @@ const POINTS_PER_WIN = parseInt(process.env.POINTS_PER_WIN || '1', 10);
 
 // Per-chip cap per battle & round timing
 const MAX_PER_CHIP = 4;
-const ROUND_SECONDS = parseInt(process.env.ROUND_SECONDS || '60', 10);
+const ROUND_SECONDS = Math.max(15, parseInt(process.env.ROUND_SECONDS || '60', 10)); // floor at 15s
 
 // Virus TSV URL (Google Sheets export to TSV)
 const VIRUS_TSV_URL = process.env.VIRUS_TSV_URL || '';
@@ -298,7 +306,11 @@ INSERT INTO navis (user_id,max_hp,dodge,crit,wins,losses,upgrade_pts,zenny) VALU
 ON CONFLICT(user_id) DO UPDATE SET
   max_hp=excluded.max_hp,
   dodge=excluded.dodge,
-  crit=excluded.crit
+  crit=excluded.crit,
+  wins=excluded.wins,
+  losses=excluded.losses,
+  upgrade_pts=excluded.upgrade_pts,
+  zenny=excluded.zenny
 `);
 function ensureNavi(uid) {
   const row = getNavi.get(uid);
@@ -390,7 +402,7 @@ function isAdmin(ix) {
 }
 
 // Round timers
-const RoundTimers = new Map(); // channelId -> NodeJS.Timeout
+const RoundTimers = new Map(); // channelId -> Timeout
 function clearRoundTimer(channelId) {
   const t = RoundTimers.get(channelId);
   if (t) { clearTimeout(t); RoundTimers.delete(channelId); }
@@ -452,7 +464,7 @@ async function loadViruses(force = false) {
     const crit = parseInt(obj.crit || '0', 10) || 0;
 
     const m1 = obj.move1_json || obj.move_1json || '';
-    the m2 = obj.move_2json || obj.move2_json || '';
+    const m2 = obj.move_2json || obj.move2_json || ''; // fixed typo
     const m3 = obj.move3_json || '';
     const m4 = obj.move4_json || '';
     const moves = [];
@@ -660,7 +672,7 @@ async function resolveDuelRound(channel) {
   const A1 = decodeAction(f.p1_action_json);
   const A2 = decodeAction(f.p2_action_json);
 
-  // If neither acted and deadline passed, reschedule another 60s wait
+  // If neither acted and deadline passed, reschedule another wait
   if (!A1 && !A2) {
     const nextDeadline = now() + ROUND_SECONDS * 1000;
     updFightRound.run(f.p1_hp, f.p2_hp, 0, 0, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, null, null, nextDeadline, channel.id);
@@ -679,31 +691,24 @@ async function resolveDuelRound(channel) {
   let p1Spec = new Set(parseList(f.p1_special_used));
   let p2Spec = new Set(parseList(f.p2_special_used));
 
-  // Extract chip rows & effects
-  const p1Rows = {};
-  const p2Rows = {};
+  // Intent → temporary DEF / Barrier / Attack+Recovery effects
   function rowAndEff(name) {
     const r = getChipRowOrNull(name);
     const e = readEffect(r);
     return { r, e };
   }
-
-  // Intent → temporary DEF / Barrier / Attack+Recovery effects
-  function interpretIntent(intent, side) {
+  function interpretIntent(intent) {
     if (!intent || intent.kind === 'none') return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
 
     if (intent.kind === 'chip') {
       const { r, e } = rowAndEff(intent.chipName);
       if (!r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
-      const kinds = extractKinds(e);
       const used = [r.name];
-
       let def = 0, barrier = false, attackEff = null, rec = 0;
       if (isDefense(e)) def = Number.isFinite(e.def) ? e.def : 0;
       if (isBarrier(e)) barrier = true;
       if (isRecovery(e)) rec += Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : 0);
       if (isAttack(e)) attackEff = e;
-
       return { def, barrier, attackEff, rec, supportEff: null, used };
     }
 
@@ -711,24 +716,20 @@ async function resolveDuelRound(channel) {
       const { r: sr, e: se } = rowAndEff(intent.supportName);
       const { r: cr, e: ce } = rowAndEff(intent.chipName);
       if (!sr || !cr) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
-
       const used = [sr.name, cr.name];
       let def = 0, barrier = false, attackEff = null, rec = 0;
       if (isDefense(ce)) def += Number.isFinite(ce.def) ? ce.def : 0;
       if (isBarrier(ce)) barrier = true;
-
       if (isRecovery(ce)) rec += Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : 0);
-      // support doesn't crit; it adds to base of the standard chip (ce)
       if (isAttack(ce)) attackEff = ce;
-
       return { def, barrier, attackEff, rec, supportEff: se, used };
     }
 
     return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
   }
 
-  const P1 = interpretIntent(I1, 'p1');
-  const P2 = interpretIntent(I2, 'p2');
+  const P1 = interpretIntent(I1);
+  const P2 = interpretIntent(I2);
 
   // Compute simultaneous outcomes
   let p1DEF = P1.def || 0;
@@ -750,7 +751,7 @@ async function resolveDuelRound(channel) {
       dodgePct: p2.dodge,
       critPct: p1.crit
     });
-    dmg1to2 = res.dmg; crit1 = res.crit; dodged1 = res.dodged; absorbed1 = res.absorbed; cancelledByBarrier1 = res.cancelledByBarrier;
+    ({ dmg: dmg1to2, crit: crit1, dodged: dodged1, absorbed: absorbed1, cancelledByBarrier: cancelledByBarrier1 } = res);
   }
 
   // Player 2 attacking player 1
@@ -767,47 +768,38 @@ async function resolveDuelRound(channel) {
       dodgePct: p1.dodge,
       critPct: p2.crit
     });
-    dmg2to1 = res.dmg; crit2 = res.crit; dodged2 = res.dodged; absorbed2 = res.absorbed; cancelledByBarrier2 = res.cancelledByBarrier;
+    ({ dmg: dmg2to1, crit: crit2, dodged: dodged2, absorbed: absorbed2, cancelledByBarrier: cancelledByBarrier2 } = res);
   }
 
-  // Recovery resolves even if attack was dodged; but Barrier cancels chips that include 'attack' entirely (so if barrier cancelled an attack+recovery, recovery = 0)
-  let rec1 = P1.rec || 0;
-  if (P1.attackEff && p2Barrier && !isBreak(P1.attackEff)) rec1 = 0;
-  let rec2 = P2.rec || 0;
-  if (P2.attackEff && p1Barrier && !isBreak(P2.attackEff)) rec2 = 0;
+  // Recovery resolves even if attack was dodged; Barrier cancels whole chip if it included 'attack'
+  let rec1 = P1.rec || 0; if (P1.attackEff && p2Barrier && !isBreak(P1.attackEff)) rec1 = 0;
+  let rec2 = P2.rec || 0; if (P2.attackEff && p1Barrier && !isBreak(P2.attackEff)) rec2 = 0;
 
   // Apply damage & heals (simultaneous)
   let p1hp = Math.max(0, Math.min(p1.max_hp, f.p1_hp - dmg2to1 + rec1));
   let p2hp = Math.max(0, Math.min(p2.max_hp, f.p2_hp - dmg1to2 + rec2));
 
   // Build round summary
-  function fmtAct(userId, P, crit, dodged, cancelled, dmg, absorbed, rec) {
-    if (!I1 && userId === f.p1_id) return 'did nothing';
-    if (!I2 && userId === f.p2_id) return 'did nothing';
+  function fmtAct(P, crit, dodged, cancelled, dmg, absorbed, rec) {
+    const used = [...new Set(P.used || [])];
     const parts = [];
-    if (P.supportEff) parts.push(`**${(decodeAction(f.p1_action_json)?.support || decodeAction(f.p2_action_json)?.support || '')}** →`);
-    if (P.attackEff || P.def || P.barrier || (rec>0)) {
-      const usedNames = new Set(P.used || []);
-      parts.push([...usedNames].map(n => `**${n}**`).join(' + '));
-    }
+    if (P.supportEff && used.length === 2) parts.push(`**${used[0]}** → **${used[1]}**`);
+    else if (used.length) parts.push(used.map(n => `**${n}**`).join(' + '));
+    else parts.push('did nothing');
     const extras = [];
     if (P.barrier) extras.push('🛡️ Barrier');
     if (P.def) extras.push(`🧱 DEF +${P.def}`);
-    if (rec>0) extras.push(`💚 +${rec}`);
+    if (rec > 0) extras.push(`💚 +${rec}`);
     if (P.attackEff) {
       if (cancelled) extras.push('❌ cancelled');
       else if (dodged) extras.push('💨 dodged');
-      else {
-        extras.push(`💥 ${dmg}${crit ? ' _(CRIT!)_' : ''}${absorbed>0 ? ` (DEF absorbed ${absorbed})` : ''}`);
-      }
+      else extras.push(`💥 ${dmg}${crit ? ' _(CRIT!)_' : ''}${absorbed>0 ? ` (DEF absorbed ${absorbed})` : ''}`);
     }
-    if (!parts.length) parts.push('did nothing');
-    if (extras.length) parts.push(`→ ${extras.join(' | ')}`);
-    return parts.join(' ');
+    return `${parts.join(' ')}${extras.length ? ` → ${extras.join(' | ')}` : ''}`;
   }
 
-  const line1 = fmtAct(f.p1_id, P1, crit1, dodged1, cancelledByBarrier1, dmg1to2, absorbed1, rec1);
-  const line2 = fmtAct(f.p2_id, P2, crit2, dodged2, cancelledByBarrier2, dmg2to1, absorbed2, rec2);
+  const line1 = fmtAct(P1, crit1, dodged1, cancelledByBarrier1, dmg1to2, absorbed1, rec1);
+  const line2 = fmtAct(P2, crit2, dodged2, cancelledByBarrier2, dmg2to1, absorbed2, rec2);
 
   // Update per-battle counters & specials (for actually used chips only)
   function bumpCounters(counts, specials, usedNames) {
@@ -966,7 +958,7 @@ async function resolvePVERound(channel) {
       dodgePct: f.virus_dodge,
       critPct: player.crit
     });
-    dmgPtoV = res.dmg; critP=res.crit; dodgedP=res.dodged; absorbedP=res.absorbed; cancelledByBarrierP = res.cancelledByBarrier;
+    ({ dmg: dmgPtoV, crit: critP, dodged: dodgedP, absorbed: absorbedP, cancelledByBarrier: cancelledByBarrierP } = res);
   }
 
   // Virus attacks player
@@ -982,14 +974,12 @@ async function resolvePVERound(channel) {
       dodgePct: player.dodge,
       critPct: f.virus_crit
     });
-    dmgVtoP = res.dmg; critV=res.crit; dodgedV=res.dodged; absorbedV=res.absorbed; cancelledByBarrierV = res.cancelledByBarrier;
+    ({ dmg: dmgVtoP, crit: critV, dodged: dodgedV, absorbed: absorbedV, cancelledByBarrier: cancelledByBarrierV } = res);
   }
 
-  // Recovery (barrier cancels the whole chip if it included 'attack')
-  let recP = PP.rec || 0;
-  if (PP.attackEff && vBarrier && !isBreak(PP.attackEff)) recP = 0;
-  let recV = PV.rec || 0;
-  if (PV.attackEff && pBarrier && !isBreak(PV.attackEff)) recV = 0;
+  // Recovery
+  let recP = PP.rec || 0; if (PP.attackEff && vBarrier && !isBreak(PP.attackEff)) recP = 0;
+  let recV = PV.rec || 0; if (PV.attackEff && pBarrier && !isBreak(PV.attackEff)) recV = 0;
 
   // Apply (simultaneous)
   let php = Math.max(0, Math.min(player.max_hp, f.p_hp - dmgVtoP + recP));
@@ -1007,10 +997,10 @@ async function resolvePVERound(channel) {
 
   // Build summary lines
   function fmtP(label, P, crit, dodged, cancelled, dmg, absorbed, rec) {
+    const used = [...new Set(P.used || [])];
     const parts = [];
-    const usedNames = new Set(P.used || []);
-    if (P.supportEff) parts.push(`**${[...usedNames][0]}** → **${[...usedNames][1]}**`);
-    else if (usedNames.size) parts.push([...usedNames].map(n => `**${n}**`).join(' + '));
+    if (P.supportEff && used.length === 2) parts.push(`**${used[0]}** → **${used[1]}**`);
+    else if (used.length) parts.push(used.map(n => `**${n}**`).join(' + '));
     else parts.push('did nothing');
 
     const extras = [];
@@ -1084,23 +1074,36 @@ function pickVirusMove(pveRow) {
 // ---------- Slash commands & interactions ----------
 client.on('interactionCreate', async (ix) => {
   try {
-    // Autocomplete: chip names from inventory (for /use) or shop (for /buy)
+    // Autocomplete
     if (ix.isAutocomplete()) {
       const focused = ix.options.getFocused(true);
       const sub = ix.options.getSubcommand(false);
-      const isBuy = ix.commandName === 'buy';
       const query = String(focused.value || '').toLowerCase();
 
-      let names = [];
-      if (isBuy || ['chip_grant','chip_remove'].includes(ix.commandName)) {
-        names = listAllChipNames.all().map(r => r.name);
-      } else if (ix.commandName === 'use') {
-        // show user's folder
-        names = listInv.all(ix.user.id).map(r => r.chip_name);
-        // for support.with we must exclude support chips (best effort)
-      } else {
-        names = listAllChipNames.all().map(r => r.name);
+      // Admin item lookups
+      if (['buy','chip_grant','chip_remove'].includes(ix.commandName)) {
+        const names = listAllChipNames.all().map(r => r.name);
+        const filtered = names.filter(n => n.toLowerCase().includes(query)).slice(0, 25);
+        return ix.respond(filtered.map(n => ({ name: n, value: n })));
       }
+
+      // /use autocomplete from a user's folder
+      if (ix.commandName === 'use') {
+        const invNames = listInv.all(ix.user.id).map(r => r.chip_name);
+        // Filter support vs non-support depending on option
+        const items = invNames.map(n => ({ n, eff: readEffect(getChipRowOrNull(n)) }))
+                              .filter(x => x.eff);
+        let pool = invNames;
+        if (sub === 'support') {
+          if (focused.name === 'support') pool = items.filter(x => isSupport(x.eff)).map(x => x.n);
+          else if (focused.name === 'with') pool = items.filter(x => !isSupport(x.eff)).map(x => x.n);
+        }
+        const filtered = pool.filter(n => n.toLowerCase().includes(query)).slice(0, 25);
+        return ix.respond(filtered.map(n => ({ name: n, value: n })));
+      }
+
+      // Fallback
+      const names = listAllChipNames.all().map(r => r.name);
       const filtered = names.filter(n => n.toLowerCase().includes(query)).slice(0, 25);
       return ix.respond(filtered.map(n => ({ name: n, value: n })));
     }
@@ -1301,6 +1304,10 @@ client.on('interactionCreate', async (ix) => {
           Date.now()
         );
         scheduleRoundTimer(ix.channel.id, () => resolveDuelRound(ix.channel));
+
+        // Kickoff round prompt
+        await ix.followUp(`🎬 **Round started.** Submit your chip with **/use** within **${ROUND_SECONDS}s**.\n${hpLineDuel({ p1_id: ix.user.id, p2_id: target.id, p1_hp: p1.max_hp, p2_hp: p2.max_hp })}`);
+
         if (target.bot && target.id === client.user.id) {
           // Pick bot action immediately for the round
           const f = getFight.get(ix.channel.id);
@@ -1315,6 +1322,7 @@ client.on('interactionCreate', async (ix) => {
               f.round_deadline,
               ix.channel.id
             );
+            await ix.followUp('🤖 Bot locked its move.');
           }
         }
         return;
@@ -1390,7 +1398,7 @@ client.on('interactionCreate', async (ix) => {
       const rows = db.prepare(`
         SELECT user_id, wins, losses
         FROM navis
-        ORDER BY wins DESC, losses ASC
+        ORDER BY wins DESC, losses ASC, user_id ASC
         LIMIT ?
       `).all(limit);
 
@@ -1435,7 +1443,8 @@ client.on('interactionCreate', async (ix) => {
         const tag = r.is_upgrade ? '🧩 Upgrade' : '🔹 Chip';
         return `${tag} — **${r.name}** — ${r.zenny_cost} ${zennyIcon()}${r.image_url ? ` — ${r.image_url}` : ''}`;
       });
-      return ix.reply(`🛒 **Chip Shop**\n${lines.join('\n')}`);
+      const more = rows.length - chunks.length;
+      return ix.reply(`🛒 **Chip Shop**\n${lines.join('\n')}${more > 0 ? `\n…and ${more} more` : ''}`);
     }
 
     // Buy
@@ -1529,6 +1538,10 @@ client.on('interactionCreate', async (ix) => {
         if (have <= 0) return ix.reply({ content: `You don’t own **${name}**.`, ephemeral: true });
 
         if (context === 'duel') {
+          // guard re-lock
+          const already = ix.user.id === f.p1_id ? f.p1_action_json : f.p2_action_json;
+          if (already) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
+
           const mineCounts = (ix.user.id === f.p1_id) ? f.p1_counts_json : f.p2_counts_json;
           const mineSpecs  = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
           const chk = canUseChip(ix.user.id, mineCounts, mineSpecs, name);
@@ -1551,6 +1564,9 @@ client.on('interactionCreate', async (ix) => {
           return;
         } else {
           // PVE
+          // guard re-lock
+          if (pve.player_action_json) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
+
           const chk = canUseChip(ix.user.id, pve.p_counts_json, pve.p_special_used, name);
           if (!chk.ok) return ix.reply({ content: chk.reason, ephemeral: true });
 
@@ -1586,6 +1602,10 @@ client.on('interactionCreate', async (ix) => {
         if (isSupport(cEff))  return ix.reply({ content: `Your follow-up chip must not be Support.`, ephemeral: true });
 
         if (context === 'duel') {
+          // guard re-lock
+          const already = ix.user.id === f.p1_id ? f.p1_action_json : f.p2_action_json;
+          if (already) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
+
           const mineCounts = (ix.user.id === f.p1_id) ? f.p1_counts_json : f.p2_counts_json;
           const mineSpecs  = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
 
@@ -1611,6 +1631,9 @@ client.on('interactionCreate', async (ix) => {
           }
           return;
         } else {
+          // guard re-lock
+          if (pve.player_action_json) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
+
           const chkS = canUseChip(ix.user.id, pve.p_counts_json, pve.p_special_used, sName);
           if (!chkS.ok) return ix.reply({ content: chkS.reason, ephemeral: true });
           const chkC = canUseChip(ix.user.id, pve.p_counts_json, pve.p_special_used, cName);
