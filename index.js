@@ -812,7 +812,7 @@ async function virusTakeTurn(channel) {
     clearAIMemForChannel(channel.id);
     if (playerWon && z > 0) addZenny.run(z, f.player_id);
     if (playerWon) {
-      return channel.send(`🏆 **<@${f.player_id}> wins!** You earned **${z}** ${zennyIcon()}.`);
+      return channel.send(`🏆 **<@${f.player_id}> wins!** You earned **${z}** ${zennyIcon()}`);
     } else {
       return channel.send(`💀 **${f.virus_name}** wins! Better luck next time.`);
     }
@@ -1185,7 +1185,7 @@ client.on('interactionCreate', async (ix) => {
   if (ix.commandName === 'zenny') {
     const user = ix.options.getUser('user') || ix.user;
     const row = ensureNavi(user.id);
-    return ix.reply(`:Zenny: **${user.username}** has **${row.zenny ?? 0}** ${zennyIcon()}.`);
+    return ix.reply(`:Zenny: **${user.username}** has **${row.zenny ?? 0}** ${zennyIcon()}`);
   }
 
   // NEW: Give Zenny
@@ -1200,7 +1200,7 @@ client.on('interactionCreate', async (ix) => {
     ensureNavi(to.id);
 
     if ((fromRow.zenny ?? 0) < amt) {
-      return ix.reply({ content: `Not enough Zenny. You have **${fromRow.zenny ?? 0}** ${zennyIcon()}.`, ephemeral: true });
+      return ix.reply({ content: `Not enough Zenny. You have **${fromRow.zenny ?? 0}** ${zennyIcon()}`, ephemeral: true });
     }
 
     addZenny.run(-amt, ix.user.id);
@@ -1809,7 +1809,7 @@ client.on('messageCreate', async (msg) => {
       clearAIMemForChannel(msg.channel.id);
       if (playerWon && z > 0) addZenny.run(z, actorId);
       if (playerWon) {
-        return msg.channel.send(`🏆 **<@${actorId}> wins!** You earned **${z}** ${zennyIcon()}.`);
+        return msg.channel.send(`🏆 **<@${actorId}> wins!** You earned **${z}** ${zennyIcon()}`);
       } else {
         return msg.channel.send(`💀 **${pve.virus_name}** wins! Better luck next time.`);
       }
