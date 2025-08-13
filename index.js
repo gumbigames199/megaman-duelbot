@@ -452,7 +452,7 @@ async function loadViruses(force = false) {
     const crit = parseInt(obj.crit || '0', 10) || 0;
 
     const m1 = obj.move1_json || obj.move_1json || '';
-    const m2 = obj.move_2json || obj.move2_json || '';
+    the m2 = obj.move_2json || obj.move2_json || '';
     const m3 = obj.move3_json || '';
     const m4 = obj.move4_json || '';
     const moves = [];
@@ -1161,7 +1161,7 @@ client.on('interactionCreate', async (ix) => {
 
       return ix.reply(
         `⬆️ ${stat.toUpperCase()} +${STEP} (now **${after}**) — ` +
-        (MANUAL_UPGRADES_MODE === 'points'} ? `Points left: **${Math.max(0, upgrade_pts)}**` : `Admin-applied.`)
+        (MANUAL_UPGRADES_MODE === 'points' ? `Points left: **${Math.max(0, upgrade_pts)}**` : `Admin-applied.`)
       );
     }
 
