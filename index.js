@@ -183,6 +183,32 @@ async function registerCommands() {
       .addUserOption((o) => o.setName('user').setDescription('Target user').setRequired(true))
       .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
       .addIntegerOption((o) => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
+
+    // NEW: Admin overrides
+    new SlashCommandBuilder()
+      .setName('stat_override')
+      .setDescription('Admin: set HP/Dodge/Crit/Wins/Losses/Points for a user')
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+      .addStringOption(o =>
+        o.setName('stat').setDescription('Which stat to set').setRequired(true)
+         .addChoices(
+           { name: 'hp', value: 'hp' },
+           { name: 'dodge', value: 'dodge' },
+           { name: 'crit', value: 'crit' },
+           { name: 'wins', value: 'wins' },
+           { name: 'losses', value: 'losses' },
+           { name: 'points', value: 'points' },
+         )
+      )
+      .addIntegerOption(o => o.setName('value').setDescription('New value').setRequired(true)),
+
+    new SlashCommandBuilder()
+      .setName('zenny_override')
+      .setDescription('Admin: add Zenny to a user')
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+      .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+      .addIntegerOption(o => o.setName('amount').setDescription('Amount to add').setRequired(true)),
   ].map((c) => c.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -569,6 +595,24 @@ function invAdd(userId, chipName, delta) {
   return next;
 }
 
+// Apply an upgrade row immediately to a user (qty supported)
+function applyUpgrade(userId, chipRow, qty = 1) {
+  const eff = readEffect(chipRow);
+  const stat = String(eff?.stat || '').toLowerCase();
+  const step = Number.isFinite(eff?.step) ? eff.step : 1;
+  const amount = step * Math.max(1, qty);
+
+  const cur = ensureNavi(userId);
+  let { max_hp, dodge, crit } = cur;
+
+  if (stat === 'hp')    max_hp = Math.min(MAX_HP_CAP,    max_hp + amount);
+  if (stat === 'dodge') dodge  = Math.min(MAX_DODGE_CAP, dodge  + amount);
+  if (stat === 'crit')  crit   = Math.min(MAX_CRIT_CAP,  crit   + amount);
+
+  upsertNavi.run(userId, max_hp, dodge, crit, cur.wins ?? 0, cur.losses ?? 0, cur.upgrade_pts ?? 0, cur.zenny ?? 0);
+  return ensureNavi(userId);
+}
+
 // action encoding
 function actionChip(name) { return JSON.stringify({ type: 'chip', name }); }
 function actionSupport(support, withChip) { return JSON.stringify({ type: 'support', support, with: withChip }); }
@@ -677,7 +721,7 @@ function buildShopPage(rows, page = 0) {
   const rowNav = new ActionRowBuilder().addComponents(prev, next, close);
 
   const list = slice
-    .map(r => `• **${r.name}** — ${r.zenny_cost} ${zennyIcon()}${r.is_upgrade ? ' (Upgrade)' : ''}`)
+    .map(r => `• **${r.name}** — ${r.zenny_cost} ${zennyIcon()}${r.is_upgrade ? ' (Upgrade — consumed on purchase)' : ''}`)
     .join('\n');
 
   const embed = new EmbedBuilder()
@@ -1156,19 +1200,8 @@ client.on('interactionCreate', async (ix) => {
         addZenny.run(-total, ix.user.id);
 
         if (chip.is_upgrade) {
-          const eff = readEffect(chip);
-          const CAPS = { hp: MAX_HP_CAP, dodge: MAX_DODGE_CAP, crit: MAX_CRIT_CAP };
-          let { max_hp, dodge, crit, wins, losses, upgrade_pts, zenny } = buyer;
-          const step = Number.isFinite(eff?.step) ? eff.step : 1;
-          const stat = String(eff?.stat || '').toLowerCase();
-          const amount = step * qty;
-
-          if (stat === 'hp') max_hp = Math.min(CAPS.hp, max_hp + amount);
-          if (stat === 'dodge') dodge = Math.min(CAPS.dodge, dodge + amount);
-          if (stat === 'crit') crit = Math.min(CAPS.crit, crit + amount);
-
-          upsertNavi.run(ix.user.id, max_hp, dodge, crit, wins ?? 0, losses ?? 0, upgrade_pts ?? 0, zenny ?? 0);
-          return ix.reply({ ephemeral: true, content: `🧩 Applied **${chip.name}** ×${qty}. New stats — HP **${max_hp}**, Dodge **${dodge}%**, Crit **${crit}%**.` });
+          const after = applyUpgrade(ix.user.id, chip, qty);
+          return ix.reply({ ephemeral: true, content: `🧩 Applied **${chip.name}** ×${qty}. New stats — HP **${after.max_hp}**, Dodge **${after.dodge}%**, Crit **${after.crit}%**.` });
         } else {
           const next = invAdd(ix.user.id, chip.name, qty);
           return ix.reply({ ephemeral: true, content: `👜 Purchased **${chip.name}** ×${qty}. You now own **${next}**.` });
@@ -1189,9 +1222,12 @@ client.on('interactionCreate', async (ix) => {
         return ix.respond(filtered.map((n) => ({ name: n, value: n })));
       }
 
-      // /use autocomplete from a user's folder
+      // /use autocomplete from a user's folder (NO UPGRADES)
       if (ix.commandName === 'use') {
-        const invNames = listInv.all(ix.user.id).map((r) => r.chip_name);
+        const invNames = listInv.all(ix.user.id)
+          .map((r) => r.chip_name)
+          .filter(n => (getChipRowOrNull(n)?.is_upgrade ?? 0) === 0);
+
         const items = invNames.map((n) => ({ n, eff: readEffect(getChipRowOrNull(n)) })).filter((x) => x.eff);
         let pool = invNames;
         if (sub === 'support') {
@@ -1558,20 +1594,8 @@ client.on('interactionCreate', async (ix) => {
       addZenny.run(-total, ix.user.id);
 
       if (chip.is_upgrade) {
-        // Apply immediately (same as before)
-        const eff = readEffect(chip);
-        const CAPS = { hp: MAX_HP_CAP, dodge: MAX_DODGE_CAP, crit: MAX_CRIT_CAP };
-        let { max_hp, dodge, crit, wins, losses, upgrade_pts, zenny } = buyer;
-        const step = Number.isFinite(eff?.step) ? eff.step : 1;
-        const stat = String(eff?.stat || '').toLowerCase();
-        const amount = step * qty;
-
-        if (stat === 'hp') max_hp = Math.min(CAPS.hp, max_hp + amount);
-        if (stat === 'dodge') dodge = Math.min(CAPS.dodge, dodge + amount);
-        if (stat === 'crit') crit = Math.min(CAPS.crit, crit + amount);
-
-        upsertNavi.run(ix.user.id, max_hp, dodge, crit, wins ?? 0, losses ?? 0, upgrade_pts ?? 0, zenny ?? 0);
-        return ix.reply(`🧩 Applied upgrade **${chip.name}** ×${qty}. New stats — HP **${max_hp}**, Dodge **${dodge}%**, Crit **${crit}%**.`);
+        const after = applyUpgrade(ix.user.id, chip, qty);
+        return ix.reply(`🧩 Applied upgrade **${chip.name}** ×${qty}. New stats — HP **${after.max_hp}**, Dodge **${after.dodge}%**, Crit **${after.crit}%**.`);
       } else {
         // Add to folder
         const next = invAdd(ix.user.id, chip.name, qty);
@@ -1579,9 +1603,9 @@ client.on('interactionCreate', async (ix) => {
       }
     }
 
-    // Folder
+    // Folder (hide upgrades)
     if (ix.commandName === 'folder') {
-      const rows = listInv.all(ix.user.id);
+      const rows = listInv.all(ix.user.id).filter(r => (getChipRowOrNull(r.chip_name)?.is_upgrade ?? 0) === 0);
       if (!rows.length) return ix.reply('Your folder is empty. Use `/shop` and `/buy` to get chips.');
       const f = getFight.get(ix.channel.id);
       const pve = getPVE.get(ix.channel.id);
@@ -1620,6 +1644,7 @@ client.on('interactionCreate', async (ix) => {
         const specials = new Set(parseList(specialsJson));
         const row = getChipRowOrNull(name);
         if (!row) return { ok: false, reason: 'Unknown chip.' };
+        if (row.is_upgrade) return { ok: false, reason: 'Upgrades are applied on purchase and cannot be used in battle.' };
         const eff = readEffect(row);
         if ((counts[name] || 0) >= MAX_PER_CHIP) return { ok: false, reason: `**${name}** is exhausted (**${MAX_PER_CHIP}/${MAX_PER_CHIP}**) this battle.` };
         if (isSpecial(eff) && specials.has(name)) return { ok: false, reason: `You’ve already used **${name}** (special) this battle.` };
@@ -1769,10 +1794,62 @@ client.on('interactionCreate', async (ix) => {
       const chip = getChip.get(name);
       if (!chip) return ix.reply({ content: 'Unknown chip.', ephemeral: true });
 
+      // Upgrades: apply immediately on grant; cannot be removed
+      if (chip.is_upgrade) {
+        if (ix.commandName === 'chip_grant') {
+          const after = applyUpgrade(user.id, chip, qty);
+          return ix.reply(`🧩 Applied upgrade **${chip.name}** ×${qty} to <@${user.id}>. New stats — HP **${after.max_hp}**, Dodge **${after.dodge}%**, Crit **${after.crit}%**.`);
+        } else {
+          return ix.reply({ content: 'Upgrades aren’t inventory items and can’t be removed. Use `/stat_override` if you need to adjust stats.', ephemeral: true });
+        }
+      }
+
+      // Non-upgrade chips: change inventory
       const delta = ix.commandName === 'chip_grant' ? qty : -qty;
       const next = invAdd(user.id, name, delta);
       return ix.reply(`🛠️ ${ix.commandName === 'chip_grant' ? 'Granted' : 'Removed'} **${Math.abs(delta)}** of **${name}** for <@${user.id}>. They now have **${next}**.`);
     }
+
+    // Admin: stat_override
+    if (ix.commandName === 'stat_override') {
+      if (!isAdmin(ix)) return ix.reply({ content: 'Only admins can use this command.', ephemeral: true });
+
+      const user  = ix.options.getUser('user', true);
+      const stat  = ix.options.getString('stat', true);    // hp|dodge|crit|wins|losses|points
+      const value = ix.options.getInteger('value', true);
+
+      ensureNavi(user.id);
+      const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+      if (stat === 'hp')         updHP.run(clamp(value, 1, MAX_HP_CAP), user.id);
+      else if (stat === 'dodge') updDodge.run(clamp(value, 0, MAX_DODGE_CAP), user.id);
+      else if (stat === 'crit')  updCrit.run(clamp(value, 0, MAX_CRIT_CAP), user.id);
+      else if (stat === 'wins')  updWins.run(Math.max(0, value), user.id);
+      else if (stat === 'losses')updLosses.run(Math.max(0, value), user.id);
+      else if (stat === 'points')updPts.run(Math.max(0, value), user.id);
+      else return ix.reply({ content: 'Unknown stat.', ephemeral: true });
+
+      const r = ensureNavi(user.id);
+      return ix.reply({
+        content:
+          `✅ Updated <@${user.id}> — ` +
+          `HP **${r.max_hp}**, Dodge **${r.dodge}%**, Crit **${r.crit}%**, ` +
+          `Record **${r.wins}-${r.losses}**, Points **${r.upgrade_pts}**.`,
+        ephemeral: true
+      });
+    }
+
+    // Admin: zenny_override (add)
+    if (ix.commandName === 'zenny_override') {
+      if (!isAdmin(ix)) return ix.reply({ content: 'Only admins can use this command.', ephemeral: true });
+      const user = ix.options.getUser('user', true);
+      const amt  = ix.options.getInteger('amount', true);
+      ensureNavi(user.id);
+      addZenny.run(amt, user.id);
+      const cur = ensureNavi(user.id);
+      return ix.reply({ content: `✅ Updated Zenny for <@${user.id}>: **${cur.zenny}** ${zennyIcon()} (Δ ${amt >= 0 ? '+' : ''}${amt})`, ephemeral: true });
+    }
+
   } catch (err) {
     console.error('Interaction error:', err);
     try { await ix.reply({ content: 'Something went wrong. Check logs.', ephemeral: true }); } catch {}
