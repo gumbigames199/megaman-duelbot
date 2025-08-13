@@ -40,7 +40,7 @@ const VIRUS_TSV_URL = process.env.VIRUS_TSV_URL || '';
 // Zenny emoji helpers
 const ZENNY_EMOJI_ID = process.env.ZENNY_EMOJI_ID || '1110249272433201274';
 const ZENNY_EMOJI_NAME = process.env.ZENNY_EMOJI_NAME || 'zenny';
-const zennyIcon = () => (/^\d{17,20}$/.test(ZENNY_EMOJI_ID) ? `<:${ZENNY_EMOJI_NAME}:${ZENNY_EMOJI_ID}>` : '💰');
+const zennyIcon = () => (/^\d{17,20}$/.test(ZENNY_EMOJI_ID) ? `<:${ZENNY_EMOJI_NAME}:${ZENNY_EMOJI_ID}>` : ':Zenny:');
 
 // Ensure data dir exists
 if (!fs.existsSync('./data')) fs.mkdirSync('./data');
@@ -339,116 +339,6 @@ function shouldDebounce(channelId, actorId, chipKey, ms = 2000) {
 // NEW: Track ToadMan's consecutive chip usage per channel (to avoid 3+ repeats)
 const botLastUse = new Map(); // channelId -> { chip: string|null, streak: number }
 
-// ---------- Virus TSV Loader ----------
-const VirusCache = { ts: 0, rows: [] };
-const HEADER_MAP = (h) => (h || '').toLowerCase().trim().replace(/[^\w]+/g, '_'); // "stat points" -> "stat_points"
-
-function parseRange(s) {
-  const t = String(s || '').trim();
-  if (!t) return { min: 0, max: 0 };
-  const m = t.match(/^(\d+)\s*-\s*(\d+)$/);
-  if (m) {
-    const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
-    return { min: Math.min(a, b), max: Math.max(a, b) };
-  }
-  const n = parseInt(t, 10);
-  return { min: isNaN(n) ? 0 : n, max: isNaN(n) ? 0 : n };
-}
-
-function weightFor(row) {
-  const sp = Number(row.stat_points || row.statpoint || row.stat || 1);
-  const boss = !!row.boss;
-  // Basic viruses (1..4): 1 most common -> 4 least
-  // weights: 1->4, 2->3, 3->2, 4->1
-  if (!boss) return Math.max(1, 5 - Math.max(1, Math.min(4, sp)));
-  // Bosses (5..7): small weights (rarer)
-  // 5 -> 1, 6 -> 0.6, 7 -> 0.4 (tune later)
-  if (sp <= 5) return 1;
-  if (sp === 6) return 0.6;
-  return 0.4;
-}
-
-async function loadViruses(force = false) {
-  const FRESH_MS = 1000 * 60 * 5; // 5 min
-  if (!force && VirusCache.rows.length && (Date.now() - VirusCache.ts) < FRESH_MS) return VirusCache.rows;
-  if (!VIRUS_TSV_URL) return [];
-
-  const res = await fetch(VIRUS_TSV_URL);
-  if (!res.ok) throw new Error(`Virus TSV fetch failed: ${res.status}`);
-  const text = await res.text();
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return [];
-
-  const headers = lines[0].split('\t').map(HEADER_MAP);
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split('\t');
-    const obj = {};
-    headers.forEach((h, idx) => { obj[h] = cols[idx]; });
-
-    const name = (obj.name || '').trim();
-    if (!name) continue;
-
-    const hp = parseInt(obj.hp || '0', 10) || 0;
-    const dodge = parseInt(obj.dodge || '0', 10) || 0;
-    const crit = parseInt(obj.crit || '0', 10) || 0;
-
-    // Moves (support move1_json, move_2json/move2_json, move3_json, move4_json)
-    const m1 = obj.move1_json || obj.move_1json || '';
-    const m2 = obj.move_2json || obj.move2_json || '';
-    const m3 = obj.move3_json || '';
-    const m4 = obj.move4_json || '';
-    const moves = [];
-    const pushMove = (s, fallback) => {
-      if (!s) return;
-      try {
-        const mv = JSON.parse(s);
-        if (mv && typeof mv === 'object') {
-          if (!mv.name) mv.name = fallback;
-          moves.push(mv);
-        }
-      } catch {}
-    };
-    pushMove(m1, 'Move1');
-    pushMove(m2, 'Move2');
-    pushMove(m3, 'Move3');
-    pushMove(m4, 'Move4');
-
-    const sp = parseInt((obj.stat_points || obj.statpoint || '1'), 10) || 1;
-    const boss = String(obj.boss || '').toLowerCase().trim();
-    const isBoss = ['1','true','yes','y'].includes(boss);
-
-    const { min: zmin, max: zmax } = parseRange(obj.zenny || obj.zenny_range || '');
-
-    rows.push({
-      name,
-      image_url: obj.image_url || '',
-      hp, dodge, crit,
-      moves,
-      stat_points: sp,
-      boss: isBoss,
-      weight: 0, // filled later
-      zmin, zmax
-    });
-  }
-
-  rows.forEach(r => r.weight = weightFor(r));
-  VirusCache.rows = rows;
-  VirusCache.ts = Date.now();
-  return rows;
-}
-
-function weightedPick(rows) {
-  const total = rows.reduce((s, r) => s + (r.weight || 0), 0);
-  if (total <= 0) return rows[Math.floor(Math.random() * rows.length)];
-  let roll = Math.random() * total;
-  for (const r of rows) {
-    roll -= (r.weight || 0);
-    if (roll <= 0) return r;
-  }
-  return rows[rows.length - 1];
-}
-
 /* ============================
    SMART AI MEMORY + SCORERS
    ============================ */
@@ -465,7 +355,6 @@ function clearAIMemForChannel(channelId) {
 }
 
 // Generic scorer for CHIPS (ToadMan / PvP bot)
-// tier: 'wild' | 'boss'
 function pickAIMove({ channelId, f, actorId, counts, specialsUsed, tier }) {
   const isP1   = (actorId === f.p1_id);
   const myHP   = isP1 ? f.p1_hp : f.p2_hp;
@@ -527,7 +416,7 @@ function pickAIMove({ channelId, f, actorId, counts, specialsUsed, tier }) {
   return { move: best };
 }
 
-// Scorer for BOSS viruses (uses virus move list)
+// Scorer for viruses (boss & non-boss share this to prevent defense spam)
 function pickBossMove(pve) {
   const moves = parseMoves(pve.virus_moves_json);
   if (!moves.length) return null;
@@ -542,25 +431,38 @@ function pickBossMove(pve) {
 
   const { m } = getAIMem(pve.channel_id || 'chan', 'VIRUS');
 
-  // Filter eligibility
-  let eligible = moves.filter(mv => {
-    const kind = String(mv.kind || '').toLowerCase();
-    if (mv.special && usedSet.has(mv.name || mv.label || 'special')) return false;
+  const byKind = k => moves.filter(x => String(x.kind || '').toLowerCase() === k);
+  const attackMoves  = byKind('attack');
+  const defenseMoves = byKind('defense');
+
+  // Base eligibility
+  let eligible = moves.filter(x => {
+    const kind = String(x.kind || '').toLowerCase();
+    if (x.special && usedSet.has(x.name || x.label || 'special')) return false;
     if (kind === 'recovery' && vHP >= vMax) return false;
     if (kind === 'barrier' && lastV <= 0) return false;
     return true;
   });
+
+  // Hard anti-turtle rules
+  if (vDEF > 0 && attackMoves.length) {
+    eligible = eligible.filter(x => String(x.kind || '').toLowerCase() !== 'defense');
+  }
+  if ((m.nonAttackStreak || 0) >= 2 && attackMoves.length) {
+    eligible = eligible.filter(x => String(x.kind || '').toLowerCase() === 'attack');
+  }
+
+  if (!eligible.length && attackMoves.length) eligible = attackMoves.slice();
   if (!eligible.length) eligible = moves.slice();
 
+  // Scoring
   let best = null, bestScore = -1e9;
   for (const mv of eligible) {
     const name = mv.name || mv.label || 'Move';
     const kind = String(mv.kind || '').toLowerCase();
     const dmg  = Number.isFinite(mv.dmg) ? mv.dmg : 0;
-    const heal = Number.isFinite(mv.heal) ? mv.heal : (Number.isFinite(mv.rec) ? mv.rec : 0);
 
     let s = 0;
-
     if (kind === 'attack')  s += 50 + dmg;
     if (kind === 'defense') s += 30;
     if (kind === 'recovery') {
@@ -569,17 +471,14 @@ function pickBossMove(pve) {
     }
     if (kind === 'barrier') s += lastV > 0 ? 40 : 0;
 
-    // Finisher pressure (estimate through player's DEF)
     if (kind === 'attack' && pHP <= Math.max(0, dmg - pDEF)) s += 60;
     if (kind === 'attack') s += Math.max(0, 20 - pDEF * 0.5);
 
-    // React to damage taken
     if (kind === 'defense' && lastV > 0) s += Math.min(45, lastV * 0.5);
-    if (kind === 'recovery' && lastV > 0) s += 10;
 
     // Anti-spam / anti-turtle
     if (m.lastMove === name) s -= (m.repeat >= 2 ? 999 : 20 + m.repeat * 12);
-    if (kind !== 'attack' && m.nonAttackStreak >= 2) s -= 75; // bosses avoid stalling
+    if (kind !== 'attack' && m.nonAttackStreak >= 2) s -= 75;
     if (kind === 'defense' && vDEF > 0) s -= 30;
 
     // Specials once — prioritize when impactful
@@ -596,12 +495,16 @@ function pickBossMove(pve) {
   return best || null;
 }
 
+// Non-boss uses same logic to avoid defense loops
+function pickVirusMove(pve) {
+  return pickBossMove(pve);
+}
+
 /* ============================
    END SMART AI
    ============================ */
 
 // ---------- Bot (ToadMan) turn logic for scrimmage ----------
-// REPLACED: uses smart scorer
 function pickBotChip(channelId, f) {
   const myCounts     = parseMap(f.turn === f.p1_id ? f.p1_counts_json : f.p2_counts_json);
   const specialsUsed = parseList(f.turn === f.p1_id ? f.p1_special_used : f.p2_special_used);
@@ -610,9 +513,8 @@ function pickBotChip(channelId, f) {
 }
 
 async function botTakeTurn(channel) {
-  // Re-fetch latest fight
   const f = getFight.get(channel.id);
-  if (!f || f.turn !== client.user.id) return; // not our turn or no fight
+  if (!f || f.turn !== client.user.id) return;
 
   const attackerIsP1 = (client.user.id === f.p1_id);
   let p1hp = f.p1_hp, p2hp = f.p2_hp;
@@ -806,36 +708,12 @@ async function maybeBotTurn(channel, nextTurnId) {
   return botTakeTurn(channel);
 }
 
-// ---------- Virus (PVE) bot logic (basic) ----------
+// ---------- Virus (PVE) bot logic ----------
 function pickVirusMove(pve) {
-  const moves = parseMoves(pve.virus_moves_json);
-  if (!moves.length) return null;
-
-  // Enforce boss special once (also applies for non-boss but harmless)
-  const used = new Set(parseList(pve.v_special_used));
-  const avail = moves.filter(m => !m?.special || !used.has(m.name || m.label || 'special'));
-  if (!avail.length) return null;
-
-  // Simple priorities for basic viruses
-  const vHP = pve.v_hp;
-  const vMax = pve.virus_max_hp;
-  const lowHP = vHP / vMax <= 0.4;
-  const kind = k => avail.filter(m => (m.kind || '').toLowerCase() === k);
-  const heals = kind('recovery');
-  const defs  = kind('defense');
-  const atks  = kind('attack');
-  const bars  = kind('barrier');
-
-  let pool = avail;
-  if (lowHP && heals.length) pool = heals;
-  else if ((pve.v_def || 0) <= 0 && defs.length) pool = defs;
-  else if (atks.length) pool = atks;
-  else if (bars.length) pool = bars;
-
-  return pool[Math.floor(Math.random() * pool.length)];
+  // use boss logic for all to avoid defense loops
+  return pickBossMove(pve);
 }
 
-// ---------- Boss virus AI uses smart scorer ----------
 async function virusTakeTurn(channel) {
   const f = getPVE.get(channel.id);
   if (!f || f.turn !== 'virus') return;
@@ -847,9 +725,8 @@ async function virusTakeTurn(channel) {
   let vSpec   = parseList(f.v_special_used);
   let lastP   = f.last_hit_p, lastV = f.last_hit_v;
 
-  const mv = f.virus_is_boss ? pickBossMove(f) : pickVirusMove(f);
+  const mv = pickVirusMove(f);
   if (!mv) {
-    // pass turn if nothing valid
     const next = 'player';
     if (next === 'player') pdef = 0; else vdef = 0;
     updPVE.run(php, vhp, pdef, vdef, JSON.stringify(pCounts), JSON.stringify(pSpec), JSON.stringify(vSpec), next, lastP, lastV, channel.id);
@@ -860,7 +737,7 @@ async function virusTakeTurn(channel) {
   const kind = String(mv.kind || '').toLowerCase();
   let line = '';
 
-  // mark special if used (boss only)
+  // mark special if used
   let specialTag = '';
   if (mv.special) {
     const tag = (mv.name || 'special');
@@ -870,8 +747,8 @@ async function virusTakeTurn(channel) {
     }
   }
 
-  // Update boss memory (variety & anti-turtle)
-  if (f.virus_is_boss) {
+  // update memory for all viruses (prevents endless non-attacks)
+  {
     const { m } = getAIMem(channel.id, 'VIRUS');
     if (m.lastMove === name) m.repeat = (m.repeat || 1) + 1;
     else { m.lastMove = name; m.repeat = 1; }
@@ -934,7 +811,6 @@ async function virusTakeTurn(channel) {
   await channel.send(line);
 
   if (php === 0 || vhp === 0) {
-    // End and settle rewards if player won
     const playerWon = vhp === 0;
     const z = playerWon ? Math.max(f.virus_zmin || 0, Math.min(f.virus_zmax || 0, Math.floor(Math.random() * ((f.virus_zmax||0)-(f.virus_zmin||0)+1)) + (f.virus_zmin||0))) : 0;
     endPVE.run(channel.id);
@@ -1021,21 +897,28 @@ client.on('interactionCreate', async (ix) => {
     const user = ix.options.getUser('user') || ix.user;
     const row = ensureNavi(user.id);
 
-    // Pull current temporary Defense if this channel has an active duel
+    // Active duel?
     const f = getFight.get(ix.channel.id);
     let defNow = 0;
+    let curHpNow = null;
     if (f) {
-      if (user.id === f.p1_id) defNow = f.p1_def ?? 0;
-      else if (user.id === f.p2_id) defNow = f.p2_def ?? 0;
+      if (user.id === f.p1_id) { defNow = f.p1_def ?? 0; curHpNow = f.p1_hp; }
+      else if (user.id === f.p2_id) { defNow = f.p2_def ?? 0; curHpNow = f.p2_hp; }
     }
 
-    // PVE def as well if applicable and querying the player
+    // Active PVE?
     const pve = getPVE.get(ix.channel.id);
-    if (pve && user.id === pve.player_id) defNow = pve.p_def ?? defNow;
+    if (pve && user.id === pve.player_id) {
+      defNow = pve.p_def ?? defNow;
+      curHpNow = pve.p_hp;
+    }
+
+    const hpStr = curHpNow != null ? `${row.max_hp} (current: ${curHpNow})` : `${row.max_hp}`;
 
     return ix.reply(
-      `📊 **${user.username}** — HP ${row.max_hp} | Dodge ${row.dodge}% | Crit ${row.crit}% | ` +
-      `Record: **${row.wins ?? 0}-${row.losses ?? 0}** | Points: **${row.upgrade_pts ?? 0}** | Zenny: **${row.zenny ?? 0} ${zennyIcon()}** | Def (temp): **${defNow}**`
+      `📊 **${user.username}** — HP ${hpStr} | Dodge ${row.dodge}% | Crit ${row.crit}% | ` +
+      `Record: **${row.wins ?? 0}-${row.losses ?? 0}** | Points: **${row.upgrade_pts ?? 0}** | ` +
+      `Zenny: **${row.zenny ?? 0} ${zennyIcon()}** | Def (temp): **${defNow}**`
     );
   }
 
@@ -1275,7 +1158,7 @@ client.on('interactionCreate', async (ix) => {
       `🧭 **Virus Encounter**${pve.virus_is_boss ? ' *(BOSS)*' : ''}`,
       `Turn: **${pve.turn}**`,
       `Player: <@${pve.player_id}> — HP **${pve.p_hp}** | DEF **${pve.p_def ?? 0}** | Specials: ${p1Spec.length ? p1Spec.join(', ') : '—'}`,
-      `Virus: **${pve.virus_name}** — HP **${pve.v_hp}** | DEF **${pve.v_def ?? 0}** | Specials used: ${vSpec.length ? vSpec.join(', ') : '—'}`
+      `Virus: **${pve.virus_name}** — HP **${pve.v_hp}** | DEF **${pve.v_def ?? 0}** | Specials used: ${vSpec.length ? vSpec.join(', ) : '—'}`
     ];
     return ix.reply({ content: lines.join('\n'), embeds: [embed] });
   }
@@ -1307,7 +1190,7 @@ client.on('interactionCreate', async (ix) => {
   if (ix.commandName === 'zenny') {
     const user = ix.options.getUser('user') || ix.user;
     const row = ensureNavi(user.id);
-    return ix.reply(`💰 **${user.username}** has **${row.zenny ?? 0}** ${zennyIcon()}.`);
+    return ix.reply(`:Zenny: **${user.username}** has **${row.zenny ?? 0}** ${zennyIcon()}.`);
   }
 
   // NEW: Give Zenny
@@ -1392,6 +1275,111 @@ client.on('interactionCreate', async (ix) => {
   }
 });
 
+// ---------- Virus TSV Loader ----------
+const VirusCache = { ts: 0, rows: [] };
+const HEADER_MAP = (h) => (h || '').toLowerCase().trim().replace(/[^\w]+/g, '_');
+
+function parseRange(s) {
+  const t = String(s || '').trim();
+  if (!t) return { min: 0, max: 0 };
+  const m = t.match(/^(\d+)\s*-\s*(\d+)$/);
+  if (m) {
+    const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+    return { min: Math.min(a, b), max: Math.max(a, b) };
+  }
+  const n = parseInt(t, 10);
+  return { min: isNaN(n) ? 0 : n, max: isNaN(n) ? 0 : n };
+}
+
+function weightFor(row) {
+  const sp = Number(row.stat_points || row.statpoint || row.stat || 1);
+  const boss = !!row.boss;
+  if (!boss) return Math.max(1, 5 - Math.max(1, Math.min(4, sp)));
+  if (sp <= 5) return 1;
+  if (sp === 6) return 0.6;
+  return 0.4;
+}
+
+async function loadViruses(force = false) {
+  const FRESH_MS = 1000 * 60 * 5;
+  if (!force && VirusCache.rows.length && (Date.now() - VirusCache.ts) < FRESH_MS) return VirusCache.rows;
+  if (!VIRUS_TSV_URL) return [];
+
+  const res = await fetch(VIRUS_TSV_URL);
+  if (!res.ok) throw new Error(`Virus TSV fetch failed: ${res.status}`);
+  const text = await res.text();
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (!lines.length) return [];
+
+  const headers = lines[0].split('\t').map(HEADER_MAP);
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split('\t');
+    const obj = {};
+    headers.forEach((h, idx) => { obj[h] = cols[idx]; });
+
+    const name = (obj.name || '').trim();
+    if (!name) continue;
+
+    const hp = parseInt(obj.hp || '0', 10) || 0;
+    const dodge = parseInt(obj.dodge || '0', 10) || 0;
+    const crit = parseInt(obj.crit || '0', 10) || 0;
+
+    const m1 = obj.move1_json || obj.move_1json || '';
+    const m2 = obj.move_2json || obj.move2_json || '';
+    const m3 = obj.move3_json || '';
+    const m4 = obj.move4_json || '';
+    const moves = [];
+    const pushMove = (s, fallback) => {
+      if (!s) return;
+      try {
+        const mv = JSON.parse(s);
+        if (mv && typeof mv === 'object') {
+          if (!mv.name) mv.name = fallback;
+          moves.push(mv);
+        }
+      } catch {}
+    };
+    pushMove(m1, 'Move1');
+    pushMove(m2, 'Move2');
+    pushMove(m3, 'Move3');
+    pushMove(m4, 'Move4');
+
+    const sp = parseInt((obj.stat_points || obj.statpoint || '1'), 10) || 1;
+    const boss = String(obj.boss || '').toLowerCase().trim();
+    const isBoss = ['1','true','yes','y'].includes(boss);
+
+    const { min: zmin, max: zmax } = parseRange(obj.zenny || obj.zenny_range || '');
+
+    rows.push({
+      name,
+      image_url: obj.image_url || '',
+      hp, dodge, crit,
+      moves,
+      stat_points: sp,
+      boss: isBoss,
+      weight: 0,
+      zmin, zmax
+    });
+  }
+
+  rows.forEach(r => r.weight = weightFor(r));
+  VirusCache.rows = rows;
+  VirusCache.ts = Date.now();
+  return rows;
+}
+
+function weightedPick(rows) {
+  const total = rows.reduce((s, r) => s + (r.weight || 0), 0);
+  if (total <= 0) return rows[Math.floor(Math.random() * rows.length)];
+  let roll = Math.random() * total;
+  for (const r of rows) {
+    roll -= (r.weight || 0);
+    if (roll <= 0) return r;
+  }
+  return rows[rows.length - 1];
+}
+
 // ---------- Message listener (trigger from NumberMan EMBED) ----------
 client.on('messageCreate', async (msg) => {
   if (!msg.guild) return;
@@ -1432,7 +1420,7 @@ client.on('messageCreate', async (msg) => {
         msg.interaction?.user?.id;
       if (!actorId) {
         console.log('[UPGRADE] Found upgrade word but no actor mention/user.', { mid: msg.id });
-        return; // exit handler
+        return;
       }
       const row = ensureNavi(actorId);
       let { max_hp, dodge, crit, wins, losses } = row;
@@ -1480,12 +1468,12 @@ client.on('messageCreate', async (msg) => {
       const recent = await msg.channel.messages.fetch({ limit: 10 });
       const prior = [...recent.values()]
         .filter(m => m.id !== msg.id)
-        .sort((a, b) => b.createdTimestamp - a.createdTimestamp) // newest first
+        .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
         .find(m =>
           m.author?.id === NUMBERMAN_ID &&
           typeof m.content === 'string' &&
           /\bused\b/i.test(m.content) &&
-          (msg.createdTimestamp - m.createdTimestamp) < 10_000 // within 10s window
+          (msg.createdTimestamp - m.createdTimestamp) < 10_000
         );
       actorId = prior?.content?.match(/<@!?(\d+)>/)?.[1] || null;
     } catch (e) {
