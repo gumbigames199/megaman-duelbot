@@ -11,7 +11,8 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
-  EmbedBuilder
+  EmbedBuilder,
+  StringSelectMenuBuilder,
 } from 'discord.js';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -20,7 +21,10 @@ import fs from 'node:fs';
 try {
   if (typeof fetch === 'undefined') {
     // eslint-disable-next-line no-undef
-    await import('node-fetch').then(({ default: f }) => { global.fetch = f; });
+    await import('node-fetch').then(({ default: f }) => {
+      // @ts-ignore
+      global.fetch = f;
+    });
   }
 } catch { /* ignore */ }
 
@@ -38,12 +42,12 @@ const ROUND_SECONDS = Math.max(15, parseInt(process.env.ROUND_SECONDS || '60', 1
 // Virus TSV URL (Google Sheets export to TSV)
 const VIRUS_TSV_URL = process.env.VIRUS_TSV_URL || '';
 // Chip TSV URL (Google Sheets export to TSV) — accepts either env name
-const CHIP_TSV_URL  = process.env.CHIP_TSV_URL || process.env.CHIPS_TSV_URL || '';
+const CHIP_TSV_URL = process.env.CHIP_TSV_URL || process.env.CHIPS_TSV_URL || '';
 
 // Stat caps (ENV-overridable)
-const MAX_HP_CAP    = parseInt(process.env.MAX_HP_CAP    || '500', 10);
-const MAX_DODGE_CAP = parseInt(process.env.MAX_DODGE_CAP || '40',  10);
-const MAX_CRIT_CAP  = parseInt(process.env.MAX_CRIT_CAP  || '25',  10);
+const MAX_HP_CAP = parseInt(process.env.MAX_HP_CAP || '500', 10);
+const MAX_DODGE_CAP = parseInt(process.env.MAX_DODGE_CAP || '40', 10);
+const MAX_CRIT_CAP = parseInt(process.env.MAX_CRIT_CAP || '25', 10);
 
 // Zenny emoji helpers (fallback to moneybag)
 const ZENNY_EMOJI_ID = process.env.ZENNY_EMOJI_ID || '';
@@ -58,17 +62,17 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
   ],
-  partials: [Partials.Channel, Partials.Message]
+  partials: [Partials.Channel, Partials.Message],
 });
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- Auto-register slash commands (guild-scoped) ----------
 async function registerCommands() {
-  const TOKEN    = process.env.DISCORD_TOKEN;
-  const APP_ID   = process.env.CLIENT_ID || process.env.APPLICATION_ID;
+  const TOKEN = process.env.DISCORD_TOKEN;
+  const APP_ID = process.env.CLIENT_ID || process.env.APPLICATION_ID;
   const GUILD_ID = process.env.GUILD_ID;
 
   if (!TOKEN || !APP_ID || !GUILD_ID) {
@@ -77,96 +81,85 @@ async function registerCommands() {
   }
 
   const cmds = [
-    new SlashCommandBuilder()
-      .setName('navi_register')
-      .setDescription('Register your Navi'),
+    new SlashCommandBuilder().setName('navi_register').setDescription('Register your Navi'),
 
     new SlashCommandBuilder()
       .setName('navi_upgrade')
       .setDescription('Upgrade your Navi (points/admin)')
-      .addStringOption(o =>
-        o.setName('stat').setDescription('Stat to upgrade').setRequired(true)
-         .addChoices({ name: 'hp', value: 'hp' }, { name: 'dodge', value: 'dodge' }, { name: 'crit', value: 'crit' })
+      .addStringOption((o) =>
+        o
+          .setName('stat')
+          .setDescription('Stat to upgrade')
+          .setRequired(true)
+          .addChoices({ name: 'hp', value: 'hp' }, { name: 'dodge', value: 'dodge' }, { name: 'crit', value: 'crit' }),
       )
-      .addIntegerOption(o =>
-        o.setName('amount').setDescription('Optional amount (may be ignored in points mode)').setRequired(false)
+      .addIntegerOption((o) =>
+        o.setName('amount').setDescription('Optional amount (may be ignored in points mode)').setRequired(false),
       ),
 
     new SlashCommandBuilder()
       .setName('navi_stats')
       .setDescription('Show Navi stats')
-      .addUserOption(o => o.setName('user').setDescription('User to inspect').setRequired(false)),
+      .addUserOption((o) => o.setName('user').setDescription('User to inspect').setRequired(false)),
 
     new SlashCommandBuilder()
       .setName('duel')
       .setDescription('Challenge someone to a duel')
-      .addUserOption(o => o.setName('opponent').setDescription('Who to duel').setRequired(true)),
+      .addUserOption((o) => o.setName('opponent').setDescription('Who to duel').setRequired(true)),
 
-    new SlashCommandBuilder()
-      .setName('forfeit')
-      .setDescription('Forfeit the current duel/encounter'),
+    new SlashCommandBuilder().setName('forfeit').setDescription('Forfeit the current duel/encounter'),
 
-    new SlashCommandBuilder()
-      .setName('duel_state')
-      .setDescription('Show the current duel/encounter state'),
+    new SlashCommandBuilder().setName('duel_state').setDescription('Show the current duel/encounter state'),
 
     new SlashCommandBuilder()
       .setName('navi_leaderboard')
       .setDescription('Show top players by record')
-      .addIntegerOption(o =>
-        o.setName('limit').setDescription('How many to list (5-25, default 10)').setRequired(false)
+      .addIntegerOption((o) =>
+        o.setName('limit').setDescription('How many to list (5-25, default 10)').setRequired(false),
       ),
 
     // Virus Busting (PVE)
-    new SlashCommandBuilder()
-      .setName('virus_busting')
-      .setDescription('Start a Virus encounter (PVE)'),
+    new SlashCommandBuilder().setName('virus_busting').setDescription('Start a Virus encounter (PVE)'),
 
     // Zenny
     new SlashCommandBuilder()
       .setName('zenny')
       .setDescription('Show Zenny balance')
-      .addUserOption(o => o.setName('user').setDescription('User to inspect').setRequired(false)),
+      .addUserOption((o) => o.setName('user').setDescription('User to inspect').setRequired(false)),
 
     new SlashCommandBuilder()
       .setName('give_zenny')
       .setDescription('Give some of your Zenny to another player')
-      .addUserOption(o => o.setName('to').setDescription('Recipient').setRequired(true))
-      .addIntegerOption(o => o.setName('amount').setDescription('Amount to send').setRequired(true).setMinValue(1)),
+      .addUserOption((o) => o.setName('to').setDescription('Recipient').setRequired(true))
+      .addIntegerOption((o) => o.setName('amount').setDescription('Amount to send').setRequired(true).setMinValue(1)),
 
     // Chips economy & usage
-    new SlashCommandBuilder()
-      .setName('shop')
-      .setDescription('View the chip shop'),
+    new SlashCommandBuilder().setName('shop').setDescription('View the chip shop'),
 
     new SlashCommandBuilder()
       .setName('buy')
       .setDescription('Buy chips or upgrades with Zenny')
-      .addStringOption(o =>
-        o.setName('name').setDescription('Chip or Upgrade name').setRequired(true).setAutocomplete(true)
-      )
-      .addIntegerOption(o =>
-        o.setName('qty').setDescription('Quantity (default 1)').setRequired(false).setMinValue(1)
-      ),
+      .addStringOption((o) => o.setName('name').setDescription('Chip or Upgrade name').setRequired(true).setAutocomplete(true))
+      .addIntegerOption((o) => o.setName('qty').setDescription('Quantity (default 1)').setRequired(false).setMinValue(1)),
 
-    new SlashCommandBuilder()
-      .setName('folder')
-      .setDescription('View your owned chips'),
+    new SlashCommandBuilder().setName('folder').setDescription('View your owned chips'),
 
     // Use chip (simultaneous rounds)
     new SlashCommandBuilder()
       .setName('use')
       .setDescription('Play a chip this round (simultaneous combat)')
-      .addSubcommand(sc =>
-        sc.setName('chip')
+      .addSubcommand((sc) =>
+        sc
+          .setName('chip')
           .setDescription('Use a single chip')
-          .addStringOption(o => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
+          .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true)),
       )
-      .addSubcommand(sc =>
-        sc.setName('support')
+      .addSubcommand((sc) =>
+        sc
+          .setName('support')
           .setDescription('Use a support chip and chain into a second non-support chip')
-          .addStringOption(o => o.setName('support').setDescription('Support chip').setRequired(true).setAutocomplete(true))
-          .addStringOption(o => o.setName('with').setDescription('Follow-up (non-support) chip').setRequired(true).setAutocomplete(true))
+          .addStringOption((o) => o.setName('support').setDescription('Support chip').setRequired(true).setAutocomplete(true))
+          .addStringOption((o) => o.setName('with').setDescription('Follow-up (non-support) chip').setRequired(true).setAutocomplete(true)),
       ),
 
     // Admin chip mgmt
@@ -179,18 +172,18 @@ async function registerCommands() {
       .setName('chip_grant')
       .setDescription('Admin: grant chips to a user')
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-      .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
-      .addStringOption(o => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
-      .addIntegerOption(o => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
+      .addUserOption((o) => o.setName('user').setDescription('Target user').setRequired(true))
+      .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
+      .addIntegerOption((o) => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
 
     new SlashCommandBuilder()
       .setName('chip_remove')
       .setDescription('Admin: remove chips from a user')
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-      .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
-      .addStringOption(o => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
-      .addIntegerOption(o => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
-  ].map(c => c.toJSON());
+      .addUserOption((o) => o.setName('user').setDescription('Target user').setRequired(true))
+      .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
+      .addIntegerOption((o) => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
+  ].map((c) => c.toJSON());
 
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   console.log(`[commands] Registering ${cmds.length} commands to guild ${GUILD_ID}…`);
@@ -319,18 +312,18 @@ function ensureNavi(uid) {
   return { user_id: uid, max_hp: 250, dodge: 20, crit: 5, wins: 0, losses: 0, upgrade_pts: 0, zenny: 0 };
 }
 
-const setRecord  = db.prepare(`UPDATE navis SET wins = wins + ?, losses = losses + ? WHERE user_id = ?`);
-const addPoints  = db.prepare(`UPDATE navis SET upgrade_pts = upgrade_pts + ? WHERE user_id = ?`);
-const addZenny   = db.prepare(`UPDATE navis SET zenny = zenny + ? WHERE user_id = ?`);
-const setZenny   = db.prepare(`UPDATE navis SET zenny = ? WHERE user_id = ?`);
-const updHP      = db.prepare(`UPDATE navis SET max_hp=?      WHERE user_id=?`);
-const updDodge   = db.prepare(`UPDATE navis SET dodge=?       WHERE user_id=?`);
-const updCrit    = db.prepare(`UPDATE navis SET crit=?        WHERE user_id=?`);
-const updWins    = db.prepare(`UPDATE navis SET wins=?        WHERE user_id=?`);
-const updLosses  = db.prepare(`UPDATE navis SET losses=?      WHERE user_id=?`);
-const updPts     = db.prepare(`UPDATE navis SET upgrade_pts=? WHERE user_id=?`);
+const setRecord = db.prepare(`UPDATE navis SET wins = wins + ?, losses = losses + ? WHERE user_id = ?`);
+const addPoints = db.prepare(`UPDATE navis SET upgrade_pts = upgrade_pts + ? WHERE user_id = ?`);
+const addZenny = db.prepare(`UPDATE navis SET zenny = zenny + ? WHERE user_id = ?`);
+const setZenny = db.prepare(`UPDATE navis SET zenny = ? WHERE user_id = ?`);
+const updHP = db.prepare(`UPDATE navis SET max_hp=?      WHERE user_id=?`);
+const updDodge = db.prepare(`UPDATE navis SET dodge=?       WHERE user_id=?`);
+const updCrit = db.prepare(`UPDATE navis SET crit=?        WHERE user_id=?`);
+const updWins = db.prepare(`UPDATE navis SET wins=?        WHERE user_id=?`);
+const updLosses = db.prepare(`UPDATE navis SET losses=?      WHERE user_id=?`);
+const updPts = db.prepare(`UPDATE navis SET upgrade_pts=? WHERE user_id=?`);
 
-const getFight   = db.prepare(`SELECT * FROM duel_state WHERE channel_id=?`);
+const getFight = db.prepare(`SELECT * FROM duel_state WHERE channel_id=?`);
 const startFight = db.prepare(`
   INSERT INTO duel_state
     (channel_id,p1_id,p2_id,p1_hp,p2_hp,p1_def,p2_def,p1_counts_json,p2_counts_json,p1_special_used,p2_special_used,p1_action_json,p2_action_json,round_deadline,started_at)
@@ -346,7 +339,7 @@ const updFightRound = db.prepare(`
          round_deadline=?
    WHERE channel_id=?
 `);
-const endFight   = db.prepare(`DELETE FROM duel_state WHERE channel_id=?`);
+const endFight = db.prepare(`DELETE FROM duel_state WHERE channel_id=?`);
 
 const getPVE = db.prepare(`SELECT * FROM pve_state WHERE channel_id=?`);
 const startPVE = db.prepare(`
@@ -385,13 +378,13 @@ const listInv = db.prepare(`SELECT chip_name, qty FROM inventory WHERE user_id=?
 // Helpers
 const normalize = (s) => (s || '').toLowerCase().replace(/[\s_-]/g, '');
 const parseList = (s) => { try { const v = JSON.parse(s ?? '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
-const parseMap  = (s) => { try { const v = JSON.parse(s ?? '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; } };
+const parseMap = (s) => { try { const v = JSON.parse(s ?? '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; } };
 const parseMoves = (s) => { try { const v = JSON.parse(s ?? '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
 const tryParseJSON = (s) => { try { return JSON.parse(s); } catch { return null; } };
 const now = () => Date.now();
 
 function hpLineDuel(f) { return `HP — <@${f.p1_id}>: ${f.p1_hp} | <@${f.p2_id}>: ${f.p2_hp}`; }
-function hpLinePVE(f)  { return `HP — <@${f.player_id}>: ${f.p_hp} | **${f.virus_name}**: ${f.v_hp}`; }
+function hpLinePVE(f) { return `HP — <@${f.player_id}>: ${f.p_hp} | **${f.virus_name}**: ${f.v_hp}`; }
 
 function isAdmin(ix) {
   const hasAdminRole = ix.member?.roles?.cache?.has?.(ADMIN_ROLE_ID);
@@ -541,32 +534,16 @@ function extractKinds(effect) {
   // effect.kind may be 'attack', 'break', 'recovery', 'defense', 'barrier', 'support', or combos like 'attack,recovery'
   if (!effect) return [];
   const k = effect.kinds || effect.kind || '';
-  if (Array.isArray(k)) return k.map(x => String(x).toLowerCase());
+  if (Array.isArray(k)) return k.map((x) => String(x).toLowerCase());
   return String(k || '').toLowerCase().split(/[+,\s/]+/).filter(Boolean);
 }
-function isAttack(effect) {
-  const kinds = extractKinds(effect);
-  return kinds.includes('attack') || kinds.includes('break');
-}
-function isBreak(effect) {
-  const kinds = extractKinds(effect);
-  return kinds.includes('break');
-}
-function isSupport(effect) {
-  return extractKinds(effect).includes('support');
-}
-function isBarrier(effect) {
-  return extractKinds(effect).includes('barrier');
-}
-function isDefense(effect) {
-  return extractKinds(effect).includes('defense');
-}
-function isRecovery(effect) {
-  return extractKinds(effect).includes('recovery');
-}
-function isSpecial(effect) {
-  return !!effect?.special;
-}
+function isAttack(effect) { const kinds = extractKinds(effect); return kinds.includes('attack') || kinds.includes('break'); }
+function isBreak(effect) { const kinds = extractKinds(effect); return kinds.includes('break'); }
+function isSupport(effect) { return extractKinds(effect).includes('support'); }
+function isBarrier(effect) { return extractKinds(effect).includes('barrier'); }
+function isDefense(effect) { return extractKinds(effect).includes('defense'); }
+function isRecovery(effect) { return extractKinds(effect).includes('recovery'); }
+function isSpecial(effect) { return !!effect?.special; }
 
 function supportBonus(effect) {
   // Support chips can specify bonus via `add` or `dmg`
@@ -602,7 +579,7 @@ function pickBotChipFor(f, isP1) {
   const counts = parseMap(isP1 ? f.p1_counts_json : f.p2_counts_json);
   const specials = new Set(parseList(isP1 ? f.p1_special_used : f.p2_special_used));
   const rows = listChips.all();
-  const eligible = rows.filter(r => {
+  const eligible = rows.filter((r) => {
     const eff = readEffect(r);
     if (counts[r.name] >= MAX_PER_CHIP) return false;
     if (isSpecial(eff) && specials.has(r.name)) return false;
@@ -658,6 +635,57 @@ function resolveActionToIntent(actorId, action, { forPVE = false } = {}) {
 function getChipRowOrNull(name) {
   const r = getChip.get(name);
   return r || null;
+}
+
+// ---------- UI helpers for Shop ----------
+function summarizeEffect(e) {
+  if (!e) return '—';
+  const bits = [];
+  const kinds = extractKinds(e);
+  if (kinds.length) bits.push(`Kinds: \`${kinds.join(', ')}\``);
+  if (Number.isFinite(e.dmg)) bits.push(`DMG: **${e.dmg}**`);
+  if (Number.isFinite(e.def)) bits.push(`DEF: **${e.def}**`);
+  const heal = Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : null);
+  if (heal != null) bits.push(`Heal: **${heal}**`);
+  if (e.special) bits.push('⭐ Special (once per battle)');
+  return bits.join(' • ') || '—';
+}
+
+function buildShopPage(rows, page = 0) {
+  const PER = 25;
+  const totalPages = Math.max(1, Math.ceil(rows.length / PER));
+  page = Math.min(totalPages - 1, Math.max(0, page));
+  const start = page * PER;
+  const slice = rows.slice(start, start + PER);
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`shop:select:${page}`)
+    .setPlaceholder(`Select an item (${page + 1}/${totalPages})`)
+    .addOptions(
+      slice.map(r => ({
+        label: r.name.slice(0, 100),
+        value: r.name,
+        description: `${r.is_upgrade ? 'Upgrade' : 'Chip'} • ${r.zenny_cost} ${zennyIcon()}`
+      })),
+    );
+
+  const rowSel = new ActionRowBuilder().addComponents(select);
+
+  const prev = new ButtonBuilder().setCustomId(`shop:prev:${page}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(page === 0);
+  const next = new ButtonBuilder().setCustomId(`shop:next:${page}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1);
+  const close = new ButtonBuilder().setCustomId('shop:close').setLabel('Close').setStyle(ButtonStyle.Danger);
+  const rowNav = new ActionRowBuilder().addComponents(prev, next, close);
+
+  const list = slice
+    .map(r => `• **${r.name}** — ${r.zenny_cost} ${zennyIcon()}${r.is_upgrade ? ' (Upgrade)' : ''}`)
+    .join('\n');
+
+  const embed = new EmbedBuilder()
+    .setTitle('🛒 Chip Shop')
+    .setDescription(`${list || '—'}\n\nPick an item from the menu below to view details & buy.`)
+    .setFooter({ text: `Items ${start + 1}-${Math.min(rows.length, start + PER)} of ${rows.length} • Page ${page + 1}/${totalPages}` });
+
+  return { embed, components: [rowSel, rowNav], page, totalPages };
 }
 
 // Round resolution (Duels)
@@ -749,7 +777,7 @@ async function resolveDuelRound(channel) {
       defenderHasBarrier: p2Barrier,
       breakFlag: isBreak(P1.attackEff),
       dodgePct: p2.dodge,
-      critPct: p1.crit
+      critPct: p1.crit,
     });
     ({ dmg: dmg1to2, crit: crit1, dodged: dodged1, absorbed: absorbed1, cancelledByBarrier: cancelledByBarrier1 } = res);
   }
@@ -766,7 +794,7 @@ async function resolveDuelRound(channel) {
       defenderHasBarrier: p1Barrier,
       breakFlag: isBreak(P2.attackEff),
       dodgePct: p1.dodge,
-      critPct: p2.crit
+      critPct: p2.crit,
     });
     ({ dmg: dmg2to1, crit: crit2, dodged: dodged2, absorbed: absorbed2, cancelledByBarrier: cancelledByBarrier2 } = res);
   }
@@ -784,7 +812,7 @@ async function resolveDuelRound(channel) {
     const used = [...new Set(P.used || [])];
     const parts = [];
     if (P.supportEff && used.length === 2) parts.push(`**${used[0]}** → **${used[1]}**`);
-    else if (used.length) parts.push(used.map(n => `**${n}**`).join(' + '));
+    else if (used.length) parts.push(used.map((n) => `**${n}**`).join(' + '));
     else parts.push('did nothing');
     const extras = [];
     if (P.barrier) extras.push('🛡️ Barrier');
@@ -793,7 +821,7 @@ async function resolveDuelRound(channel) {
     if (P.attackEff) {
       if (cancelled) extras.push('❌ cancelled');
       else if (dodged) extras.push('💨 dodged');
-      else extras.push(`💥 ${dmg}${crit ? ' _(CRIT!)_' : ''}${absorbed>0 ? ` (DEF absorbed ${absorbed})` : ''}`);
+      else extras.push(`💥 ${dmg}${crit ? ' _(CRIT!)_' : ''}${absorbed > 0 ? ` (DEF absorbed ${absorbed})` : ''}`);
     }
     return `${parts.join(' ')}${extras.length ? ` → ${extras.join(' | ')}` : ''}`;
   }
@@ -842,7 +870,7 @@ async function resolveDuelRound(channel) {
       JSON.stringify([...p1Spec]), JSON.stringify([...p2Spec]),
       null, null,
       nextDeadline,
-      channel.id
+      channel.id,
     );
     scheduleRoundTimer(channel.id, () => resolveDuelRound(channel));
   }
@@ -883,16 +911,16 @@ async function resolvePVERound(channel) {
 
   // Build intents
   const Iplayer = resolveActionToIntent(f.player_id, Aplayer, { forPVE: true });
-  const Ivirus  = resolveActionToIntent('virus', Avirus, { forPVE: true });
+  const Ivirus = resolveActionToIntent('virus', Avirus, { forPVE: true });
 
   let pCounts = parseMap(f.p_counts_json);
-  let pSpec   = new Set(parseList(f.p_special_used));
-  let vSpec   = new Set(parseList(f.v_special_used));
+  let pSpec = new Set(parseList(f.p_special_used));
+  let vSpec = new Set(parseList(f.v_special_used));
 
   // Chip rows & virus moves (virus moves are stored directly in virus_moves_json)
   function virusMoveRowByName(name) {
     const moves = parseMoves(f.virus_moves_json);
-    return moves.find(m => (m.name || m.label || '').toLowerCase() === String(name || '').toLowerCase()) || null;
+    return moves.find((m) => (m.name || m.label || '').toLowerCase() === String(name || '').toLowerCase()) || null;
   }
 
   function interpretP(intent, isVirus = false) {
@@ -901,7 +929,7 @@ async function resolvePVERound(channel) {
       if (isVirus) {
         const mv = virusMoveRowByName(intent.chipName);
         if (!mv) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
-        let def=0,barrier=false,attackEff=null,rec=0;
+        let def = 0, barrier = false, attackEff = null, rec = 0;
         if (isDefense(mv)) def = Number.isFinite(mv.def) ? mv.def : 0;
         if (isBarrier(mv)) barrier = true;
         if (isRecovery(mv)) rec += Number.isFinite(mv.heal) ? mv.heal : (Number.isFinite(mv.rec) ? mv.rec : 0);
@@ -913,7 +941,7 @@ async function resolvePVERound(channel) {
         const r = getChipRowOrNull(intent.chipName);
         if (!r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
         const e = readEffect(r);
-        let def=0,barrier=false,attackEff=null,rec=0;
+        let def = 0, barrier = false, attackEff = null, rec = 0;
         if (isDefense(e)) def = Number.isFinite(e.def) ? e.def : 0;
         if (isBarrier(e)) barrier = true;
         if (isRecovery(e)) rec += Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : 0);
@@ -926,7 +954,7 @@ async function resolvePVERound(channel) {
       const cr = getChipRowOrNull(intent.chipName);
       if (!sr || !cr) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
       const se = readEffect(sr), ce = readEffect(cr);
-      let def=0,barrier=false,attackEff=null,rec=0;
+      let def = 0, barrier = false, attackEff = null, rec = 0;
       if (isDefense(ce)) def += Number.isFinite(ce.def) ? ce.def : 0;
       if (isBarrier(ce)) barrier = true;
       if (isRecovery(ce)) rec += Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : 0);
@@ -946,7 +974,7 @@ async function resolvePVERound(channel) {
   const vBarrier = !!PV.barrier;
 
   // Player attacks virus
-  let dmgPtoV=0, critP=false, dodgedP=false, absorbedP=0, cancelledByBarrierP=false;
+  let dmgPtoV = 0, critP = false, dodgedP = false, absorbedP = 0, cancelledByBarrierP = false;
   if (PP.attackEff) {
     const res = computeAttackDamage({
       baseChip: PP.attackEff,
@@ -956,13 +984,13 @@ async function resolvePVERound(channel) {
       defenderHasBarrier: vBarrier,
       breakFlag: isBreak(PP.attackEff),
       dodgePct: f.virus_dodge,
-      critPct: player.crit
+      critPct: player.crit,
     });
     ({ dmg: dmgPtoV, crit: critP, dodged: dodgedP, absorbed: absorbedP, cancelledByBarrier: cancelledByBarrierP } = res);
   }
 
   // Virus attacks player
-  let dmgVtoP=0, critV=false, dodgedV=false, absorbedV=0, cancelledByBarrierV=false;
+  let dmgVtoP = 0, critV = false, dodgedV = false, absorbedV = 0, cancelledByBarrierV = false;
   if (PV.attackEff) {
     const res = computeAttackDamage({
       baseChip: PV.attackEff,
@@ -972,7 +1000,7 @@ async function resolvePVERound(channel) {
       defenderHasBarrier: pBarrier,
       breakFlag: isBreak(PV.attackEff),
       dodgePct: player.dodge,
-      critPct: f.virus_crit
+      critPct: f.virus_crit,
     });
     ({ dmg: dmgVtoP, crit: critV, dodged: dodgedV, absorbed: absorbedV, cancelledByBarrier: cancelledByBarrierV } = res);
   }
@@ -1000,17 +1028,17 @@ async function resolvePVERound(channel) {
     const used = [...new Set(P.used || [])];
     const parts = [];
     if (P.supportEff && used.length === 2) parts.push(`**${used[0]}** → **${used[1]}**`);
-    else if (used.length) parts.push(used.map(n => `**${n}**`).join(' + '));
+    else if (used.length) parts.push(used.map((n) => `**${n}**`).join(' + '));
     else parts.push('did nothing');
 
     const extras = [];
     if (P.barrier) extras.push('🛡️ Barrier');
     if (P.def) extras.push(`🧱 DEF +${P.def}`);
-    if (rec>0) extras.push(`💚 +${rec}`);
+    if (rec > 0) extras.push(`💚 +${rec}`);
     if (P.attackEff) {
       if (cancelled) extras.push('❌ cancelled');
       else if (dodged) extras.push('💨 dodged');
-      else { extras.push(`💥 ${dmg}${crit ? ' _(CRIT!)_' : ''}${absorbed>0 ? ` (DEF absorbed ${absorbed})` : ''}`); }
+      else { extras.push(`💥 ${dmg}${crit ? ' _(CRIT!)_' : ''}${absorbed > 0 ? ` (DEF absorbed ${absorbed})` : ''}`); }
     }
     return `• ${label} ${parts.join(' ')}${extras.length ? ` → ${extras.join(' | ')}` : ''}`;
   }
@@ -1025,7 +1053,7 @@ async function resolvePVERound(channel) {
     endPVE.run(channel.id);
     clearRoundTimer(channel.id);
   } else if (vhp === 0) {
-    const z = Math.max(f.virus_zmin || 0, Math.min(f.virus_zmax || 0, Math.floor(Math.random() * ((f.virus_zmax||0)-(f.virus_zmin||0)+1)) + (f.virus_zmin||0)));
+    const z = Math.max(f.virus_zmin || 0, Math.min(f.virus_zmax || 0, Math.floor(Math.random() * ((f.virus_zmax || 0) - (f.virus_zmin || 0) + 1)) + (f.virus_zmin || 0)));
     if (z > 0) addZenny.run(z, f.player_id);
     outcome = `🏆 **<@${f.player_id}> wins!** You earned **${z}** ${zennyIcon()}`;
     endPVE.run(channel.id);
@@ -1045,7 +1073,7 @@ async function resolvePVERound(channel) {
       JSON.stringify(pCounts), JSON.stringify([...pSpec]), JSON.stringify([...vSpec]),
       null, null,
       nextDeadline,
-      channel.id
+      channel.id,
     );
     scheduleRoundTimer(channel.id, () => resolvePVERound(channel));
   }
@@ -1066,7 +1094,7 @@ function pickVirusMove(pveRow) {
   const moves = parseMoves(pveRow.virus_moves_json);
   if (!moves.length) return null;
   const used = new Set(parseList(pveRow.v_special_used));
-  const pool = moves.filter(m => !m.special || !used.has(m.name || m.label || 'special'));
+  const pool = moves.filter((m) => !m.special || !used.has(m.name || m.label || 'special'));
   if (!pool.length) return moves[Math.floor(Math.random() * moves.length)];
   return pool[Math.floor(Math.random() * pool.length)];
 }
@@ -1074,6 +1102,80 @@ function pickVirusMove(pveRow) {
 // ---------- Slash commands & interactions ----------
 client.on('interactionCreate', async (ix) => {
   try {
+    // SHOP UI interactivity FIRST (dropdown/buttons)
+    if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
+      const name = ix.values?.[0];
+      const chip = getChip.get(name);
+      if (!chip) return ix.reply({ ephemeral: true, content: 'That item no longer exists.' });
+
+      const eff = readEffect(chip);
+      const tag = chip.is_upgrade ? '🧩 Upgrade' : '🔹 Chip';
+      const e = new EmbedBuilder()
+        .setTitle(`${tag} — ${chip.name}`)
+        .setDescription(`Cost: **${chip.zenny_cost}** ${zennyIcon()}\n${summarizeEffect(eff)}`);
+      if (chip.image_url) e.setImage(chip.image_url);
+
+      const act = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`shop:buy:1:${encodeURIComponent(chip.name)}`).setLabel('Buy ×1').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`shop:buy:5:${encodeURIComponent(chip.name)}`).setLabel('Buy ×5').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('shop:dismiss').setLabel('Close').setStyle(ButtonStyle.Secondary),
+      );
+
+      return ix.reply({ ephemeral: true, embeds: [e], components: [act] });
+    }
+
+    if (ix.isButton()) {
+      if (ix.customId === 'shop:close') {
+        return ix.update({ content: 'Shop closed.', embeds: [], components: [] });
+      }
+      if (ix.customId === 'shop:dismiss') {
+        return ix.reply({ ephemeral: true, content: 'Closed.' });
+      }
+      if (ix.customId.startsWith('shop:prev:') || ix.customId.startsWith('shop:next:')) {
+        const rows = listShop.all();
+        const cur = Number(ix.customId.split(':').pop());
+        const totalPages = Math.max(1, Math.ceil(rows.length / 25));
+        const nextPage = ix.customId.startsWith('shop:prev:')
+          ? Math.max(0, cur - 1)
+          : Math.min(totalPages - 1, cur + 1);
+        const ui = buildShopPage(rows, nextPage);
+        return ix.update({ embeds: [ui.embed], components: ui.components });
+      }
+      if (ix.customId.startsWith('shop:buy:')) {
+        const [, , qtyStr, encName] = ix.customId.split(':');
+        const qty = Math.max(1, parseInt(qtyStr, 10) || 1);
+        const name = decodeURIComponent(encName || '');
+        const chip = getChip.get(name);
+        if (!chip) return ix.reply({ ephemeral: true, content: 'That item no longer exists.' });
+
+        const buyer = ensureNavi(ix.user.id);
+        const total = (chip.zenny_cost || 0) * qty;
+        if ((buyer.zenny ?? 0) < total) {
+          return ix.reply({ ephemeral: true, content: `Not enough Zenny. Cost is **${total}** ${zennyIcon()}` });
+        }
+        addZenny.run(-total, ix.user.id);
+
+        if (chip.is_upgrade) {
+          const eff = readEffect(chip);
+          const CAPS = { hp: MAX_HP_CAP, dodge: MAX_DODGE_CAP, crit: MAX_CRIT_CAP };
+          let { max_hp, dodge, crit, wins, losses, upgrade_pts, zenny } = buyer;
+          const step = Number.isFinite(eff?.step) ? eff.step : 1;
+          const stat = String(eff?.stat || '').toLowerCase();
+          const amount = step * qty;
+
+          if (stat === 'hp') max_hp = Math.min(CAPS.hp, max_hp + amount);
+          if (stat === 'dodge') dodge = Math.min(CAPS.dodge, dodge + amount);
+          if (stat === 'crit') crit = Math.min(CAPS.crit, crit + amount);
+
+          upsertNavi.run(ix.user.id, max_hp, dodge, crit, wins ?? 0, losses ?? 0, upgrade_pts ?? 0, zenny ?? 0);
+          return ix.reply({ ephemeral: true, content: `🧩 Applied **${chip.name}** ×${qty}. New stats — HP **${max_hp}**, Dodge **${dodge}%**, Crit **${crit}%**.` });
+        } else {
+          const next = invAdd(ix.user.id, chip.name, qty);
+          return ix.reply({ ephemeral: true, content: `👜 Purchased **${chip.name}** ×${qty}. You now own **${next}**.` });
+        }
+      }
+    }
+
     // Autocomplete
     if (ix.isAutocomplete()) {
       const focused = ix.options.getFocused(true);
@@ -1081,31 +1183,29 @@ client.on('interactionCreate', async (ix) => {
       const query = String(focused.value || '').toLowerCase();
 
       // Admin item lookups
-      if (['buy','chip_grant','chip_remove'].includes(ix.commandName)) {
-        const names = listAllChipNames.all().map(r => r.name);
-        const filtered = names.filter(n => n.toLowerCase().includes(query)).slice(0, 25);
-        return ix.respond(filtered.map(n => ({ name: n, value: n })));
+      if (['buy', 'chip_grant', 'chip_remove'].includes(ix.commandName)) {
+        const names = listAllChipNames.all().map((r) => r.name);
+        const filtered = names.filter((n) => n.toLowerCase().includes(query)).slice(0, 25);
+        return ix.respond(filtered.map((n) => ({ name: n, value: n })));
       }
 
       // /use autocomplete from a user's folder
       if (ix.commandName === 'use') {
-        const invNames = listInv.all(ix.user.id).map(r => r.chip_name);
-        // Filter support vs non-support depending on option
-        const items = invNames.map(n => ({ n, eff: readEffect(getChipRowOrNull(n)) }))
-                              .filter(x => x.eff);
+        const invNames = listInv.all(ix.user.id).map((r) => r.chip_name);
+        const items = invNames.map((n) => ({ n, eff: readEffect(getChipRowOrNull(n)) })).filter((x) => x.eff);
         let pool = invNames;
         if (sub === 'support') {
-          if (focused.name === 'support') pool = items.filter(x => isSupport(x.eff)).map(x => x.n);
-          else if (focused.name === 'with') pool = items.filter(x => !isSupport(x.eff)).map(x => x.n);
+          if (focused.name === 'support') pool = items.filter((x) => isSupport(x.eff)).map((x) => x.n);
+          else if (focused.name === 'with') pool = items.filter((x) => !isSupport(x.eff)).map((x) => x.n);
         }
-        const filtered = pool.filter(n => n.toLowerCase().includes(query)).slice(0, 25);
-        return ix.respond(filtered.map(n => ({ name: n, value: n })));
+        const filtered = pool.filter((n) => n.toLowerCase().includes(query)).slice(0, 25);
+        return ix.respond(filtered.map((n) => ({ name: n, value: n })));
       }
 
       // Fallback
-      const names = listAllChipNames.all().map(r => r.name);
-      const filtered = names.filter(n => n.toLowerCase().includes(query)).slice(0, 25);
-      return ix.respond(filtered.map(n => ({ name: n, value: n })));
+      const names = listAllChipNames.all().map((r) => r.name);
+      const filtered = names.filter((n) => n.toLowerCase().includes(query)).slice(0, 25);
+      return ix.respond(filtered.map((n) => ({ name: n, value: n })));
     }
 
     if (!ix.isChatInputCommand()) return;
@@ -1130,7 +1230,7 @@ client.on('interactionCreate', async (ix) => {
       }
 
       const stat = ix.options.getString('stat', true); // hp|dodge|crit
-      if (!['hp','dodge','crit'].includes(stat)) {
+      if (!['hp', 'dodge', 'crit'].includes(stat)) {
         return ix.reply({ content: 'Stat must be one of: hp, dodge, crit.', ephemeral: true });
       }
 
@@ -1144,12 +1244,12 @@ client.on('interactionCreate', async (ix) => {
       }
 
       const STEP = { hp: 10, dodge: 1, crit: 1 }[stat];
-      const CAP  = { hp: MAX_HP_CAP, dodge: MAX_DODGE_CAP, crit: MAX_CRIT_CAP }[stat];
+      const CAP = { hp: MAX_HP_CAP, dodge: MAX_DODGE_CAP, crit: MAX_CRIT_CAP }[stat];
 
       let before, after;
-      if (stat === 'hp')    { before = max_hp; max_hp = Math.min(CAP, max_hp + STEP); after = max_hp; }
-      if (stat === 'dodge') { before = dodge;  dodge  = Math.min(CAP,  dodge  + STEP); after = dodge;  }
-      if (stat === 'crit')  { before = crit;   crit   = Math.min(CAP,  crit   + STEP); after = crit;   }
+      if (stat === 'hp') { before = max_hp; max_hp = Math.min(CAP, max_hp + STEP); after = max_hp; }
+      if (stat === 'dodge') { before = dodge; dodge = Math.min(CAP, dodge + STEP); after = dodge; }
+      if (stat === 'crit') { before = crit; crit = Math.min(CAP, crit + STEP); after = crit; }
 
       if (after === before) {
         return ix.reply({ content: `Your ${stat.toUpperCase()} is already at the cap (${CAP}).`, ephemeral: true });
@@ -1164,7 +1264,7 @@ client.on('interactionCreate', async (ix) => {
 
       return ix.reply(
         `⬆️ ${stat.toUpperCase()} +${STEP} (now **${after}**) — ` +
-        (MANUAL_UPGRADES_MODE === 'points' ? `Points left: **${Math.max(0, upgrade_pts)}**` : `Admin-applied.`)
+        (MANUAL_UPGRADES_MODE === 'points' ? `Points left: **${Math.max(0, upgrade_pts)}**` : `Admin-applied.`),
       );
     }
 
@@ -1189,7 +1289,7 @@ client.on('interactionCreate', async (ix) => {
       return ix.reply(
         `📊 **${user.username}** — HP ${hpStr} | Dodge ${row.dodge}% | Crit ${row.crit}% | ` +
         `Record: **${row.wins ?? 0}-${row.losses ?? 0}** | Points: **${row.upgrade_pts ?? 0}** | ` +
-        `Zenny: **${row.zenny ?? 0} ${zennyIcon()}** | Def (temp): **${defNow}**`
+        `Zenny: **${row.zenny ?? 0} ${zennyIcon()}** | Def (temp): **${defNow}**`,
       );
     }
 
@@ -1224,7 +1324,7 @@ client.on('interactionCreate', async (ix) => {
         '[]', '[]',
         null, null,
         now() + ROUND_SECONDS * 1000,
-        Date.now()
+        Date.now(),
       );
 
       scheduleRoundTimer(ix.channel.id, () => resolvePVERound(ix.channel));
@@ -1260,7 +1360,7 @@ client.on('interactionCreate', async (ix) => {
         if (!target.bot) {
           const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('accept_duel').setLabel('Accept').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('decline_duel').setLabel('Decline').setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId('decline_duel').setLabel('Decline').setStyle(ButtonStyle.Danger),
           );
           const prompt = await ix.reply({
             content: `⚔️ <@${target.id}>, **${ix.user.username}** challenges you to a duel! Do you accept?`,
@@ -1271,7 +1371,7 @@ client.on('interactionCreate', async (ix) => {
             const click = await prompt.awaitMessageComponent({
               componentType: ComponentType.Button,
               time: 60_000,
-              filter: i => i.user.id === target.id && (i.customId === 'accept_duel' || i.customId === 'decline_duel')
+              filter: (i) => i.user.id === target.id && (i.customId === 'accept_duel' || i.customId === 'decline_duel'),
             });
 
             if (click.customId === 'decline_duel') {
@@ -1301,7 +1401,7 @@ client.on('interactionCreate', async (ix) => {
           '[]', '[]',
           null, null,
           now() + ROUND_SECONDS * 1000,
-          Date.now()
+          Date.now(),
         );
         scheduleRoundTimer(ix.channel.id, () => resolveDuelRound(ix.channel));
 
@@ -1320,7 +1420,7 @@ client.on('interactionCreate', async (ix) => {
               f.p1_special_used, f.p2_special_used,
               f.p1_action_json, JSON.stringify(botAct),
               f.round_deadline,
-              ix.channel.id
+              ix.channel.id,
             );
             await ix.followUp('🤖 Bot locked its move.');
           }
@@ -1338,7 +1438,7 @@ client.on('interactionCreate', async (ix) => {
 
       if (f) {
         const winnerId = (ix.user.id === f.p1_id) ? f.p2_id : f.p1_id;
-        const loserId  = ix.user.id;
+        const loserId = ix.user.id;
         setRecord.run(1, 0, winnerId);
         setRecord.run(0, 1, loserId);
         if (POINTS_PER_WIN > 0) addPoints.run(POINTS_PER_WIN, winnerId);
@@ -1367,7 +1467,7 @@ client.on('interactionCreate', async (ix) => {
           `🧭 **Duel (Simultaneous)**`,
           `Round ends in: **${left}s**`,
           `P1: <@${f.p1_id}> — HP **${f.p1_hp}** | Pending: ${a1 ? '`LOCKED`' : '`—`'}`,
-          `P2: <@${f.p2_id}> — HP **${f.p2_hp}** | Pending: ${a2 ? '`LOCKED`' : '`—`'}`
+          `P2: <@${f.p2_id}> — HP **${f.p2_hp}** | Pending: ${a2 ? '`LOCKED`' : '`—`'}`,
         ];
         return ix.reply(lines.join('\n'));
       }
@@ -1385,7 +1485,7 @@ client.on('interactionCreate', async (ix) => {
           `🧭 **Virus Encounter (Simultaneous)**`,
           `Round ends in: **${left}s**`,
           `Player: <@${pve.player_id}> — HP **${pve.p_hp}** | Pending: ${aP ? '`LOCKED`' : '`—`'}`,
-          `Virus: **${pve.virus_name}** — HP **${pve.v_hp}** | Pending: ${aV ? '`LOCKED`' : '`—`'}`
+          `Virus: **${pve.virus_name}** — HP **${pve.v_hp}** | Pending: ${aV ? '`LOCKED`' : '`—`'}`,
         ];
         return ix.reply({ content: lines.join('\n'), embeds: [embed] });
       }
@@ -1434,20 +1534,15 @@ client.on('interactionCreate', async (ix) => {
       return ix.reply(`✅ Transferred **${amt}** ${zennyIcon()} from <@${ix.user.id}> to <@${to.id}>.`);
     }
 
-    // Shop
+    // Shop (interactive, paginated, ephemeral)
     if (ix.commandName === 'shop') {
       const rows = listShop.all();
       if (!rows.length) return ix.reply('Shop is empty. Ask an admin to `/chips_reload`.');
-      const chunks = rows.slice(0, 25); // Discord field limits; paginate in future if needed
-      const lines = chunks.map(r => {
-        const tag = r.is_upgrade ? '🧩 Upgrade' : '🔹 Chip';
-        return `${tag} — **${r.name}** — ${r.zenny_cost} ${zennyIcon()}${r.image_url ? ` — ${r.image_url}` : ''}`;
-      });
-      const more = rows.length - chunks.length;
-      return ix.reply(`🛒 **Chip Shop**\n${lines.join('\n')}${more > 0 ? `\n…and ${more} more` : ''}`);
+      const ui = buildShopPage(rows, 0);
+      return ix.reply({ ephemeral: true, embeds: [ui.embed], components: ui.components });
     }
 
-    // Buy
+    // Buy (still supported as a slash command)
     if (ix.commandName === 'buy') {
       const name = ix.options.getString('name', true);
       let qty = ix.options.getInteger('qty') ?? 1;
@@ -1471,9 +1566,9 @@ client.on('interactionCreate', async (ix) => {
         const stat = String(eff?.stat || '').toLowerCase();
         const amount = step * qty;
 
-        if (stat === 'hp')    max_hp = Math.min(CAPS.hp,    max_hp + amount);
-        if (stat === 'dodge') dodge  = Math.min(CAPS.dodge, dodge  + amount);
-        if (stat === 'crit')  crit   = Math.min(CAPS.crit,  crit   + amount);
+        if (stat === 'hp') max_hp = Math.min(CAPS.hp, max_hp + amount);
+        if (stat === 'dodge') dodge = Math.min(CAPS.dodge, dodge + amount);
+        if (stat === 'crit') crit = Math.min(CAPS.crit, crit + amount);
 
         upsertNavi.run(ix.user.id, max_hp, dodge, crit, wins ?? 0, losses ?? 0, upgrade_pts ?? 0, zenny ?? 0);
         return ix.reply(`🧩 Applied upgrade **${chip.name}** ×${qty}. New stats — HP **${max_hp}**, Dodge **${dodge}%**, Crit **${crit}%**.`);
@@ -1497,7 +1592,7 @@ client.on('interactionCreate', async (ix) => {
       } else if (pve && ix.user.id === pve.player_id) {
         counts = parseMap(pve.p_counts_json);
       }
-      const lines = rows.map(r => {
+      const lines = rows.map((r) => {
         const used = counts[r.chip_name] || 0;
         const eff = readEffect(getChipRowOrNull(r.chip_name));
         const tag = isSpecial(eff) ? '⭐' : '•';
@@ -1543,7 +1638,7 @@ client.on('interactionCreate', async (ix) => {
           if (already) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
 
           const mineCounts = (ix.user.id === f.p1_id) ? f.p1_counts_json : f.p2_counts_json;
-          const mineSpecs  = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
+          const mineSpecs = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
           const chk = canUseChip(ix.user.id, mineCounts, mineSpecs, name);
           if (!chk.ok) return ix.reply({ content: chk.reason, ephemeral: true });
 
@@ -1564,7 +1659,6 @@ client.on('interactionCreate', async (ix) => {
           return;
         } else {
           // PVE
-          // guard re-lock
           if (pve.player_action_json) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
 
           const chk = canUseChip(ix.user.id, pve.p_counts_json, pve.p_special_used, name);
@@ -1575,10 +1669,9 @@ client.on('interactionCreate', async (ix) => {
           await ix.reply(`🔒 Locked **${name}** for this round.`);
           const fp = getPVE.get(ix.channel.id);
           if (fp.player_action_json) {
-            // Ensure virus has an action planned
             if (!fp.virus_action_json) {
               const mv = pickVirusMove(fp);
-              if (mv) updPVE.run(fp.p_hp, fp.v_hp, fp.p_def, fp.v_def, fp.p_counts_json, fp.p_special_used, fp.v_special_used, fp.player_action_json, JSON.stringify({ type:'chip', name: mv.name || mv.label || 'Move' }), fp.round_deadline, ix.channel.id);
+              if (mv) updPVE.run(fp.p_hp, fp.v_hp, fp.p_def, fp.v_def, fp.p_counts_json, fp.p_special_used, fp.v_special_used, fp.player_action_json, JSON.stringify({ type: 'chip', name: mv.name || mv.label || 'Move' }), fp.round_deadline, ix.channel.id);
             }
             clearRoundTimer(ix.channel.id);
             await resolvePVERound(ix.channel);
@@ -1599,22 +1692,20 @@ client.on('interactionCreate', async (ix) => {
         const sEff = readEffect(getChipRowOrNull(sName));
         const cEff = readEffect(getChipRowOrNull(cName));
         if (!isSupport(sEff)) return ix.reply({ content: `**${sName}** is not a Support chip.`, ephemeral: true });
-        if (isSupport(cEff))  return ix.reply({ content: `Your follow-up chip must not be Support.`, ephemeral: true });
+        if (isSupport(cEff)) return ix.reply({ content: `Your follow-up chip must not be Support.`, ephemeral: true });
 
         if (context === 'duel') {
-          // guard re-lock
           const already = ix.user.id === f.p1_id ? f.p1_action_json : f.p2_action_json;
           if (already) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
 
           const mineCounts = (ix.user.id === f.p1_id) ? f.p1_counts_json : f.p2_counts_json;
-          const mineSpecs  = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
+          const mineSpecs = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
 
           const chkS = canUseChip(ix.user.id, mineCounts, mineSpecs, sName);
           if (!chkS.ok) return ix.reply({ content: chkS.reason, ephemeral: true });
           const chkC = canUseChip(ix.user.id, mineCounts, mineSpecs, cName);
           if (!chkC.ok) return ix.reply({ content: chkC.reason, ephemeral: true });
 
-          // consume now (both)
           invAdd(ix.user.id, sName, -1);
           invAdd(ix.user.id, cName, -1);
 
@@ -1631,7 +1722,6 @@ client.on('interactionCreate', async (ix) => {
           }
           return;
         } else {
-          // guard re-lock
           if (pve.player_action_json) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
 
           const chkS = canUseChip(ix.user.id, pve.p_counts_json, pve.p_special_used, sName);
@@ -1648,7 +1738,7 @@ client.on('interactionCreate', async (ix) => {
           if (fp.player_action_json) {
             if (!fp.virus_action_json) {
               const mv = pickVirusMove(fp);
-              if (mv) updPVE.run(fp.p_hp, fp.v_hp, fp.p_def, fp.v_def, fp.p_counts_json, fp.p_special_used, fp.v_special_used, fp.player_action_json, JSON.stringify({ type:'chip', name: mv.name || mv.label || 'Move' }), fp.round_deadline, ix.channel.id);
+              if (mv) updPVE.run(fp.p_hp, fp.v_hp, fp.p_def, fp.v_def, fp.p_counts_json, fp.p_special_used, fp.v_special_used, fp.player_action_json, JSON.stringify({ type: 'chip', name: mv.name || mv.label || 'Move' }), fp.round_deadline, ix.channel.id);
             }
             clearRoundTimer(ix.channel.id);
             await resolvePVERound(ix.channel);
@@ -1683,7 +1773,6 @@ client.on('interactionCreate', async (ix) => {
       const next = invAdd(user.id, name, delta);
       return ix.reply(`🛠️ ${ix.commandName === 'chip_grant' ? 'Granted' : 'Removed'} **${Math.abs(delta)}** of **${name}** for <@${user.id}>. They now have **${next}**.`);
     }
-
   } catch (err) {
     console.error('Interaction error:', err);
     try { await ix.reply({ content: 'Something went wrong. Check logs.', ephemeral: true }); } catch {}
