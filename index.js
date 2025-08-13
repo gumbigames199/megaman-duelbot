@@ -40,7 +40,7 @@ const VIRUS_TSV_URL = process.env.VIRUS_TSV_URL || '';
 // Zenny emoji helpers
 const ZENNY_EMOJI_ID = process.env.ZENNY_EMOJI_ID || '1110249272433201274';
 const ZENNY_EMOJI_NAME = process.env.ZENNY_EMOJI_NAME || 'zenny';
-const zennyIcon = () => (/^\d{17,20}$/.test(ZENNY_EMOJI_ID) ? `<:${ZENNY_EMOJI_NAME}:${ZENNY_EMOJI_ID}>` : ':Zenny:');
+const zennyIcon = () => (/^\d{17,20}$/.test(ZENNY_EMOJI_ID) ? `<:${ZENNY_EMOJI_NAME}:${ZENNY_EMOJI_ID}>` : '💰');
 
 // Ensure data dir exists
 if (!fs.existsSync('./data')) fs.mkdirSync('./data');
@@ -1190,7 +1190,7 @@ client.on('interactionCreate', async (ix) => {
   if (ix.commandName === 'zenny') {
     const user = ix.options.getUser('user') || ix.user;
     const row = ensureNavi(user.id);
-    return ix.reply(`:Zenny: **${user.username}** has **${row.zenny ?? 0}** ${zennyIcon()}.`);
+    return ix.reply(`💰 **${user.username}** has **${row.zenny ?? 0}** ${zennyIcon()}.`);
   }
 
   // NEW: Give Zenny
