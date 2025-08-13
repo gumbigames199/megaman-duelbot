@@ -40,7 +40,7 @@ const VIRUS_TSV_URL = process.env.VIRUS_TSV_URL || '';
 // Zenny emoji helpers
 const ZENNY_EMOJI_ID = process.env.ZENNY_EMOJI_ID || '1110249272433201274';
 const ZENNY_EMOJI_NAME = process.env.ZENNY_EMOJI_NAME || 'zenny';
-const zennyIcon = () => (/^\d{17,20}$/.test(ZENNY_EMOJI_ID) ? `<:${ZENNY_EMOJI_NAME}:${ZENNY_EMOJI_ID}>` : '💰');
+const zennyIcon = () => (/^\d{17,20}$/.test(ZENNY_EMOJI_ID) ? `<:${ZENNY_EMOJI_NAME}:${ZENNY_EMOJI_ID}>` : ':Zenny:');
 
 // Ensure data dir exists
 if (!fs.existsSync('./data')) fs.mkdirSync('./data');
@@ -355,6 +355,7 @@ function clearAIMemForChannel(channelId) {
 }
 
 // Generic scorer for CHIPS (ToadMan / PvP bot)
+// tier: 'wild' | 'boss'
 function pickAIMove({ channelId, f, actorId, counts, specialsUsed, tier }) {
   const isP1   = (actorId === f.p1_id);
   const myHP   = isP1 ? f.p1_hp : f.p2_hp;
@@ -433,7 +434,6 @@ function pickBossMove(pve) {
 
   const byKind = k => moves.filter(x => String(x.kind || '').toLowerCase() === k);
   const attackMoves  = byKind('attack');
-  const defenseMoves = byKind('defense');
 
   // Base eligibility
   let eligible = moves.filter(x => {
@@ -709,11 +709,6 @@ async function maybeBotTurn(channel, nextTurnId) {
 }
 
 // ---------- Virus (PVE) bot logic ----------
-function pickVirusMove(pve) {
-  // use boss logic for all to avoid defense loops
-  return pickBossMove(pve);
-}
-
 async function virusTakeTurn(channel) {
   const f = getPVE.get(channel.id);
   if (!f || f.turn !== 'virus') return;
@@ -1158,7 +1153,7 @@ client.on('interactionCreate', async (ix) => {
       `🧭 **Virus Encounter**${pve.virus_is_boss ? ' *(BOSS)*' : ''}`,
       `Turn: **${pve.turn}**`,
       `Player: <@${pve.player_id}> — HP **${pve.p_hp}** | DEF **${pve.p_def ?? 0}** | Specials: ${p1Spec.length ? p1Spec.join(', ') : '—'}`,
-      `Virus: **${pve.virus_name}** — HP **${pve.v_hp}** | DEF **${pve.v_def ?? 0}** | Specials used: ${vSpec.length ? vSpec.join(', ) : '—'}`
+      `Virus: **${pve.virus_name}** — HP **${pve.v_hp}** | DEF **${pve.v_def ?? 0}** | Specials used: ${vSpec.length ? vSpec.join(', ') : '—'}`
     ];
     return ix.reply({ content: lines.join('\n'), embeds: [embed] });
   }
@@ -1190,7 +1185,7 @@ client.on('interactionCreate', async (ix) => {
   if (ix.commandName === 'zenny') {
     const user = ix.options.getUser('user') || ix.user;
     const row = ensureNavi(user.id);
-    return ix.reply(`💰 **${user.username}** has **${row.zenny ?? 0}** ${zennyIcon()}.`);
+    return ix.reply(`:Zenny: **${user.username}** has **${row.zenny ?? 0}** ${zennyIcon()}.`);
   }
 
   // NEW: Give Zenny
@@ -1420,7 +1415,7 @@ client.on('messageCreate', async (msg) => {
         msg.interaction?.user?.id;
       if (!actorId) {
         console.log('[UPGRADE] Found upgrade word but no actor mention/user.', { mid: msg.id });
-        return;
+        return; // exit handler
       }
       const row = ensureNavi(actorId);
       let { max_hp, dodge, crit, wins, losses } = row;
@@ -1468,12 +1463,12 @@ client.on('messageCreate', async (msg) => {
       const recent = await msg.channel.messages.fetch({ limit: 10 });
       const prior = [...recent.values()]
         .filter(m => m.id !== msg.id)
-        .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+        .sort((a, b) => b.createdTimestamp - a.createdTimestamp) // newest first
         .find(m =>
           m.author?.id === NUMBERMAN_ID &&
           typeof m.content === 'string' &&
           /\bused\b/i.test(m.content) &&
-          (msg.createdTimestamp - m.createdTimestamp) < 10_000
+          (msg.createdTimestamp - m.createdTimestamp) < 10_000 // within 10s window
         );
       actorId = prior?.content?.match(/<@!?(\d+)>/)?.[1] || null;
     } catch (e) {
