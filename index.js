@@ -1,3 +1,4 @@
+// index.js
 import 'dotenv/config';
 import {
   Client,
@@ -31,7 +32,6 @@ try {
 // ---------- Config ----------
 const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || '830126829352386601';
 
-// Upgrades mode (still supported for /navi_upgrade)
 const MANUAL_UPGRADES_MODE = (process.env.MANUAL_UPGRADES_MODE || 'points').toLowerCase();
 const POINTS_PER_WIN = parseInt(process.env.POINTS_PER_WIN || '1', 10);
 
@@ -41,13 +41,17 @@ const ROUND_SECONDS = Math.max(15, parseInt(process.env.ROUND_SECONDS || '60', 1
 
 // Virus TSV URL (Google Sheets export to TSV)
 const VIRUS_TSV_URL = process.env.VIRUS_TSV_URL || '';
-// Chip TSV URL (Google Sheets export to TSV) — accepts either env name
+// Chip TSV URL
 const CHIP_TSV_URL = process.env.CHIP_TSV_URL || process.env.CHIPS_TSV_URL || '';
 
 // Stat caps (ENV-overridable)
 const MAX_HP_CAP = parseInt(process.env.MAX_HP_CAP || '500', 10);
 const MAX_DODGE_CAP = parseInt(process.env.MAX_DODGE_CAP || '40', 10);
 const MAX_CRIT_CAP = parseInt(process.env.MAX_CRIT_CAP || '25', 10);
+
+// Virus AI caps
+const VIRUS_DEFENSE_CAP_TOTAL = 5; // total defense/barrier uses per encounter
+const VIRUS_DEFENSE_CAP_STREAK = 2; // consecutive defense uses before forcing attack
 
 // Zenny emoji helpers (fallback to moneybag)
 const ZENNY_EMOJI_ID = process.env.ZENNY_EMOJI_ID || '';
@@ -121,6 +125,11 @@ async function registerCommands() {
     // Virus Busting (PVE)
     new SlashCommandBuilder().setName('virus_busting').setDescription('Start a Virus encounter (PVE)'),
 
+    new SlashCommandBuilder()
+      .setName('virus_search')
+      .setDescription('Look up Virus/Boss info')
+      .addStringOption(o => o.setName('name').setDescription('Virus/Boss name').setRequired(true).setAutocomplete(true)),
+
     // Zenny
     new SlashCommandBuilder()
       .setName('zenny')
@@ -144,23 +153,12 @@ async function registerCommands() {
 
     new SlashCommandBuilder().setName('folder').setDescription('View your owned chips'),
 
-    // Use chip (simultaneous rounds)
+    // Unified /use
     new SlashCommandBuilder()
       .setName('use')
-      .setDescription('Play a chip this round (simultaneous combat)')
-      .addSubcommand((sc) =>
-        sc
-          .setName('chip')
-          .setDescription('Use a single chip')
-          .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true)),
-      )
-      .addSubcommand((sc) =>
-        sc
-          .setName('support')
-          .setDescription('Use a support chip and chain into a second non-support chip')
-          .addStringOption((o) => o.setName('support').setDescription('Support chip').setRequired(true).setAutocomplete(true))
-          .addStringOption((o) => o.setName('with').setDescription('Follow-up (non-support) chip').setRequired(true).setAutocomplete(true)),
-      ),
+      .setDescription('Play a chip (optionally chain a Support chip)')
+      .addStringOption((o) => o.setName('chip').setDescription('Chip to use').setRequired(true).setAutocomplete(true))
+      .addStringOption((o) => o.setName('support').setDescription('Optional Support chip to chain').setRequired(false).setAutocomplete(true)),
 
     // Admin chip mgmt
     new SlashCommandBuilder()
@@ -184,7 +182,7 @@ async function registerCommands() {
       .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
       .addIntegerOption((o) => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
 
-    // NEW: Admin overrides
+    // Admin overrides
     new SlashCommandBuilder()
       .setName('stat_override')
       .setDescription('Admin: set HP/Dodge/Crit/Wins/Losses/Points for a user')
@@ -220,7 +218,6 @@ async function registerCommands() {
 // ---------- DB ----------
 const db = new Database('./data/data.sqlite');
 
-// Core tables
 db.exec(`
 CREATE TABLE IF NOT EXISTS navis (
   user_id TEXT PRIMARY KEY,
@@ -240,24 +237,15 @@ CREATE TABLE IF NOT EXISTS duel_state (
   p2_id TEXT NOT NULL,
   p1_hp INTEGER NOT NULL,
   p2_hp INTEGER NOT NULL,
-
-  -- per-round temp defense
   p1_def INTEGER NOT NULL DEFAULT 0,
   p2_def INTEGER NOT NULL DEFAULT 0,
-
-  -- per-battle caps & special tracking
   p1_counts_json TEXT NOT NULL DEFAULT '{}',
   p2_counts_json TEXT NOT NULL DEFAULT '{}',
   p1_special_used TEXT NOT NULL DEFAULT '[]',
   p2_special_used TEXT NOT NULL DEFAULT '[]',
-
-  -- pending actions for the current round
   p1_action_json TEXT DEFAULT NULL,
   p2_action_json TEXT DEFAULT NULL,
-
-  -- deadline for the current round (ms epoch); 0 when idle
   round_deadline INTEGER NOT NULL DEFAULT 0,
-
   started_at INTEGER NOT NULL
 );
 
@@ -283,12 +271,14 @@ CREATE TABLE IF NOT EXISTS pve_state (
   p_special_used TEXT NOT NULL DEFAULT '[]',
   v_special_used TEXT NOT NULL DEFAULT '[]',
 
-  -- pending actions for the current round
   player_action_json TEXT DEFAULT NULL,
   virus_action_json  TEXT DEFAULT NULL,
 
-  -- deadline for current round
   round_deadline INTEGER NOT NULL DEFAULT 0,
+
+  -- Boss/virus AI caps
+  v_def_total INTEGER NOT NULL DEFAULT 0,
+  v_def_streak INTEGER NOT NULL DEFAULT 0,
 
   started_at INTEGER NOT NULL
 );
@@ -310,13 +300,15 @@ CREATE TABLE IF NOT EXISTS inventory (
 );
 `);
 
-// Old columns migration guards (noop now, kept for safety with existing DBs)
+// Migrations (safe no-ops)
 try { db.exec(`ALTER TABLE duel_state ADD COLUMN p1_action_json TEXT DEFAULT NULL;`); } catch {}
 try { db.exec(`ALTER TABLE duel_state ADD COLUMN p2_action_json TEXT DEFAULT NULL;`); } catch {}
 try { db.exec(`ALTER TABLE duel_state ADD COLUMN round_deadline INTEGER NOT NULL DEFAULT 0;`); } catch {}
 try { db.exec(`ALTER TABLE pve_state ADD COLUMN player_action_json TEXT DEFAULT NULL;`); } catch {}
 try { db.exec(`ALTER TABLE pve_state ADD COLUMN virus_action_json TEXT DEFAULT NULL;`); } catch {}
 try { db.exec(`ALTER TABLE pve_state ADD COLUMN round_deadline INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE pve_state ADD COLUMN v_def_total INTEGER NOT NULL DEFAULT 0;`); } catch {}
+try { db.exec(`ALTER TABLE pve_state ADD COLUMN v_def_streak INTEGER NOT NULL DEFAULT 0;`); } catch {}
 
 // Prepared statements
 const getNavi = db.prepare(`SELECT * FROM navis WHERE user_id=?`);
@@ -342,11 +334,11 @@ const setRecord = db.prepare(`UPDATE navis SET wins = wins + ?, losses = losses 
 const addPoints = db.prepare(`UPDATE navis SET upgrade_pts = upgrade_pts + ? WHERE user_id = ?`);
 const addZenny = db.prepare(`UPDATE navis SET zenny = zenny + ? WHERE user_id = ?`);
 const setZenny = db.prepare(`UPDATE navis SET zenny = ? WHERE user_id = ?`);
-const updHP = db.prepare(`UPDATE navis SET max_hp=?      WHERE user_id=?`);
-const updDodge = db.prepare(`UPDATE navis SET dodge=?       WHERE user_id=?`);
-const updCrit = db.prepare(`UPDATE navis SET crit=?        WHERE user_id=?`);
-const updWins = db.prepare(`UPDATE navis SET wins=?        WHERE user_id=?`);
-const updLosses = db.prepare(`UPDATE navis SET losses=?      WHERE user_id=?`);
+const updHP = db.prepare(`UPDATE navis SET max_hp=? WHERE user_id=?`);
+const updDodge = db.prepare(`UPDATE navis SET dodge=? WHERE user_id=?`);
+const updCrit = db.prepare(`UPDATE navis SET crit=? WHERE user_id=?`);
+const updWins = db.prepare(`UPDATE navis SET wins=? WHERE user_id=?`);
+const updLosses = db.prepare(`UPDATE navis SET losses=? WHERE user_id=?`);
 const updPts = db.prepare(`UPDATE navis SET upgrade_pts=? WHERE user_id=?`);
 
 const getFight = db.prepare(`SELECT * FROM duel_state WHERE channel_id=?`);
@@ -371,8 +363,8 @@ const getPVE = db.prepare(`SELECT * FROM pve_state WHERE channel_id=?`);
 const startPVE = db.prepare(`
   INSERT INTO pve_state (
     channel_id, player_id, virus_name, virus_image, virus_max_hp, virus_dodge, virus_crit, virus_is_boss, virus_moves_json, virus_zmin, virus_zmax,
-    p_hp, v_hp, p_def, v_def, p_counts_json, p_special_used, v_special_used, player_action_json, virus_action_json, round_deadline, started_at
-  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    p_hp, v_hp, p_def, v_def, p_counts_json, p_special_used, v_special_used, player_action_json, virus_action_json, round_deadline, v_def_total, v_def_streak, started_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 `);
 const updPVE = db.prepare(`
   UPDATE pve_state
@@ -380,7 +372,8 @@ const updPVE = db.prepare(`
          p_def=?, v_def=?,
          p_counts_json=?, p_special_used=?, v_special_used=?,
          player_action_json=?, virus_action_json=?,
-         round_deadline=?
+         round_deadline=?,
+         v_def_total=?, v_def_streak=?
    WHERE channel_id=?
 `);
 const endPVE = db.prepare(`DELETE FROM pve_state WHERE channel_id=?`);
@@ -409,6 +402,7 @@ const parseMoves = (s) => { try { const v = JSON.parse(s ?? '[]'); return Array.
 const tryParseJSON = (s) => { try { return JSON.parse(s); } catch { return null; } };
 const now = () => Date.now();
 
+// Pretty
 function hpLineDuel(f) { return `HP — <@${f.p1_id}>: ${f.p1_hp} | <@${f.p2_id}>: ${f.p2_hp}`; }
 function hpLinePVE(f) { return `HP — <@${f.player_id}>: ${f.p_hp} | **${f.virus_name}**: ${f.v_hp}`; }
 
@@ -482,17 +476,17 @@ async function loadViruses(force = false) {
     const dodge = parseInt(obj.dodge || '0', 10) || 0;
     const crit = parseInt(obj.crit || '0', 10) || 0;
 
-    const m1 = obj.move1_json || obj.move_1json || '';
-    const m2 = obj.move_2json || obj.move2_json || ''; // fixed typo
-    const m3 = obj.move3_json || '';
-    const m4 = obj.move4_json || '';
+    const m1 = obj.move1_json || obj.move_1json || obj.move_1 || '';
+    const m2 = obj.move_2json || obj.move2_json || obj.move_2 || '';
+    const m3 = obj.move3_json || obj.move_3 || '';
+    const m4 = obj.move4_json || obj.move_4 || '';
     const moves = [];
     const pushMove = (s, fallback) => {
       if (!s) return;
       try {
         const mv = JSON.parse(s);
         if (mv && typeof mv === 'object') {
-          if (!mv.name) mv.name = fallback;
+          if (!mv.name && !mv.label) mv.name = fallback;
           moves.push(mv);
         }
       } catch {}
@@ -522,6 +516,10 @@ function weightedPick(rows) {
 
 // ---------- Chip TSV Loader ----------
 const ChipsCache = { ts: 0, rows: [] };
+function parseBool(x) {
+  const s = String(x ?? '').trim().toLowerCase();
+  return ['1','true','yes','y'].includes(s);
+}
 async function reloadChipsFromTSV() {
   if (!CHIP_TSV_URL) throw new Error('CHIP_TSV_URL (or CHIPS_TSV_URL) not set.');
   const res = await fetch(CHIP_TSV_URL);
@@ -530,34 +528,38 @@ async function reloadChipsFromTSV() {
   const lines = text.split(/\r?\n/).filter(Boolean);
   if (!lines.length) throw new Error('Empty chip TSV');
 
-  const headers = lines[0].split('\t').map(HEADER_MAP); // expected: name, image_url, effect, zenny_cost, upgrade
-  const upserts = db.transaction((rows) => {
-    for (const r of rows) {
-      const name = (r.name || '').trim();
-      if (!name) continue;
-      const img = r.image_url || '';
-      let effect_json = '{}';
-      try { effect_json = JSON.stringify(JSON.parse(r.effect || '{}')); } catch { /* keep {} */ }
-      const cost = parseInt(r.zenny_cost || '0', 10) || 0;
-      const isUp = ['1','true','yes','y'].includes(String(r.upgrade || '').trim().toLowerCase()) ? 1 : 0;
-      upsertChip.run(name, img, effect_json, cost, isUp);
-    }
-  });
-
+  const headers = lines[0].split('\t').map(HEADER_MAP);
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split('\t');
     const obj = {}; headers.forEach((h, idx) => { obj[h] = cols[idx]; });
     rows.push(obj);
   }
+
+  const upserts = db.transaction((rows2) => {
+    for (const r of rows2) {
+      const name = (r.name || '').trim();
+      if (!name) continue;
+      const img = r.image_url || '';
+
+      // accept effect / effect_json / json_effect
+      let effect_json = '{}';
+      const rawEffect = r.effect ?? r.effect_json ?? r.json_effect ?? '{}';
+      try { effect_json = JSON.stringify(JSON.parse(rawEffect || '{}')); } catch { effect_json = '{}'; }
+
+      const cost = parseInt(r.zenny_cost || r.cost || '0', 10) || 0;
+      const isUp = parseBool(r.upgrade ?? r.is_upgrade);
+      upsertChip.run(name, img, effect_json, cost, isUp ? 1 : 0);
+    }
+  });
   upserts(rows);
+
   ChipsCache.ts = Date.now();
   ChipsCache.rows = rows;
 }
 
 // ---------- Combat helpers ----------
 function extractKinds(effect) {
-  // effect.kind may be 'attack', 'break', 'recovery', 'defense', 'barrier', 'support', or combos like 'attack,recovery'
   if (!effect) return [];
   const k = effect.kinds || effect.kind || '';
   if (Array.isArray(k)) return k.map((x) => String(x).toLowerCase());
@@ -572,17 +574,13 @@ function isRecovery(effect) { return extractKinds(effect).includes('recovery'); 
 function isSpecial(effect) { return !!effect?.special; }
 
 function supportBonus(effect) {
-  // Support chips can specify bonus via `add` or `dmg`
   if (!effect) return 0;
   if (Number.isFinite(effect.add)) return effect.add;
   if (Number.isFinite(effect.dmg)) return effect.dmg;
   return 0;
 }
 
-function readEffect(chipRow) {
-  const e = tryParseJSON(chipRow?.effect_json) || {};
-  return e;
-}
+function readEffect(chipRow) { return tryParseJSON(chipRow?.effect_json) || {}; }
 
 function invGetQty(userId, chipName) {
   const r = getInv.get(userId, chipName);
@@ -625,6 +623,7 @@ function pickBotChipFor(f, isP1) {
   const rows = listChips.all();
   const eligible = rows.filter((r) => {
     const eff = readEffect(r);
+    if (r.is_upgrade) return false;
     if (counts[r.name] >= MAX_PER_CHIP) return false;
     if (isSpecial(eff) && specials.has(r.name)) return false;
     return true;
@@ -635,26 +634,20 @@ function pickBotChipFor(f, isP1) {
 }
 
 // Damage math for a single (possibly supported) attack into a defender
-function computeAttackDamage({ baseChip, supportEff, attacker, defender, defenderDEF, defenderHasBarrier, breakFlag, dodgePct, critPct }) {
-  // Barrier cancels opponent's chip (if it has 'attack') unless this is Break
+function computeAttackDamage({ baseChip, supportEff, defenderDEF, defenderHasBarrier, breakFlag, dodgePct, critPct }) {
   if (defenderHasBarrier && !breakFlag) {
     return { dmg: 0, crit: false, dodged: false, cancelledByBarrier: true, absorbed: 0 };
   }
-
-  // Dodge check (attacks can be dodged)
   const dodged = (Math.random() * 100) < (dodgePct || 0);
   if (dodged) return { dmg: 0, crit: false, dodged: true, cancelledByBarrier: false, absorbed: 0 };
 
-  // Base + (support bonus does NOT get multiplied by crit)
   const base = Number.isFinite(baseChip?.dmg) ? baseChip.dmg : 0;
   const bonus = supportEff ? supportBonus(supportEff) : 0;
 
-  // Crit (only multiplies the base damage of the standard chip)
   const isCrit = (Math.random() * 100) < (critPct || 0);
   const critBase = isCrit ? Math.floor((base * 3) / 2) : base;
 
-  // Break ignores defense; normal attacks reduced by DEF
-  const preDef = critBase; // + no bonus yet
+  const preDef = critBase;
   const effective = breakFlag ? preDef : Math.max(0, preDef - (defenderDEF || 0));
   const absorbed = breakFlag ? 0 : (preDef - effective);
 
@@ -662,23 +655,49 @@ function computeAttackDamage({ baseChip, supportEff, attacker, defender, defende
   return { dmg: dmgTotal, crit: isCrit, dodged, cancelledByBarrier: false, absorbed };
 }
 
-// Apply an action (chip or support chain) — returns outcome + temp DEF, barrier flag, recovery amount
-function resolveActionToIntent(actorId, action, { forPVE = false } = {}) {
-  if (!action) return { kind: 'none', def: 0, barrier: false, attackEff: null, recover: 0 };
-  const actorInv = action;
-
-  if (actorInv.type === 'support') {
-    return { kind: 'support_chain', supportName: actorInv.support, chipName: actorInv.with };
-  }
-  if (actorInv.type === 'chip') {
-    return { kind: 'chip', chipName: actorInv.name };
-  }
-  return { kind: 'none', def: 0, barrier: false, attackEff: null, recover: 0 };
+// ---------- Virus AI helpers ----------
+function isDefLikeMove(mv) {
+  if (!mv) return false;
+  const kinds = extractKinds(mv);
+  return kinds.includes('defense') || kinds.includes('barrier');
+}
+function isAtkLikeMove(mv) {
+  if (!mv) return false;
+  const kinds = extractKinds(mv);
+  return kinds.includes('attack') || kinds.includes('break') || kinds.includes('recovery'); // allow aggressive heals if defined
 }
 
-function getChipRowOrNull(name) {
-  const r = getChip.get(name);
-  return r || null;
+// Picks a move subject to:
+// - specials (boss) each usable once
+// - total defense uses <= VIRUS_DEFENSE_CAP_TOTAL
+// - no more than VIRUS_DEFENSE_CAP_STREAK consecutive defense uses (forces attack if possible)
+function pickVirusMove(pveRow) {
+  const moves = parseMoves(pveRow.virus_moves_json);
+  if (!moves.length) return null;
+
+  const usedSpecials = new Set(parseList(pveRow.v_special_used));
+  const totalDef = Number(pveRow.v_def_total || 0);
+  const defStreak = Number(pveRow.v_def_streak || 0);
+
+  // Filter out spent specials
+  const notSpent = moves.filter((m) => !(m.special && usedSpecials.has((m.name || m.label || 'special'))));
+
+  // If consecutive defense >= cap → try to force attack
+  if (defStreak >= VIRUS_DEFENSE_CAP_STREAK) {
+    const attacks = notSpent.filter((m) => !isDefLikeMove(m));
+    if (attacks.length) return attacks[Math.floor(Math.random() * attacks.length)];
+    // fall through to other pools if none
+  }
+
+  // If total defense at or above cap → avoid defense
+  if (totalDef >= VIRUS_DEFENSE_CAP_TOTAL) {
+    const nonDef = notSpent.filter((m) => !isDefLikeMove(m));
+    if (nonDef.length) return nonDef[Math.floor(Math.random() * nonDef.length)];
+    return notSpent[Math.floor(Math.random() * notSpent.length)];
+  }
+
+  // Normal random from notSpent
+  return notSpent[Math.floor(Math.random() * notSpent.length)];
 }
 
 // ---------- UI helpers for Shop ----------
@@ -694,7 +713,6 @@ function summarizeEffect(e) {
   if (e.special) bits.push('⭐ Special (once per battle)');
   return bits.join(' • ') || '—';
 }
-
 function buildShopPage(rows, page = 0) {
   const PER = 25;
   const totalPages = Math.max(1, Math.ceil(rows.length / PER));
@@ -732,15 +750,47 @@ function buildShopPage(rows, page = 0) {
   return { embed, components: [rowSel, rowNav], page, totalPages };
 }
 
-// Round resolution (Duels)
+// ---------- Round resolution (Duels) ----------
 async function resolveDuelRound(channel) {
-  const f = getFight.get(channel.id);
-  if (!f) return;
+  const f0 = getFight.get(channel.id);
+  if (!f0) return;
+
+  // Ensure bot (if present) always locks an action this round
+  let f = f0;
+  if (!f.p2_action_json && f.p2_id === client.user.id) {
+    const act = pickBotChipFor(f, false);
+    if (act) {
+      updFightRound.run(
+        f.p1_hp, f.p2_hp,
+        f.p1_def, f.p2_def,
+        f.p1_counts_json, f.p2_counts_json,
+        f.p1_special_used, f.p2_special_used,
+        f.p1_action_json, JSON.stringify(act),
+        f.round_deadline,
+        channel.id
+      );
+      f = getFight.get(channel.id);
+    }
+  }
+  if (!f.p1_action_json && f.p1_id === client.user.id) {
+    const act = pickBotChipFor(f, true);
+    if (act) {
+      updFightRound.run(
+        f.p1_hp, f.p2_hp,
+        f.p1_def, f.p2_def,
+        f.p1_counts_json, f.p2_counts_json,
+        f.p1_special_used, f.p2_special_used,
+        JSON.stringify(act), f.p2_action_json,
+        f.round_deadline,
+        channel.id
+      );
+      f = getFight.get(channel.id);
+    }
+  }
 
   const p1 = ensureNavi(f.p1_id);
   const p2 = ensureNavi(f.p2_id);
 
-  // Decode actions
   const A1 = decodeAction(f.p1_action_json);
   const A2 = decodeAction(f.p2_action_json);
 
@@ -754,137 +804,85 @@ async function resolveDuelRound(channel) {
   }
 
   // Build intents
-  const I1 = resolveActionToIntent(f.p1_id, A1);
-  const I2 = resolveActionToIntent(f.p2_id, A2);
-
-  // Prepare per-battle tracking
-  let p1Counts = parseMap(f.p1_counts_json);
-  let p2Counts = parseMap(f.p2_counts_json);
-  let p1Spec = new Set(parseList(f.p1_special_used));
-  let p2Spec = new Set(parseList(f.p2_special_used));
-
-  // Intent → temporary DEF / Barrier / Attack+Recovery effects
   function rowAndEff(name) {
-    const r = getChipRowOrNull(name);
+    const r = getChip.get(name);
     const e = readEffect(r);
     return { r, e };
   }
-  function interpretIntent(intent) {
-    if (!intent || intent.kind === 'none') return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
-
-    if (intent.kind === 'chip') {
-      const { r, e } = rowAndEff(intent.chipName);
+  function interpret(inv) {
+    if (!inv) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
+    if (inv.type === 'chip') {
+      const { r, e } = rowAndEff(inv.name);
       if (!r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
-      const used = [r.name];
       let def = 0, barrier = false, attackEff = null, rec = 0;
       if (isDefense(e)) def = Number.isFinite(e.def) ? e.def : 0;
       if (isBarrier(e)) barrier = true;
       if (isRecovery(e)) rec += Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : 0);
       if (isAttack(e)) attackEff = e;
-      return { def, barrier, attackEff, rec, supportEff: null, used };
+      return { def, barrier, attackEff, rec, supportEff: null, used: [r.name] };
     }
-
-    if (intent.kind === 'support_chain') {
-      const { r: sr, e: se } = rowAndEff(intent.supportName);
-      const { r: cr, e: ce } = rowAndEff(intent.chipName);
+    if (inv.type === 'support') {
+      const { r: sr, e: se } = rowAndEff(inv.support);
+      const { r: cr, e: ce } = rowAndEff(inv.with);
       if (!sr || !cr) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
-      const used = [sr.name, cr.name];
       let def = 0, barrier = false, attackEff = null, rec = 0;
       if (isDefense(ce)) def += Number.isFinite(ce.def) ? ce.def : 0;
       if (isBarrier(ce)) barrier = true;
-      if (isRecovery(ce)) rec += Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : 0);
+      if (isRecovery(ce)) rec += Number.isFinite(ce.heal) ? e.heal : (Number.isFinite(ce.rec) ? ce.rec : 0);
       if (isAttack(ce)) attackEff = ce;
-      return { def, barrier, attackEff, rec, supportEff: se, used };
+      return { def, barrier, attackEff, rec, supportEff: se, used: [sr.name, cr.name] };
     }
-
     return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
   }
 
-  const P1 = interpretIntent(I1);
-  const P2 = interpretIntent(I2);
+  const P1 = interpret(A1);
+  const P2 = interpret(A2);
 
-  // Compute simultaneous outcomes
   let p1DEF = P1.def || 0;
   let p2DEF = P2.def || 0;
   const p1Barrier = !!P1.barrier;
   const p2Barrier = !!P2.barrier;
 
-  // Player 1 attacking player 2
   let dmg1to2 = 0, crit1 = false, dodged1 = false, absorbed1 = 0, cancelledByBarrier1 = false;
   if (P1.attackEff) {
     const res = computeAttackDamage({
-      baseChip: P1.attackEff,
-      supportEff: P1.supportEff,
-      attacker: f.p1_id,
-      defender: f.p2_id,
-      defenderDEF: p2DEF,
-      defenderHasBarrier: p2Barrier,
-      breakFlag: isBreak(P1.attackEff),
-      dodgePct: p2.dodge,
-      critPct: p1.crit,
+      baseChip: P1.attackEff, supportEff: P1.supportEff,
+      defenderDEF: p2DEF, defenderHasBarrier: p2Barrier,
+      breakFlag: isBreak(P1.attackEff), dodgePct: p2.dodge, critPct: p1.crit,
     });
     ({ dmg: dmg1to2, crit: crit1, dodged: dodged1, absorbed: absorbed1, cancelledByBarrier: cancelledByBarrier1 } = res);
   }
 
-  // Player 2 attacking player 1
   let dmg2to1 = 0, crit2 = false, dodged2 = false, absorbed2 = 0, cancelledByBarrier2 = false;
   if (P2.attackEff) {
     const res = computeAttackDamage({
-      baseChip: P2.attackEff,
-      supportEff: P2.supportEff,
-      attacker: f.p2_id,
-      defender: f.p1_id,
-      defenderDEF: p1DEF,
-      defenderHasBarrier: p1Barrier,
-      breakFlag: isBreak(P2.attackEff),
-      dodgePct: p1.dodge,
-      critPct: p2.crit,
+      baseChip: P2.attackEff, supportEff: P2.supportEff,
+      defenderDEF: p1DEF, defenderHasBarrier: p1Barrier,
+      breakFlag: isBreak(P2.attackEff), dodgePct: p1.dodge, critPct: p2.crit,
     });
     ({ dmg: dmg2to1, crit: crit2, dodged: dodged2, absorbed: absorbed2, cancelledByBarrier: cancelledByBarrier2 } = res);
   }
 
-  // Recovery resolves even if attack was dodged; Barrier cancels whole chip if it included 'attack'
   let rec1 = P1.rec || 0; if (P1.attackEff && p2Barrier && !isBreak(P1.attackEff)) rec1 = 0;
   let rec2 = P2.rec || 0; if (P2.attackEff && p1Barrier && !isBreak(P2.attackEff)) rec2 = 0;
 
-  // Apply damage & heals (simultaneous)
   let p1hp = Math.max(0, Math.min(p1.max_hp, f.p1_hp - dmg2to1 + rec1));
   let p2hp = Math.max(0, Math.min(p2.max_hp, f.p2_hp - dmg1to2 + rec2));
 
-  // Build round summary
-  function fmtAct(P, crit, dodged, cancelled, dmg, absorbed, rec) {
-    const used = [...new Set(P.used || [])];
-    const parts = [];
-    if (P.supportEff && used.length === 2) parts.push(`**${used[0]}** → **${used[1]}**`);
-    else if (used.length) parts.push(used.map((n) => `**${n}**`).join(' + '));
-    else parts.push('did nothing');
-    const extras = [];
-    if (P.barrier) extras.push('🛡️ Barrier');
-    if (P.def) extras.push(`🧱 DEF +${P.def}`);
-    if (rec > 0) extras.push(`💚 +${rec}`);
-    if (P.attackEff) {
-      if (cancelled) extras.push('❌ cancelled');
-      else if (dodged) extras.push('💨 dodged');
-      else extras.push(`💥 ${dmg}${crit ? ' _(CRIT!)_' : ''}${absorbed > 0 ? ` (DEF absorbed ${absorbed})` : ''}`);
-    }
-    return `${parts.join(' ')}${extras.length ? ` → ${extras.join(' | ')}` : ''}`;
-  }
-
-  const line1 = fmtAct(P1, crit1, dodged1, cancelledByBarrier1, dmg1to2, absorbed1, rec1);
-  const line2 = fmtAct(P2, crit2, dodged2, cancelledByBarrier2, dmg2to1, absorbed2, rec2);
-
-  // Update per-battle counters & specials (for actually used chips only)
   function bumpCounters(counts, specials, usedNames) {
     for (const n of (usedNames || [])) {
       counts[n] = (counts[n] || 0) + 1;
-      const eff = readEffect(getChipRowOrNull(n));
+      const eff = readEffect(getChip.get(n));
       if (isSpecial(eff)) specials.add(n);
     }
   }
+  let p1Counts = parseMap(f.p1_counts_json);
+  let p2Counts = parseMap(f.p2_counts_json);
+  let p1Spec = new Set(parseList(f.p1_special_used));
+  let p2Spec = new Set(parseList(f.p2_special_used));
   bumpCounters(p1Counts, p1Spec, P1.used);
   bumpCounters(p2Counts, p2Spec, P2.used);
 
-  // Determine outcome
   let outcome = '';
   if (p1hp === 0 && p2hp === 0) {
     outcome = '🤝 **Double KO!** No W/L changes.';
@@ -904,12 +902,11 @@ async function resolveDuelRound(channel) {
     clearRoundTimer(channel.id);
   }
 
-  // Persist round (if continuing, reset def/barriers and clear actions; schedule new round)
+  const nextDeadline = now() + ROUND_SECONDS * 1000;
   if (!outcome) {
-    const nextDeadline = now() + ROUND_SECONDS * 1000;
     updFightRound.run(
       p1hp, p2hp,
-      0, 0, // DEF resets each round
+      0, 0,
       JSON.stringify(p1Counts), JSON.stringify(p2Counts),
       JSON.stringify([...p1Spec]), JSON.stringify([...p2Spec]),
       null, null,
@@ -919,11 +916,29 @@ async function resolveDuelRound(channel) {
     scheduleRoundTimer(channel.id, () => resolveDuelRound(channel));
   }
 
-  const header = `🎬 **Round Results**\n• <@${f.p1_id}> ${line1}\n• <@${f.p2_id}> ${line2}\n${hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp })}`;
+  function fmt(P, crit, dodged, cancelled, dmg, absorbed, rec) {
+    const used = [...new Set(P.used || [])];
+    const parts = [];
+    if (P.supportEff && used.length === 2) parts.push(`**${used[0]}** → **${used[1]}**`);
+    else if (used.length) parts.push(used.map((n) => `**${n}**`).join(' + '));
+    else parts.push('did nothing');
+    const extras = [];
+    if (P.barrier) extras.push('🛡️ Barrier');
+    if (P.def) extras.push(`🧱 DEF +${P.def}`);
+    if (rec > 0) extras.push(`💚 +${rec}`);
+    if (P.attackEff) {
+      if (cancelled) extras.push('❌ cancelled');
+      else if (dodged) extras.push('💨 dodged');
+      else extras.push(`💥 ${dmg}${crit ? ' _(CRIT!)_' : ''}${absorbed > 0 ? ` (DEF absorbed ${absorbed})` : ''}`);
+    }
+    return `${parts.join(' ')}${extras.length ? ` → ${extras.join(' | ')}` : ''}`;
+  }
+
+  const header = `🎬 **Round Results**\n• <@${f.p1_id}> ${fmt(P1, crit1, dodged1, cancelledByBarrier1, dmg1to2, absorbed1, rec1)}\n• <@${f.p2_id}> ${fmt(P2, crit2, dodged2, cancelledByBarrier2, dmg2to1, absorbed2, rec2)}\n${hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp })}`;
   await channel.send(outcome ? `${header}\n\n${outcome}` : `${header}\n\n➡️ Next round: submit with **/use** within **${ROUND_SECONDS}s**.`);
 }
 
-// Round resolution (PVE)
+// ---------- Round resolution (PVE) ----------
 async function resolvePVERound(channel) {
   const f = getPVE.get(channel.id);
   if (!f) return;
@@ -933,16 +948,14 @@ async function resolvePVERound(channel) {
   const Aplayer = decodeAction(f.player_action_json);
   let Avirus = decodeAction(f.virus_action_json);
 
-  // If virus has no planned action, pick one now (random from moveset)
   if (!Avirus) {
     const mv = pickVirusMove(f);
     if (mv) Avirus = { type: 'chip', name: mv.name || mv.label || 'Move' };
   }
 
-  // If neither acted, schedule a new round wait
   if (!Aplayer && !Avirus) {
     const nextDeadline = now() + ROUND_SECONDS * 1000;
-    updPVE.run(f.p_hp, f.v_hp, 0, 0, f.p_counts_json, f.p_special_used, f.v_special_used, null, null, nextDeadline, channel.id);
+    updPVE.run(f.p_hp, f.v_hp, 0, 0, f.p_counts_json, f.p_special_used, f.v_special_used, null, null, nextDeadline, f.v_def_total, f.v_def_streak, channel.id);
     scheduleRoundTimer(channel.id, () => resolvePVERound(channel));
     const embed = new EmbedBuilder()
       .setTitle(`👾 ${f.virus_name}`)
@@ -953,65 +966,49 @@ async function resolvePVERound(channel) {
     return;
   }
 
-  // Build intents
-  const Iplayer = resolveActionToIntent(f.player_id, Aplayer, { forPVE: true });
-  const Ivirus = resolveActionToIntent('virus', Avirus, { forPVE: true });
+  // Intents
+  function chipRowOrNull(name) { return getChip.get(name) || null; }
+  function effectFromName(name) { const r = chipRowOrNull(name); return { r, e: readEffect(r) }; }
 
-  let pCounts = parseMap(f.p_counts_json);
-  let pSpec = new Set(parseList(f.p_special_used));
-  let vSpec = new Set(parseList(f.v_special_used));
-
-  // Chip rows & virus moves (virus moves are stored directly in virus_moves_json)
-  function virusMoveRowByName(name) {
-    const moves = parseMoves(f.virus_moves_json);
-    return moves.find((m) => (m.name || m.label || '').toLowerCase() === String(name || '').toLowerCase()) || null;
-  }
-
-  function interpretP(intent, isVirus = false) {
-    if (!intent || intent.kind === 'none') return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
-    if (intent.kind === 'chip') {
+  function intentFromAction(action, isVirus) {
+    if (!action) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null };
+    if (action.type === 'chip') {
       if (isVirus) {
-        const mv = virusMoveRowByName(intent.chipName);
-        if (!mv) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
+        const mv = parseMoves(f.virus_moves_json).find(m => (m.name || m.label || '').toLowerCase() === String(action.name || '').toLowerCase());
+        if (!mv) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null };
         let def = 0, barrier = false, attackEff = null, rec = 0;
         if (isDefense(mv)) def = Number.isFinite(mv.def) ? mv.def : 0;
         if (isBarrier(mv)) barrier = true;
         if (isRecovery(mv)) rec += Number.isFinite(mv.heal) ? mv.heal : (Number.isFinite(mv.rec) ? mv.rec : 0);
         if (isAttack(mv)) attackEff = mv;
-        const used = [];
-        if (mv.special && !vSpec.has(mv.name || mv.label || 'special')) { vSpec.add(mv.name || mv.label || 'special'); }
-        return { def, barrier, attackEff, rec, used };
+        return { def, barrier, attackEff, rec, used: [], mv };
       } else {
-        const r = getChipRowOrNull(intent.chipName);
-        if (!r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
-        const e = readEffect(r);
+        const { r, e } = effectFromName(action.name);
+        if (!r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null };
         let def = 0, barrier = false, attackEff = null, rec = 0;
         if (isDefense(e)) def = Number.isFinite(e.def) ? e.def : 0;
         if (isBarrier(e)) barrier = true;
         if (isRecovery(e)) rec += Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : 0);
         if (isAttack(e)) attackEff = e;
-        return { def, barrier, attackEff, rec, used: [r.name] };
+        return { def, barrier, attackEff, rec, used: [r.name], mv: null };
       }
     }
-    if (intent.kind === 'support_chain' && !isVirus) {
-      const sr = getChipRowOrNull(intent.supportName);
-      const cr = getChipRowOrNull(intent.chipName);
-      if (!sr || !cr) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
-      const se = readEffect(sr), ce = readEffect(cr);
+    if (action.type === 'support' && !isVirus) {
+      const s = effectFromName(action.support), c = effectFromName(action.with);
+      if (!s.r || !c.r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null };
       let def = 0, barrier = false, attackEff = null, rec = 0;
-      if (isDefense(ce)) def += Number.isFinite(ce.def) ? ce.def : 0;
-      if (isBarrier(ce)) barrier = true;
-      if (isRecovery(ce)) rec += Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : 0);
-      if (isAttack(ce)) attackEff = ce;
-      return { def, barrier, attackEff, rec, supportEff: se, used: [sr.name, cr.name] };
+      if (isDefense(c.e)) def += Number.isFinite(c.e.def) ? c.e.def : 0;
+      if (isBarrier(c.e)) barrier = true;
+      if (isRecovery(c.e)) rec += Number.isFinite(c.e.heal) ? c.e.heal : (Number.isFinite(c.e.rec) ? c.e.rec : 0);
+      if (isAttack(c.e)) attackEff = c.e;
+      return { def, barrier, attackEff, rec, supportEff: s.e, used: [s.r.name, c.r.name], mv: null };
     }
-    return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
+    return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null };
   }
 
-  const PP = interpretP(Iplayer, false);
-  const PV = interpretP(Ivirus, true);
+  const PP = intentFromAction(Aplayer, false);
+  const PV = intentFromAction(Avirus, true);
 
-  // temp DEF / Barrier
   let pDEF = PP.def || 0;
   let vDEF = PV.def || 0;
   const pBarrier = !!PP.barrier;
@@ -1021,14 +1018,10 @@ async function resolvePVERound(channel) {
   let dmgPtoV = 0, critP = false, dodgedP = false, absorbedP = 0, cancelledByBarrierP = false;
   if (PP.attackEff) {
     const res = computeAttackDamage({
-      baseChip: PP.attackEff,
-      supportEff: PP.supportEff,
-      attacker: f.player_id, defender: 'virus',
-      defenderDEF: vDEF,
-      defenderHasBarrier: vBarrier,
+      baseChip: PP.attackEff, supportEff: PP.supportEff,
+      defenderDEF: vDEF, defenderHasBarrier: vBarrier,
       breakFlag: isBreak(PP.attackEff),
-      dodgePct: f.virus_dodge,
-      critPct: player.crit,
+      dodgePct: f.virus_dodge, critPct: player.crit
     });
     ({ dmg: dmgPtoV, crit: critP, dodged: dodgedP, absorbed: absorbedP, cancelledByBarrier: cancelledByBarrierP } = res);
   }
@@ -1037,37 +1030,93 @@ async function resolvePVERound(channel) {
   let dmgVtoP = 0, critV = false, dodgedV = false, absorbedV = 0, cancelledByBarrierV = false;
   if (PV.attackEff) {
     const res = computeAttackDamage({
-      baseChip: PV.attackEff,
-      supportEff: null,
-      attacker: 'virus', defender: f.player_id,
-      defenderDEF: pDEF,
-      defenderHasBarrier: pBarrier,
+      baseChip: PV.attackEff, supportEff: null,
+      defenderDEF: pDEF, defenderHasBarrier: pBarrier,
       breakFlag: isBreak(PV.attackEff),
-      dodgePct: player.dodge,
-      critPct: f.virus_crit,
+      dodgePct: player.dodge, critPct: f.virus_crit
     });
     ({ dmg: dmgVtoP, crit: critV, dodged: dodgedV, absorbed: absorbedV, cancelledByBarrier: cancelledByBarrierV } = res);
   }
 
-  // Recovery
   let recP = PP.rec || 0; if (PP.attackEff && vBarrier && !isBreak(PP.attackEff)) recP = 0;
   let recV = PV.rec || 0; if (PV.attackEff && pBarrier && !isBreak(PV.attackEff)) recV = 0;
 
-  // Apply (simultaneous)
   let php = Math.max(0, Math.min(player.max_hp, f.p_hp - dmgVtoP + recP));
   let vhp = Math.max(0, Math.min(f.virus_max_hp, f.v_hp - dmgPtoV + recV));
 
-  // Update per-battle player counters & specials
+  // Update player per-battle counters & specials
   function bumpPlayerCounters(used) {
+    const counts = parseMap(f.p_counts_json);
+    let pSpec = new Set(parseList(f.p_special_used));
     for (const n of (used || [])) {
-      pCounts[n] = (pCounts[n] || 0) + 1;
-      const eff = readEffect(getChipRowOrNull(n));
+      counts[n] = (counts[n] || 0) + 1;
+      const eff = readEffect(getChip.get(n));
       if (isSpecial(eff)) pSpec.add(n);
     }
+    return { counts, pSpec };
   }
-  bumpPlayerCounters(PP.used);
+  const { counts: pCounts, pSpec } = bumpPlayerCounters(PP.used);
 
-  // Build summary lines
+  // Virus special tracking (boss only)
+  let vSpec = new Set(parseList(f.v_special_used));
+  if (PV.mv?.special) {
+    const nm = PV.mv.name || PV.mv.label || 'special';
+    vSpec.add(nm);
+  }
+
+  // Defense cap accounting for virus
+  let nextDefTotal = f.v_def_total || 0;
+  let nextDefStreak = PV.mv && isDefLikeMove(PV.mv) ? Math.min(VIRUS_DEFENSE_CAP_STREAK, (f.v_def_streak || 0) + 1) : 0;
+  if (PV.mv && isDefLikeMove(PV.mv)) nextDefTotal = Math.min(VIRUS_DEFENSE_CAP_TOTAL, nextDefTotal + 1);
+
+  // Outcome
+  let outcome = '';
+  if (php === 0 && vhp === 0) {
+    outcome = '🤝 **Double KO!**';
+    endPVE.run(channel.id);
+    clearRoundTimer(channel.id);
+  } else if (vhp === 0) {
+    // Zenny and STAT POINTS based on virus stat_points
+    const z = Math.max(f.virus_zmin || 0, Math.min(f.virus_zmax || 0, Math.floor(Math.random() * ((f.virus_zmax || 0) - (f.virus_zmin || 0) + 1)) + (f.virus_zmin || 0)));
+    if (z > 0) addZenny.run(z, f.player_id);
+
+    // derive stat points from cached TSV record of this virus
+    let sp = 1;
+    try {
+      const vr = VirusCache.rows.find(r => (r.name || '').toLowerCase() === (f.virus_name || '').toLowerCase());
+      sp = Math.max(1, parseInt(vr?.stat_points || '1', 10) || 1);
+    } catch {}
+    addPoints.run(sp, f.player_id);
+
+    outcome = `🏆 **<@${f.player_id}> wins!** You earned **${z}** ${zennyIcon()} and **${sp}** upgrade point${sp === 1 ? '' : 's'}.`;
+    endPVE.run(channel.id);
+    clearRoundTimer(channel.id);
+  } else if (php === 0) {
+    outcome = `💀 **${f.virus_name}** wins! Better luck next time.`;
+    endPVE.run(channel.id);
+    clearRoundTimer(channel.id);
+  }
+
+  if (!outcome) {
+    const nextDeadline = now() + ROUND_SECONDS * 1000;
+    updPVE.run(
+      php, vhp,
+      0, 0, // reset temp DEF
+      JSON.stringify(pCounts), JSON.stringify([...pSpec]), JSON.stringify([...vSpec]),
+      null, null,
+      nextDeadline,
+      nextDefTotal, nextDefStreak,
+      channel.id
+    );
+    scheduleRoundTimer(channel.id, () => resolvePVERound(channel));
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(`👾 ${f.virus_name}`)
+    .setDescription(`**HP** ${vhp} / ${f.virus_max_hp} | **Dodge** ${f.virus_dodge}% | **Crit** ${f.virus_crit}%`)
+    .setImage(f.virus_image || null)
+    .setFooter({ text: 'Virus Busting' });
+
   function fmtP(label, P, crit, dodged, cancelled, dmg, absorbed, rec) {
     const used = [...new Set(P.used || [])];
     const parts = [];
@@ -1090,63 +1139,14 @@ async function resolvePVERound(channel) {
   const lineP = fmtP(`<@${f.player_id}>`, PP, critP, dodgedP, cancelledByBarrierP, dmgPtoV, absorbedP, recP);
   const lineV = fmtP(`**${f.virus_name}**`, PV, critV, dodgedV, cancelledByBarrierV, dmgVtoP, absorbedV, recV);
 
-  // Determine outcome
-  let outcome = '';
-  if (php === 0 && vhp === 0) {
-    outcome = '🤝 **Double KO!**';
-    endPVE.run(channel.id);
-    clearRoundTimer(channel.id);
-  } else if (vhp === 0) {
-    const z = Math.max(f.virus_zmin || 0, Math.min(f.virus_zmax || 0, Math.floor(Math.random() * ((f.virus_zmax || 0) - (f.virus_zmin || 0) + 1)) + (f.virus_zmin || 0)));
-    if (z > 0) addZenny.run(z, f.player_id);
-    outcome = `🏆 **<@${f.player_id}> wins!** You earned **${z}** ${zennyIcon()}`;
-    endPVE.run(channel.id);
-    clearRoundTimer(channel.id);
-  } else if (php === 0) {
-    outcome = `💀 **${f.virus_name}** wins! Better luck next time.`;
-    endPVE.run(channel.id);
-    clearRoundTimer(channel.id);
-  }
-
-  // Persist or schedule next
-  if (!outcome) {
-    const nextDeadline = now() + ROUND_SECONDS * 1000;
-    updPVE.run(
-      php, vhp,
-      0, 0, // DEF reset
-      JSON.stringify(pCounts), JSON.stringify([...pSpec]), JSON.stringify([...vSpec]),
-      null, null,
-      nextDeadline,
-      channel.id,
-    );
-    scheduleRoundTimer(channel.id, () => resolvePVERound(channel));
-  }
-
-  // Always show virus embed with updated stats
-  const embed = new EmbedBuilder()
-    .setTitle(`👾 ${f.virus_name}`)
-    .setDescription(`**HP** ${vhp} / ${f.virus_max_hp} | **Dodge** ${f.virus_dodge}% | **Crit** ${f.virus_crit}%`)
-    .setImage(f.virus_image || null)
-    .setFooter({ text: 'Virus Busting' });
-
   const header = `🎬 **Round Results**\n${lineP}\n${lineV}\n${hpLinePVE({ ...f, p_hp: php, v_hp: vhp })}`;
   await channel.send(outcome ? { content: `${header}\n\n${outcome}`, embeds: [embed] } : { content: `${header}\n\n➡️ Next round: submit with **/use** within **${ROUND_SECONDS}s**.`, embeds: [embed] });
-}
-
-// Virus move picker (simple random, treats specials once)
-function pickVirusMove(pveRow) {
-  const moves = parseMoves(pveRow.virus_moves_json);
-  if (!moves.length) return null;
-  const used = new Set(parseList(pveRow.v_special_used));
-  const pool = moves.filter((m) => !m.special || !used.has(m.name || m.label || 'special'));
-  if (!pool.length) return moves[Math.floor(Math.random() * moves.length)];
-  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 // ---------- Slash commands & interactions ----------
 client.on('interactionCreate', async (ix) => {
   try {
-    // SHOP UI interactivity FIRST (dropdown/buttons)
+    // SHOP UI interactivity
     if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
       const name = ix.values?.[0];
       const chip = getChip.get(name);
@@ -1212,33 +1212,41 @@ client.on('interactionCreate', async (ix) => {
     // Autocomplete
     if (ix.isAutocomplete()) {
       const focused = ix.options.getFocused(true);
-      const sub = ix.options.getSubcommand(false);
       const query = String(focused.value || '').toLowerCase();
 
-      // Admin item lookups
-      if (['buy', 'chip_grant', 'chip_remove'].includes(ix.commandName)) {
+      if (ix.commandName === 'buy' || ix.commandName === 'chip_grant' || ix.commandName === 'chip_remove') {
         const names = listAllChipNames.all().map((r) => r.name);
         const filtered = names.filter((n) => n.toLowerCase().includes(query)).slice(0, 25);
         return ix.respond(filtered.map((n) => ({ name: n, value: n })));
       }
 
-      // /use autocomplete from a user's folder (NO UPGRADES)
       if (ix.commandName === 'use') {
         const invNames = listInv.all(ix.user.id)
           .map((r) => r.chip_name)
-          .filter(n => (getChipRowOrNull(n)?.is_upgrade ?? 0) === 0);
+          .filter(n => (getChip.get(n)?.is_upgrade ?? 0) === 0);
 
-        const items = invNames.map((n) => ({ n, eff: readEffect(getChipRowOrNull(n)) })).filter((x) => x.eff);
+        const items = invNames.map((n) => ({ n, eff: readEffect(getChip.get(n)) })).filter((x) => x.eff);
         let pool = invNames;
-        if (sub === 'support') {
-          if (focused.name === 'support') pool = items.filter((x) => isSupport(x.eff)).map((x) => x.n);
-          else if (focused.name === 'with') pool = items.filter((x) => !isSupport(x.eff)).map((x) => x.n);
-        }
+        if (focused.name === 'support') pool = items.filter((x) => isSupport(x.eff)).map((x) => x.n);
+        if (focused.name === 'chip')    pool = items.filter((x) => !isSupport(x.eff)).map((x) => x.n);
+
         const filtered = pool.filter((n) => n.toLowerCase().includes(query)).slice(0, 25);
         return ix.respond(filtered.map((n) => ({ name: n, value: n })));
       }
 
-      // Fallback
+      if (ix.commandName === 'virus_search') {
+        try {
+          const viruses = await loadViruses();
+          const filtered = viruses
+            .map(v => v.name)
+            .filter(n => n.toLowerCase().includes(query))
+            .slice(0, 25);
+          return ix.respond(filtered.map((n) => ({ name: n, value: n })));
+        } catch {
+          return ix.respond([]);
+        }
+      }
+
       const names = listAllChipNames.all().map((r) => r.name);
       const filtered = names.filter((n) => n.toLowerCase().includes(query)).slice(0, 25);
       return ix.respond(filtered.map((n) => ({ name: n, value: n })));
@@ -1251,7 +1259,6 @@ client.on('interactionCreate', async (ix) => {
       return ix.reply({ content: `✅ Registered with **${row.max_hp} HP**, **${row.dodge}%** dodge, **${row.crit}%** crit.`, ephemeral: true });
     }
 
-    // Points/manual upgrades (unchanged except caps pulled from ENV)
     if (ix.commandName === 'navi_upgrade') {
       if (MANUAL_UPGRADES_MODE === 'disabled') {
         return ix.reply({ content: 'Manual upgrades are disabled. Earn upgrades via wins or upgrade chips.', ephemeral: true });
@@ -1275,7 +1282,7 @@ client.on('interactionCreate', async (ix) => {
 
       if (MANUAL_UPGRADES_MODE === 'points') {
         if ((upgrade_pts ?? 0) < 1) {
-          return ix.reply({ content: 'You have no upgrade points. Win duels to earn them!', ephemeral: true });
+          return ix.reply({ content: 'You have no upgrade points. Win duels or defeat viruses to earn them!', ephemeral: true });
         }
       }
 
@@ -1329,6 +1336,26 @@ client.on('interactionCreate', async (ix) => {
       );
     }
 
+    if (ix.commandName === 'virus_search') {
+      try {
+        const name = ix.options.getString('name', true);
+        const viruses = await loadViruses();
+        const v = viruses.find(x => (x.name || '').toLowerCase() === name.toLowerCase());
+        if (!v) return ix.reply({ content: 'No matching virus/boss found.', ephemeral: true });
+
+        const embed = new EmbedBuilder()
+          .setTitle(`👾 ${v.name}${v.boss ? ' — ⭐ BOSS' : ''}`)
+          .setDescription(`**HP** ${v.hp} | **Dodge** ${v.dodge}% | **Crit** ${v.crit}%\nZenny: ${v.zmin}-${v.zmax}`)
+          .setImage(v.image_url || null)
+          .setFooter({ text: 'Virus Search' });
+
+        return ix.reply({ embeds: [embed] });
+      } catch (e) {
+        console.error('virus_search error:', e);
+        return ix.reply({ content: 'Could not load Virus data. Check VIRUS_TSV_URL and sharing.', ephemeral: true });
+      }
+    }
+
     if (ix.commandName === 'virus_busting') {
       if (getFight.get(ix.channel.id) || getPVE.get(ix.channel.id)) {
         return ix.reply({ content: 'There is already a duel/encounter active in this channel.', ephemeral: true });
@@ -1360,6 +1387,7 @@ client.on('interactionCreate', async (ix) => {
         '[]', '[]',
         null, null,
         now() + ROUND_SECONDS * 1000,
+        0, 0, // v_def_total, v_def_streak
         Date.now(),
       );
 
@@ -1367,7 +1395,7 @@ client.on('interactionCreate', async (ix) => {
 
       const embed = new EmbedBuilder()
         .setTitle(`👾 Encounter: ${pick.name}`)
-        .setDescription(`**HP** ${pick.hp} | **Dodge** ${pick.dodge}% | **Crit** ${pick.crit}%\n${pick.boss ? '⭐ **BOSS** (special once)' : 'Basic Virus'}`)
+        .setDescription(`**HP** ${pick.hp} | **Dodge** ${pick.dodge}% | **Crit** ${pick.crit}%\n${pick.boss ? '⭐ **BOSS** (specials once each)' : 'Basic Virus'}`)
         .setImage(pick.image_url || null)
         .setFooter({ text: 'Virus Busting — simultaneous rounds' });
 
@@ -1392,7 +1420,6 @@ client.on('interactionCreate', async (ix) => {
       ensureNavi(target.id);
 
       if (!target.bot || target.id === client.user.id) {
-        // Accept/Decline flow for human or scrimmage vs bot
         if (!target.bot) {
           const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('accept_duel').setLabel('Accept').setStyle(ButtonStyle.Success),
@@ -1420,11 +1447,9 @@ client.on('interactionCreate', async (ix) => {
             return;
           }
         } else {
-          // scrimmage vs bot (accepted implicitly)
           await ix.reply(`🐸 **Scrimmage started!** ${ix.user} vs <@${client.user.id}> (simultaneous rounds).\nSubmit with **/use** within **${ROUND_SECONDS}s** each round. *(Scrimmage — no W/L or points)*`);
         }
 
-        // Start duel
         const p1 = ensureNavi(ix.user.id), p2 = ensureNavi(target.id);
         startFight.run(
           ix.channel.id,
@@ -1441,11 +1466,10 @@ client.on('interactionCreate', async (ix) => {
         );
         scheduleRoundTimer(ix.channel.id, () => resolveDuelRound(ix.channel));
 
-        // Kickoff round prompt
         await ix.followUp(`🎬 **Round started.** Submit your chip with **/use** within **${ROUND_SECONDS}s**.\n${hpLineDuel({ p1_id: ix.user.id, p2_id: target.id, p1_hp: p1.max_hp, p2_hp: p2.max_hp })}`);
 
         if (target.bot && target.id === client.user.id) {
-          // Pick bot action immediately for the round
+          // Immediately lock a bot move for R1
           const f = getFight.get(ix.channel.id);
           const botAct = pickBotChipFor(f, false);
           if (botAct) {
@@ -1527,28 +1551,7 @@ client.on('interactionCreate', async (ix) => {
       }
     }
 
-    if (ix.commandName === 'navi_leaderboard') {
-      let limit = ix.options.getInteger('limit') ?? 10;
-      limit = Math.min(25, Math.max(5, limit));
-
-      const rows = db.prepare(`
-        SELECT user_id, wins, losses
-        FROM navis
-        ORDER BY wins DESC, losses ASC, user_id ASC
-        LIMIT ?
-      `).all(limit);
-
-      if (!rows.length) return ix.reply('No players registered yet.');
-
-      const lines = rows.map((r, i) => {
-        const games = (r.wins ?? 0) + (r.losses ?? 0);
-        const wr = games > 0 ? ((r.wins / games) * 100).toFixed(1) : '0.0';
-        return `#${i + 1} — <@${r.user_id}> — **${r.wins}-${r.losses}** (${wr}% WR)`;
-      });
-
-      return ix.reply(`🏆 **Leaderboard (Top ${rows.length})**\n` + lines.join('\n'));
-    }
-
+    // Zenny views/transfers
     if (ix.commandName === 'zenny') {
       const user = ix.options.getUser('user') || ix.user;
       const row = ensureNavi(user.id);
@@ -1570,7 +1573,7 @@ client.on('interactionCreate', async (ix) => {
       return ix.reply(`✅ Transferred **${amt}** ${zennyIcon()} from <@${ix.user.id}> to <@${to.id}>.`);
     }
 
-    // Shop (interactive, paginated, ephemeral)
+    // Shop
     if (ix.commandName === 'shop') {
       const rows = listShop.all();
       if (!rows.length) return ix.reply('Shop is empty. Ask an admin to `/chips_reload`.');
@@ -1578,7 +1581,7 @@ client.on('interactionCreate', async (ix) => {
       return ix.reply({ ephemeral: true, embeds: [ui.embed], components: ui.components });
     }
 
-    // Buy (still supported as a slash command)
+    // Direct buy
     if (ix.commandName === 'buy') {
       const name = ix.options.getString('name', true);
       let qty = ix.options.getInteger('qty') ?? 1;
@@ -1597,7 +1600,6 @@ client.on('interactionCreate', async (ix) => {
         const after = applyUpgrade(ix.user.id, chip, qty);
         return ix.reply(`🧩 Applied upgrade **${chip.name}** ×${qty}. New stats — HP **${after.max_hp}**, Dodge **${after.dodge}%**, Crit **${after.crit}%**.`);
       } else {
-        // Add to folder
         const next = invAdd(ix.user.id, chip.name, qty);
         return ix.reply(`👜 Purchased **${chip.name}** ×${qty}. You now own **${next}**.`);
       }
@@ -1605,7 +1607,7 @@ client.on('interactionCreate', async (ix) => {
 
     // Folder (hide upgrades)
     if (ix.commandName === 'folder') {
-      const rows = listInv.all(ix.user.id).filter(r => (getChipRowOrNull(r.chip_name)?.is_upgrade ?? 0) === 0);
+      const rows = listInv.all(ix.user.id).filter(r => (getChip.get(r.chip_name)?.is_upgrade ?? 0) === 0);
       if (!rows.length) return ix.reply('Your folder is empty. Use `/shop` and `/buy` to get chips.');
       const f = getFight.get(ix.channel.id);
       const pve = getPVE.get(ix.channel.id);
@@ -1618,18 +1620,18 @@ client.on('interactionCreate', async (ix) => {
       }
       const lines = rows.map((r) => {
         const used = counts[r.chip_name] || 0;
-        const eff = readEffect(getChipRowOrNull(r.chip_name));
+        const eff = readEffect(getChip.get(r.chip_name));
         const tag = isSpecial(eff) ? '⭐' : '•';
         return `${tag} **${r.chip_name}** — x${r.qty} ${used ? `(used ${used}/${MAX_PER_CHIP} this battle)` : ''}`;
       });
       return ix.reply(`📂 **Your Folder**\n${lines.join('\n')}`);
     }
 
-    // Use chip(s)
+    // Unified /use
     if (ix.commandName === 'use') {
-      const sub = ix.options.getSubcommand(true);
+      const chipName = ix.options.getString('chip', true);
+      const supportName = ix.options.getString('support');
 
-      // Figure out context (duel or pve) & role
       const f = getFight.get(ix.channel.id);
       const pve = getPVE.get(ix.channel.id);
 
@@ -1638,11 +1640,24 @@ client.on('interactionCreate', async (ix) => {
       else if (pve && ix.user.id === pve.player_id) context = 'pve';
       else return ix.reply({ content: 'No active battle for you in this channel.', ephemeral: true });
 
-      // Helper to enforce per-battle rules prior to consuming inventory
-      function canUseChip(userId, countsJson, specialsJson, name) {
+      const haveChip = invGetQty(ix.user.id, chipName);
+      if (haveChip <= 0) return ix.reply({ content: `You don’t own **${chipName}**.`, ephemeral: true });
+
+      let useSupport = false;
+      if (supportName) {
+        const haveSupport = invGetQty(ix.user.id, supportName);
+        if (haveSupport <= 0) return ix.reply({ content: `You don’t own **${supportName}**.`, ephemeral: true });
+        const sEff = readEffect(getChip.get(supportName));
+        const cEff = readEffect(getChip.get(chipName));
+        if (!isSupport(sEff)) return ix.reply({ content: `**${supportName}** is not a Support chip.`, ephemeral: true });
+        if (isSupport(cEff)) return ix.reply({ content: `Your primary chip must not be Support.`, ephemeral: true });
+        useSupport = true;
+      }
+
+      function canUseChip(countsJson, specialsJson, name) {
         const counts = parseMap(countsJson);
         const specials = new Set(parseList(specialsJson));
-        const row = getChipRowOrNull(name);
+        const row = getChip.get(name);
         if (!row) return { ok: false, reason: 'Unknown chip.' };
         if (row.is_upgrade) return { ok: false, reason: 'Upgrades are applied on purchase and cannot be used in battle.' };
         const eff = readEffect(row);
@@ -1651,125 +1666,70 @@ client.on('interactionCreate', async (ix) => {
         return { ok: true, row, eff };
       }
 
-      // Validate & lock action + consume inventory
-      if (sub === 'chip') {
-        const name = ix.options.getString('name', true);
-        const have = invGetQty(ix.user.id, name);
-        if (have <= 0) return ix.reply({ content: `You don’t own **${name}**.`, ephemeral: true });
+      if (context === 'duel') {
+        const already = ix.user.id === f.p1_id ? f.p1_action_json : f.p2_action_json;
+        if (already) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
 
-        if (context === 'duel') {
-          // guard re-lock
-          const already = ix.user.id === f.p1_id ? f.p1_action_json : f.p2_action_json;
-          if (already) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
+        const mineCounts = (ix.user.id === f.p1_id) ? f.p1_counts_json : f.p2_counts_json;
+        const mineSpecs = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
 
-          const mineCounts = (ix.user.id === f.p1_id) ? f.p1_counts_json : f.p2_counts_json;
-          const mineSpecs = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
-          const chk = canUseChip(ix.user.id, mineCounts, mineSpecs, name);
-          if (!chk.ok) return ix.reply({ content: chk.reason, ephemeral: true });
+        const chkC = canUseChip(mineCounts, mineSpecs, chipName);
+        if (!chkC.ok) return ix.reply({ content: chkC.reason, ephemeral: true });
 
-          // consume now
-          invAdd(ix.user.id, name, -1);
-
-          if (ix.user.id === f.p1_id) {
-            updFightRound.run(f.p1_hp, f.p2_hp, f.p1_def, f.p2_def, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, actionChip(name), f.p2_action_json, f.round_deadline, ix.channel.id);
-          } else {
-            updFightRound.run(f.p1_hp, f.p2_hp, f.p1_def, f.p2_def, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, f.p1_action_json, actionChip(name), f.round_deadline, ix.channel.id);
-          }
-          await ix.reply(`🔒 Locked **${name}** for this round.`);
-          const ff = getFight.get(ix.channel.id);
-          if (ff.p1_action_json && ff.p2_action_json) {
-            clearRoundTimer(ix.channel.id);
-            await resolveDuelRound(ix.channel);
-          }
-          return;
-        } else {
-          // PVE
-          if (pve.player_action_json) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
-
-          const chk = canUseChip(ix.user.id, pve.p_counts_json, pve.p_special_used, name);
-          if (!chk.ok) return ix.reply({ content: chk.reason, ephemeral: true });
-
-          invAdd(ix.user.id, name, -1);
-          updPVE.run(pve.p_hp, pve.v_hp, pve.p_def, pve.v_def, pve.p_counts_json, pve.p_special_used, pve.v_special_used, actionChip(name), pve.virus_action_json, pve.round_deadline, ix.channel.id);
-          await ix.reply(`🔒 Locked **${name}** for this round.`);
-          const fp = getPVE.get(ix.channel.id);
-          if (fp.player_action_json) {
-            if (!fp.virus_action_json) {
-              const mv = pickVirusMove(fp);
-              if (mv) updPVE.run(fp.p_hp, fp.v_hp, fp.p_def, fp.v_def, fp.p_counts_json, fp.p_special_used, fp.v_special_used, fp.player_action_json, JSON.stringify({ type: 'chip', name: mv.name || mv.label || 'Move' }), fp.round_deadline, ix.channel.id);
-            }
-            clearRoundTimer(ix.channel.id);
-            await resolvePVERound(ix.channel);
-          }
-          return;
-        }
-      }
-
-      if (sub === 'support') {
-        const sName = ix.options.getString('support', true);
-        const cName = ix.options.getString('with', true);
-
-        const haveS = invGetQty(ix.user.id, sName);
-        const haveC = invGetQty(ix.user.id, cName);
-        if (haveS <= 0) return ix.reply({ content: `You don’t own **${sName}**.`, ephemeral: true });
-        if (haveC <= 0) return ix.reply({ content: `You don’t own **${cName}**.`, ephemeral: true });
-
-        const sEff = readEffect(getChipRowOrNull(sName));
-        const cEff = readEffect(getChipRowOrNull(cName));
-        if (!isSupport(sEff)) return ix.reply({ content: `**${sName}** is not a Support chip.`, ephemeral: true });
-        if (isSupport(cEff)) return ix.reply({ content: `Your follow-up chip must not be Support.`, ephemeral: true });
-
-        if (context === 'duel') {
-          const already = ix.user.id === f.p1_id ? f.p1_action_json : f.p2_action_json;
-          if (already) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
-
-          const mineCounts = (ix.user.id === f.p1_id) ? f.p1_counts_json : f.p2_counts_json;
-          const mineSpecs = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
-
-          const chkS = canUseChip(ix.user.id, mineCounts, mineSpecs, sName);
+        let actJson;
+        if (useSupport) {
+          const chkS = canUseChip(mineCounts, mineSpecs, supportName);
           if (!chkS.ok) return ix.reply({ content: chkS.reason, ephemeral: true });
-          const chkC = canUseChip(ix.user.id, mineCounts, mineSpecs, cName);
-          if (!chkC.ok) return ix.reply({ content: chkC.reason, ephemeral: true });
-
-          invAdd(ix.user.id, sName, -1);
-          invAdd(ix.user.id, cName, -1);
-
-          if (ix.user.id === f.p1_id) {
-            updFightRound.run(f.p1_hp, f.p2_hp, f.p1_def, f.p2_def, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, actionSupport(sName, cName), f.p2_action_json, f.round_deadline, ix.channel.id);
-          } else {
-            updFightRound.run(f.p1_hp, f.p2_hp, f.p1_def, f.p2_def, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, f.p1_action_json, actionSupport(sName, cName), f.round_deadline, ix.channel.id);
-          }
-          await ix.reply(`🔒 Locked **${sName}** → **${cName}** for this round.`);
-          const ff = getFight.get(ix.channel.id);
-          if (ff.p1_action_json && ff.p2_action_json) {
-            clearRoundTimer(ix.channel.id);
-            await resolveDuelRound(ix.channel);
-          }
-          return;
+          invAdd(ix.user.id, supportName, -1);
+          invAdd(ix.user.id, chipName, -1);
+          actJson = actionSupport(supportName, chipName);
         } else {
-          if (pve.player_action_json) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
-
-          const chkS = canUseChip(ix.user.id, pve.p_counts_json, pve.p_special_used, sName);
-          if (!chkS.ok) return ix.reply({ content: chkS.reason, ephemeral: true });
-          const chkC = canUseChip(ix.user.id, pve.p_counts_json, pve.p_special_used, cName);
-          if (!chkC.ok) return ix.reply({ content: chkC.reason, ephemeral: true });
-
-          invAdd(ix.user.id, sName, -1);
-          invAdd(ix.user.id, cName, -1);
-
-          updPVE.run(pve.p_hp, pve.v_hp, pve.p_def, pve.v_def, pve.p_counts_json, pve.p_special_used, pve.v_special_used, actionSupport(sName, cName), pve.virus_action_json, pve.round_deadline, ix.channel.id);
-          await ix.reply(`🔒 Locked **${sName}** → **${cName}** for this round.`);
-          const fp = getPVE.get(ix.channel.id);
-          if (fp.player_action_json) {
-            if (!fp.virus_action_json) {
-              const mv = pickVirusMove(fp);
-              if (mv) updPVE.run(fp.p_hp, fp.v_hp, fp.p_def, fp.v_def, fp.p_counts_json, fp.p_special_used, fp.v_special_used, fp.player_action_json, JSON.stringify({ type: 'chip', name: mv.name || mv.label || 'Move' }), fp.round_deadline, ix.channel.id);
-            }
-            clearRoundTimer(ix.channel.id);
-            await resolvePVERound(ix.channel);
-          }
-          return;
+          invAdd(ix.user.id, chipName, -1);
+          actJson = actionChip(chipName);
         }
+
+        if (ix.user.id === f.p1_id) {
+          updFightRound.run(f.p1_hp, f.p2_hp, f.p1_def, f.p2_def, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, actJson, f.p2_action_json, f.round_deadline, ix.channel.id);
+        } else {
+          updFightRound.run(f.p1_hp, f.p2_hp, f.p1_def, f.p2_def, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, f.p1_action_json, actJson, f.round_deadline, ix.channel.id);
+        }
+        await ix.reply(`🔒 Locked **${useSupport ? `${supportName} → ${chipName}` : chipName}** for this round.`);
+        const ff = getFight.get(ix.channel.id);
+        if (ff.p1_action_json && ff.p2_action_json) {
+          clearRoundTimer(ix.channel.id);
+          await resolveDuelRound(ix.channel);
+        }
+        return;
+      } else {
+        // PVE
+        if (pve.player_action_json) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
+        const chkC = canUseChip(pve.p_counts_json, pve.p_special_used, chipName);
+        if (!chkC.ok) return ix.reply({ content: chkC.reason, ephemeral: true });
+
+        let actJson;
+        if (useSupport) {
+          const chkS = canUseChip(pve.p_counts_json, pve.p_special_used, supportName);
+          if (!chkS.ok) return ix.reply({ content: chkS.reason, ephemeral: true });
+          invAdd(ix.user.id, supportName, -1);
+          invAdd(ix.user.id, chipName, -1);
+          actJson = actionSupport(supportName, chipName);
+        } else {
+          invAdd(ix.user.id, chipName, -1);
+          actJson = actionChip(chipName);
+        }
+
+        updPVE.run(pve.p_hp, pve.v_hp, pve.p_def, pve.v_def, pve.p_counts_json, pve.p_special_used, pve.v_special_used, actJson, pve.virus_action_json, pve.round_deadline, pve.v_def_total, pve.v_def_streak, ix.channel.id);
+        await ix.reply(`🔒 Locked **${useSupport ? `${supportName} → ${chipName}` : chipName}** for this round.`);
+        const fp = getPVE.get(ix.channel.id);
+        if (fp.player_action_json) {
+          if (!fp.virus_action_json) {
+            const mv = pickVirusMove(fp);
+            if (mv) updPVE.run(fp.p_hp, fp.v_hp, fp.p_def, fp.v_def, fp.p_counts_json, fp.p_special_used, fp.v_special_used, fp.player_action_json, JSON.stringify({ type: 'chip', name: mv.name || mv.label || 'Move' }), fp.round_deadline, fp.v_def_total, fp.v_def_streak, ix.channel.id);
+          }
+          clearRoundTimer(ix.channel.id);
+          await resolvePVERound(ix.channel);
+        }
+        return;
       }
     }
 
@@ -1794,7 +1754,6 @@ client.on('interactionCreate', async (ix) => {
       const chip = getChip.get(name);
       if (!chip) return ix.reply({ content: 'Unknown chip.', ephemeral: true });
 
-      // Upgrades: apply immediately on grant; cannot be removed
       if (chip.is_upgrade) {
         if (ix.commandName === 'chip_grant') {
           const after = applyUpgrade(user.id, chip, qty);
@@ -1804,7 +1763,6 @@ client.on('interactionCreate', async (ix) => {
         }
       }
 
-      // Non-upgrade chips: change inventory
       const delta = ix.commandName === 'chip_grant' ? qty : -qty;
       const next = invAdd(user.id, name, delta);
       return ix.reply(`🛠️ ${ix.commandName === 'chip_grant' ? 'Granted' : 'Removed'} **${Math.abs(delta)}** of **${name}** for <@${user.id}>. They now have **${next}**.`);
@@ -1815,7 +1773,7 @@ client.on('interactionCreate', async (ix) => {
       if (!isAdmin(ix)) return ix.reply({ content: 'Only admins can use this command.', ephemeral: true });
 
       const user  = ix.options.getUser('user', true);
-      const stat  = ix.options.getString('stat', true);    // hp|dodge|crit|wins|losses|points
+      const stat  = ix.options.getString('stat', true);
       const value = ix.options.getInteger('value', true);
 
       ensureNavi(user.id);
@@ -1839,7 +1797,6 @@ client.on('interactionCreate', async (ix) => {
       });
     }
 
-    // Admin: zenny_override (add)
     if (ix.commandName === 'zenny_override') {
       if (!isAdmin(ix)) return ix.reply({ content: 'Only admins can use this command.', ephemeral: true });
       const user = ix.options.getUser('user', true);
