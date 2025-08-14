@@ -142,16 +142,17 @@ async function registerCommands() {
       .addUserOption((o) => o.setName('to').setDescription('Recipient').setRequired(true))
       .addIntegerOption((o) => o.setName('amount').setDescription('Amount to send').setRequired(true).setMinValue(1)),
 
-    // Chips economy & usage
+    // Chip economy & usage
     new SlashCommandBuilder().setName('shop').setDescription('View the chip shop'),
 
-    new SlashCommandBuilder()
-      .setName('buy')
-      .setDescription('Buy chips or upgrades with Zenny')
-      .addStringOption((o) => o.setName('name').setDescription('Chip or Upgrade name').setRequired(true).setAutocomplete(true))
-      .addIntegerOption((o) => o.setName('qty').setDescription('Quantity (default 1)').setRequired(false).setMinValue(1)),
-
     new SlashCommandBuilder().setName('folder').setDescription('View your owned chips'),
+
+    new SlashCommandBuilder()
+      .setName('give_chip')
+      .setDescription('Give a chip from your folder to another player')
+      .addUserOption((o) => o.setName('to').setDescription('Recipient').setRequired(true))
+      .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
+      .addIntegerOption((o) => o.setName('qty').setDescription('Quantity (default 1)').setRequired(false).setMinValue(1)),
 
     // Unified /use
     new SlashCommandBuilder()
@@ -664,7 +665,7 @@ function isDefLikeMove(mv) {
 function isAtkLikeMove(mv) {
   if (!mv) return false;
   const kinds = extractKinds(mv);
-  return kinds.includes('attack') || kinds.includes('break') || kinds.includes('recovery'); // allow aggressive heals if defined
+  return kinds.includes('attack') || kinds.includes('break') || kinds.includes('recovery');
 }
 
 // Picks a move subject to:
@@ -686,6 +687,7 @@ function pickVirusMove(pveRow) {
   if (defStreak >= VIRUS_DEFENSE_CAP_STREAK) {
     const attacks = notSpent.filter((m) => !isDefLikeMove(m));
     if (attacks.length) return attacks[Math.floor(Math.random() * attacks.length)];
+    // fall through to other pools if none
   }
 
   // If total defense at or above cap → avoid defense
@@ -802,7 +804,7 @@ async function resolveDuelRound(channel) {
     return;
   }
 
-  // Build intents
+  // Build intents (combo-friendly)
   function rowAndEff(name) {
     const r = getChip.get(name);
     const e = readEffect(r);
@@ -814,7 +816,7 @@ async function resolveDuelRound(channel) {
       const { r, e } = rowAndEff(inv.name);
       if (!r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [] };
       let def = 0, barrier = false, attackEff = null, rec = 0;
-      if (isDefense(e)) def = Number.isFinite(e.def) ? e.def : 0;
+      if (isDefense(e)) def += Number.isFinite(e.def) ? e.def : 0;
       if (isBarrier(e)) barrier = true;
       if (isRecovery(e)) rec += Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : 0);
       if (isAttack(e)) attackEff = e;
@@ -827,7 +829,6 @@ async function resolveDuelRound(channel) {
       let def = 0, barrier = false, attackEff = null, rec = 0;
       if (isDefense(ce)) def += Number.isFinite(ce.def) ? ce.def : 0;
       if (isBarrier(ce)) barrier = true;
-      // FIXED: reference `ce.heal/ce.rec` (not `e.heal`) so recovery combos work
       if (isRecovery(ce)) rec += Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : 0);
       if (isAttack(ce)) attackEff = ce;
       return { def, barrier, attackEff, rec, supportEff: se, used: [sr.name, cr.name] };
@@ -966,45 +967,45 @@ async function resolvePVERound(channel) {
     return;
   }
 
-  // Intents
+  // Intents (combo-friendly)
   function chipRowOrNull(name) { return getChip.get(name) || null; }
   function effectFromName(name) { const r = chipRowOrNull(name); return { r, e: readEffect(r) }; }
 
   function intentFromAction(action, isVirus) {
-    if (!action) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null };
+    if (!action) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null, moveName: null };
     if (action.type === 'chip') {
       if (isVirus) {
         const mv = parseMoves(f.virus_moves_json).find(m => (m.name || m.label || '').toLowerCase() === String(action.name || '').toLowerCase());
-        if (!mv) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null };
+        if (!mv) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null, moveName: null };
         let def = 0, barrier = false, attackEff = null, rec = 0;
-        if (isDefense(mv)) def = Number.isFinite(mv.def) ? mv.def : 0;
+        if (isDefense(mv)) def += Number.isFinite(mv.def) ? mv.def : 0;
         if (isBarrier(mv)) barrier = true;
         if (isRecovery(mv)) rec += Number.isFinite(mv.heal) ? mv.heal : (Number.isFinite(mv.rec) ? mv.rec : 0);
         if (isAttack(mv)) attackEff = mv;
-        const mvName = (mv.name || mv.label || 'Move'); // include move name in output
-        return { def, barrier, attackEff, rec, used: [mvName], mv };
+        const moveName = mv.name || mv.label || 'Move';
+        return { def, barrier, attackEff, rec, used: [moveName], mv, moveName };
       } else {
         const { r, e } = effectFromName(action.name);
-        if (!r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null };
+        if (!r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null, moveName: null };
         let def = 0, barrier = false, attackEff = null, rec = 0;
-        if (isDefense(e)) def = Number.isFinite(e.def) ? e.def : 0;
+        if (isDefense(e)) def += Number.isFinite(e.def) ? e.def : 0;
         if (isBarrier(e)) barrier = true;
         if (isRecovery(e)) rec += Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : 0);
         if (isAttack(e)) attackEff = e;
-        return { def, barrier, attackEff, rec, used: [r.name], mv: null };
+        return { def, barrier, attackEff, rec, used: [r.name], mv: null, moveName: r.name };
       }
     }
     if (action.type === 'support' && !isVirus) {
       const s = effectFromName(action.support), c = effectFromName(action.with);
-      if (!s.r || !c.r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null };
+      if (!s.r || !c.r) return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null, moveName: null };
       let def = 0, barrier = false, attackEff = null, rec = 0;
       if (isDefense(c.e)) def += Number.isFinite(c.e.def) ? c.e.def : 0;
       if (isBarrier(c.e)) barrier = true;
       if (isRecovery(c.e)) rec += Number.isFinite(c.e.heal) ? c.e.heal : (Number.isFinite(c.e.rec) ? c.e.rec : 0);
       if (isAttack(c.e)) attackEff = c.e;
-      return { def, barrier, attackEff, rec, supportEff: s.e, used: [s.r.name, c.r.name], mv: null };
+      return { def, barrier, attackEff, rec, supportEff: s.e, used: [s.r.name, c.r.name], mv: null, moveName: c.r.name };
     }
-    return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null };
+    return { def: 0, barrier: false, attackEff: null, rec: 0, used: [], mv: null, moveName: null };
   }
 
   const PP = intentFromAction(Aplayer, false);
@@ -1138,7 +1139,8 @@ async function resolvePVERound(channel) {
   }
 
   const lineP = fmtP(`<@${f.player_id}>`, PP, critP, dodgedP, cancelledByBarrierP, dmgPtoV, absorbedP, recP);
-  const lineV = fmtP(`**${f.virus_name}**`, PV, critV, dodgedV, cancelledByBarrierV, dmgVtoP, absorbedV, recV);
+  // show virus move name (not "did nothing")
+  const lineV = fmtP(`**${PV.moveName || f.virus_name}**`, PV, critV, dodgedV, cancelledByBarrierV, dmgVtoP, absorbedV, recV);
 
   const header = `🎬 **Round Results**\n${lineP}\n${lineV}\n${hpLinePVE({ ...f, p_hp: php, v_hp: vhp })}`;
   await channel.send(outcome ? { content: `${header}\n\n${outcome}`, embeds: [embed] } : { content: `${header}\n\n➡️ Next round: submit with **/use** within **${ROUND_SECONDS}s**.`, embeds: [embed] });
@@ -1215,7 +1217,7 @@ client.on('interactionCreate', async (ix) => {
       const focused = ix.options.getFocused(true);
       const query = String(focused.value || '').toLowerCase();
 
-      if (ix.commandName === 'buy' || ix.commandName === 'chip_grant' || ix.commandName === 'chip_remove') {
+      if (ix.commandName === 'chip_grant' || ix.commandName === 'chip_remove' || ix.commandName === 'give_chip') {
         const names = listAllChipNames.all().map((r) => r.name);
         const filtered = names.filter((n) => n.toLowerCase().includes(query)).slice(0, 25);
         return ix.respond(filtered.map((n) => ({ name: n, value: n })));
@@ -1522,8 +1524,9 @@ client.on('interactionCreate', async (ix) => {
 
       if (f) {
         const left = Math.max(0, Math.ceil((f.round_deadline - now()) / 1000));
-        const a1 = decodeAction(f.p1_action_json);
-        const a2 = decodeAction(f.p2_action_json);
+        // Hide specifics; just show locked/— for each
+        const a1 = !!f.p1_action_json;
+        const a2 = !!f.p2_action_json;
         const lines = [
           `🧭 **Duel (Simultaneous)**`,
           `Round ends in: **${left}s**`,
@@ -1574,6 +1577,28 @@ client.on('interactionCreate', async (ix) => {
       return ix.reply(`✅ Transferred **${amt}** ${zennyIcon()} from <@${ix.user.id}> to <@${to.id}>.`);
     }
 
+    // Chip transfer
+    if (ix.commandName === 'give_chip') {
+      const to = ix.options.getUser('to', true);
+      const name = ix.options.getString('name', true);
+      let qty = ix.options.getInteger('qty') ?? 1;
+      qty = Math.max(1, qty);
+
+      if (to.id === ix.user.id) return ix.reply({ content: 'You cannot send chips to yourself.', ephemeral: true });
+
+      const chip = getChip.get(name);
+      if (!chip) return ix.reply({ content: 'Unknown chip.', ephemeral: true });
+      if (chip.is_upgrade) return ix.reply({ content: 'Upgrades are not inventory items and cannot be transferred.', ephemeral: true });
+
+      const have = invGetQty(ix.user.id, name);
+      if (have < qty) return ix.reply({ content: `You only have **${have}** of **${name}**.`, ephemeral: true });
+
+      ensureNavi(to.id);
+      invAdd(ix.user.id, name, -qty);
+      invAdd(to.id, name, +qty);
+      return ix.reply(`📦 Transferred **${qty}× ${name}** from <@${ix.user.id}> to <@${to.id}>.`);
+    }
+
     // Shop
     if (ix.commandName === 'shop') {
       const rows = listShop.all();
@@ -1582,34 +1607,10 @@ client.on('interactionCreate', async (ix) => {
       return ix.reply({ ephemeral: true, embeds: [ui.embed], components: ui.components });
     }
 
-    // Direct buy
-    if (ix.commandName === 'buy') {
-      const name = ix.options.getString('name', true);
-      let qty = ix.options.getInteger('qty') ?? 1;
-      qty = Math.max(1, qty);
-      const chip = getChip.get(name);
-      if (!chip) return ix.reply({ content: 'That item does not exist.', ephemeral: true });
-
-      const buyer = ensureNavi(ix.user.id);
-      const total = (chip.zenny_cost || 0) * qty;
-      if ((buyer.zenny ?? 0) < total) {
-        return ix.reply({ content: `Not enough Zenny. Cost is **${total}** ${zennyIcon()}`, ephemeral: true });
-      }
-      addZenny.run(-total, ix.user.id);
-
-      if (chip.is_upgrade) {
-        const after = applyUpgrade(ix.user.id, chip, qty);
-        return ix.reply(`🧩 Applied upgrade **${chip.name}** ×${qty}. New stats — HP **${after.max_hp}**, Dodge **${after.dodge}%**, Crit **${after.crit}%**.`);
-      } else {
-        const next = invAdd(ix.user.id, chip.name, qty);
-        return ix.reply(`👜 Purchased **${chip.name}** ×${qty}. You now own **${next}**.`);
-      }
-    }
-
     // Folder (hide upgrades)
     if (ix.commandName === 'folder') {
       const rows = listInv.all(ix.user.id).filter(r => (getChip.get(r.chip_name)?.is_upgrade ?? 0) === 0);
-      if (!rows.length) return ix.reply('Your folder is empty. Use `/shop` and `/buy` to get chips.');
+      if (!rows.length) return ix.reply('Your folder is empty. Use `/shop` to get chips.');
       const f = getFight.get(ix.channel.id);
       const pve = getPVE.get(ix.channel.id);
       let counts = {};
@@ -1672,7 +1673,7 @@ client.on('interactionCreate', async (ix) => {
         if (already) return ix.reply({ content: 'You already locked your action this round.', ephemeral: true });
 
         const mineCounts = (ix.user.id === f.p1_id) ? f.p1_counts_json : f.p2_counts_json;
-        const mineSpecs = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
+        const mineSpecs  = (ix.user.id === f.p1_id) ? f.p1_special_used : f.p2_special_used;
 
         const chkC = canUseChip(mineCounts, mineSpecs, chipName);
         if (!chkC.ok) return ix.reply({ content: chkC.reason, ephemeral: true });
@@ -1689,17 +1690,77 @@ client.on('interactionCreate', async (ix) => {
           actJson = actionChip(chipName);
         }
 
+        // Persist my action
         if (ix.user.id === f.p1_id) {
-          updFightRound.run(f.p1_hp, f.p2_hp, f.p1_def, f.p2_def, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, actJson, f.p2_action_json, f.round_deadline, ix.channel.id);
+          updFightRound.run(
+            f.p1_hp, f.p2_hp, f.p1_def, f.p2_def,
+            f.p1_counts_json, f.p2_counts_json,
+            f.p1_special_used, f.p2_special_used,
+            actJson, f.p2_action_json,
+            f.round_deadline, ix.channel.id
+          );
         } else {
-          updFightRound.run(f.p1_hp, f.p2_hp, f.p1_def, f.p2_def, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, f.p1_action_json, actJson, f.round_deadline, ix.channel.id);
+          updFightRound.run(
+            f.p1_hp, f.p2_hp, f.p1_def, f.p2_def,
+            f.p1_counts_json, f.p2_counts_json,
+            f.p1_special_used, f.p2_special_used,
+            f.p1_action_json, actJson,
+            f.round_deadline, ix.channel.id
+          );
         }
-        await ix.reply(`🔒 Locked **${useSupport ? `${supportName} → ${chipName}` : chipName}** for this round.`);
-        const ff = getFight.get(ix.channel.id);
+
+        // Messaging: hide move in human PvP, show details in scrimmage
+        const opponentId = (ix.user.id === f.p1_id) ? f.p2_id : f.p1_id;
+        const oppIsBot = opponentId === client.user.id;
+        const detailed = useSupport ? `${supportName} → ${chipName}` : chipName;
+
+        if (oppIsBot) {
+          // Scrimmage: show details publicly
+          await ix.reply(`🔒 Locked **${detailed}** for this round.`);
+        } else {
+          // Human PvP: public generic + private detailed
+          await ix.reply({ content: `🔒 Locked <@${ix.user.id}>`, ephemeral: false });
+          await ix.followUp({ content: `🔒 Locked **${detailed}** for this round.`, ephemeral: true });
+        }
+
+        // Refresh fight row
+        let ff = getFight.get(ix.channel.id);
+
+        // If opponent is the bot, lock its move immediately (no waiting) and resolve now
+        if (oppIsBot) {
+          const botIsP1 = ff.p1_id === client.user.id;
+          const botAlreadyLocked = botIsP1 ? !!ff.p1_action_json : !!ff.p2_action_json;
+          if (!botAlreadyLocked) {
+            const botAct = pickBotChipFor(ff, botIsP1);
+            if (botAct) {
+              if (botIsP1) {
+                updFightRound.run(
+                  ff.p1_hp, ff.p2_hp, ff.p1_def, ff.p2_def,
+                  ff.p1_counts_json, ff.p2_counts_json,
+                  ff.p1_special_used, ff.p2_special_used,
+                  JSON.stringify(botAct), ff.p2_action_json,
+                  ff.round_deadline, ix.channel.id
+                );
+              } else {
+                updFightRound.run(
+                  ff.p1_hp, ff.p2_hp, ff.p1_def, ff.p2_def,
+                  ff.p1_counts_json, ff.p2_counts_json,
+                  ff.p1_special_used, ff.p2_special_used,
+                  ff.p1_action_json, JSON.stringify(botAct),
+                  ff.round_deadline, ix.channel.id
+                );
+              }
+              ff = getFight.get(ix.channel.id);
+            }
+          }
+        }
+
+        // If both sides are locked, resolve immediately
         if (ff.p1_action_json && ff.p2_action_json) {
           clearRoundTimer(ix.channel.id);
           await resolveDuelRound(ix.channel);
         }
+
         return;
       } else {
         // PVE
