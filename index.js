@@ -2375,7 +2375,6 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId.startsWith('shop:prev:') || ix.customId.startsWith('shop:next:')) {
         const parts = ix.customId.split(':');
         const dir = parts[1];
-        thepage:
         const page = parseInt(parts[2], 10) || 0;
         const rows = listShop.all();
         const nextPage = dir === 'prev' ? Math.max(0, page-1) : Math.min(Math.ceil(rows.length/25)-1, page+1);
