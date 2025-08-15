@@ -60,6 +60,17 @@ const ZENNY_EMOJI_NAME = process.env.ZENNY_EMOJI_NAME || 'zenny';
 const zennyIcon = () =>
   (/^\d{17,20}$/.test(ZENNY_EMOJI_ID) ? `<:${ZENNY_EMOJI_NAME}:${ZENNY_EMOJI_ID}>` : '💰');
 
+// ---------- Starters ----------
+const STARTER_ZENNY  = parseInt(process.env.STARTER_ZENNY || '0', 10);
+const STARTER_CHIPS  = (process.env.STARTER_CHIPS || '').split(/[;,]/).map(s => s.trim()).filter(Boolean);
+// supports "Cannon x3" or "Cannon"
+function starterEntries() {
+  return STARTER_CHIPS.map(s => {
+    const m = s.match(/^(.*?)(?:\s*[xX]\s*(\d+))?\s*$/);
+    return { name: (m?.[1] || '').trim(), qty: Math.max(1, parseInt(m?.[2] || '1', 10) || 1) };
+  }).filter(x => x.name);
+}
+
 // ---------- Thing 3 Config ----------
 const REGIONS = ['ACDC','SciLab','Yoka','Beach','Sharo','YumLand','UnderNet'];
 
@@ -198,6 +209,12 @@ async function registerCommands() {
       .addUserOption((o) => o.setName('user').setDescription('Target user').setRequired(true))
       .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
       .addIntegerOption((o) => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
+
+    // NEW: Admin chip catalog pager
+    new SlashCommandBuilder()
+      .setName('chips_catalog')
+      .setDescription('Admin: browse all chips (paged)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
     // Admin overrides
     new SlashCommandBuilder()
@@ -797,7 +814,13 @@ async function loadMissions(force=false) {
   if (!force && MissionsCache.rows.length && (Date.now() - MissionsCache.ts) < FRESH_MS) return MissionsCache.rows;
   if (!MISSIONS_TSV_URL) return [];
   const res = await fetch(MISSIONS_TSV_URL);
-  if (!res.ok) throw new Error(`Missions TSV fetch failed: ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      console.warn(`[missions] ${res.status} from TSV URL; returning empty list.`);
+      return [];
+    }
+    throw new Error(`Missions TSV fetch failed: ${res.status}`);
+  }
   const text = await res.text();
   const lines = text.split(/\r?\n/).filter(Boolean);
   if (!lines.length) return [];
@@ -861,6 +884,7 @@ function invAdd(userId, chipName, delta) {
 }
 
 // Apply an upgrade row immediately to a user (qty supported)
+// FIX: update only the stat fields to avoid overwriting zenny/record/points
 function applyUpgrade(userId, chipRow, qty = 1) {
   const eff = readEffect(chipRow);
   const stat = String(eff?.stat || '').toLowerCase();
@@ -868,13 +892,11 @@ function applyUpgrade(userId, chipRow, qty = 1) {
   const amount = step * Math.max(1, qty);
 
   const cur = ensureNavi(userId);
-  let { max_hp, dodge, crit } = cur;
 
-  if (stat === 'hp')    max_hp = Math.min(MAX_HP_CAP,    max_hp + amount);
-  if (stat === 'dodge') dodge  = Math.min(MAX_DODGE_CAP, dodge  + amount);
-  if (stat === 'crit')  crit   = Math.min(MAX_CRIT_CAP,  crit   + amount);
+  if (stat === 'hp')    updHP.run(Math.min(MAX_HP_CAP,    cur.max_hp + amount), userId);
+  if (stat === 'dodge') updDodge.run(Math.min(MAX_DODGE_CAP, cur.dodge + amount), userId);
+  if (stat === 'crit')  updCrit.run(Math.min(MAX_CRIT_CAP,  cur.crit  + amount), userId);
 
-  upsertNavi.run(userId, max_hp, dodge, crit, cur.wins ?? 0, cur.losses ?? 0, cur.upgrade_pts ?? 0, cur.zenny ?? 0);
   return ensureNavi(userId);
 }
 
@@ -950,18 +972,20 @@ function pickVirusMove(pveRow) {
   if (defStreak >= VIRUS_DEFENSE_CAP_STREAK) {
     const attacks = notSpent.filter((m) => !isDefLikeMove(m));
     if (attacks.length) return attacks[Math.floor(Math.random() * attacks.length)];
-    // fall through
+    // fall through if nothing but defense remains
   }
 
-  // If total defense at or above cap → avoid defense
+  // Respect total defense cap
   if (totalDef >= VIRUS_DEFENSE_CAP_TOTAL) {
     const nonDef = notSpent.filter((m) => !isDefLikeMove(m));
     if (nonDef.length) return nonDef[Math.floor(Math.random() * nonDef.length)];
     return notSpent[Math.floor(Math.random() * notSpent.length)];
   }
 
+  // Otherwise free choice
   return notSpent[Math.floor(Math.random() * notSpent.length)];
 }
+
 
 // ---------- UI helpers for Shop ----------
 function summarizeEffect(e) {
@@ -1015,6 +1039,39 @@ function buildShopPage(rows, page = 0) {
     .setFooter({ text: `Items ${start + 1}-${Math.min(rows.length, start + PER)} of ${rows.length} • Page ${page + 1}/${totalPages}` });
 
   return { embed, components: [rowSel, rowNav], page, totalPages };
+}
+
+// Admin: Chips catalog pager (all chips, paged)
+function buildCatalogPage(rows, page=0) {
+  const PER = 25;
+  const totalPages = Math.max(1, Math.ceil(rows.length / PER));
+  page = Math.min(totalPages - 1, Math.max(0, page));
+  const start = page * PER;
+  const slice = rows.slice(start, start + PER);
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`catalog:select:${page}`)
+    .setPlaceholder(`Select a chip (${page+1}/${totalPages})`)
+    .addOptions(slice.map(r => ({
+      label: r.name.slice(0,100),
+      value: r.name,
+      description: `${r.is_upgrade ? 'Upgrade' : 'Chip'} • ${r.zenny_cost} ${zennyIcon()}${r.stock?'' : ' • hidden'}`
+        .slice(0,100)
+    })));
+
+  const prev = new ButtonBuilder().setCustomId(`catalog:prev:${page}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(page===0);
+  const next = new ButtonBuilder().setCustomId(`catalog:next:${page}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page>=totalPages-1);
+  const close= new ButtonBuilder().setCustomId('catalog:close').setLabel('Close').setStyle(ButtonStyle.Danger);
+
+  const rowSel = new ActionRowBuilder().addComponents(select);
+  const rowNav = new ActionRowBuilder().addComponents(prev, next, close);
+
+  const list = slice.map(r => `• **${r.name}** — ${r.is_upgrade?'Upgrade':'Chip'} — ${r.zenny_cost} ${zennyIcon()}${r.stock?'':' (hidden)'}`).join('\n');
+  const embed = new EmbedBuilder()
+    .setTitle('📚 Chips Catalog (admin)')
+    .setDescription(list || '—')
+    .setFooter({ text: `Items ${start+1}-${Math.min(rows.length,start+PER)} of ${rows.length} • Page ${page+1}/${totalPages}`});
+  return { embed, components:[rowSel, rowNav], page, totalPages };
 }
 
 // Thing 3: Dynamic upgrade pricing
@@ -1139,8 +1196,8 @@ async function resolveDuelRound(channel) {
   const p1Holy = parseHoly(f.p1_holy_json);
   const p2Holy = parseHoly(f.p2_holy_json);
 
-  let nextPoisP1 = p1Pois, nextPoisP2 = p2Pois;
-  let nextHolyP1 = p1Holy, nextHolyP2 = p2Holy;
+  let nextPois1 = p1Pois, nextPois2 = p2Pois;
+  let nextHoly1 = p1Holy, nextHoly2 = p2Holy;
 
   const A1raw = decodeAction(f.p1_action_json);
   const A2raw = decodeAction(f.p2_action_json);
@@ -1224,27 +1281,40 @@ async function resolveDuelRound(channel) {
   let rec1 = P1.rec || 0; if (P1.attackEff && p2Barrier && !isBreak(P1.attackEff)) rec1 = 0;
   let rec2 = P2.rec || 0; if (P2.attackEff && p1Barrier && !isBreak(P2.attackEff)) rec2 = 0;
 
-  // POISON apply (must land). Convert immediate damage → DoT ticks (no upfront hit)
-  if (P1.attackEff && isPoison(P1.attackEff) && !dodged1 && !cancelledByBarrier1) {
-    const tick = (dmg1to2|0) + (absorbed1|0);
-    nextPoisP2 = replacePoison(nextPoisP2, tick);
-    dmg1to2 = 0;
-  }
-  if (P2.attackEff && isPoison(P2.attackEff) && !dodged2 && !cancelledByBarrier2) {
-    const tick = (dmg2to1|0) + (absorbed2|0);
-    nextPoisP1 = replacePoison(nextPoisP1, tick);
-    dmg2to1 = 0;
-  }
+// POISON apply (must land). Convert immediate damage → DoT ticks (no upfront hit)
+const p1IsPoison = P1.attackEff && isPoison(P1.attackEff) && !dodged1 && !cancelledByBarrier1;
+const p2IsPoison = P2.attackEff && isPoison(P2.attackEff) && !dodged2 && !cancelledByBarrier2;
 
-  // HOLY self-apply (non-stacking) — ticks only (no immediate heal)
-  if (P1.holyAmt > 0) nextHolyP1 = replaceHoly(nextHolyP1, P1.holyAmt);
-  if (P2.holyAmt > 0) nextHolyP2 = replaceHoly(nextHolyP2, P2.holyAmt);
+// use existing nextPois1/nextPois2 from earlier in the function
+let nextPois1Local = nextPois1, nextPois2Local = nextPois2;
 
-  // REPAIR: cleanse self before ticks (wipes newly applied same-round)
-  const p1Repaired = !!P1.repair;
-  const p2Repaired = !!P2.repair;
-  if (p1Repaired) { nextPoisP1 = []; nextHolyP1 = []; }
-  if (p2Repaired) { nextPoisP2 = []; nextHolyP2 = []; }
+if (p1IsPoison) {
+  const tick = (dmg1to2 | 0) + (absorbed1 | 0);
+  nextPois2Local = replacePoison(nextPois2Local, tick);
+  dmg1to2 = 0;
+}
+if (p2IsPoison) {
+  const tick = (dmg2to1 | 0) + (absorbed2 | 0);
+  nextPois1Local = replacePoison(nextPois1Local, tick);
+  dmg2to1 = 0;
+}
+
+// overwrite the main refs
+nextPois1 = nextPois1Local;
+nextPois2 = nextPois2Local;
+
+  // HOLY self-apply (non-stacking)
+  const p1HolyAmt = P1.holyAmt || 0;
+  const p2HolyAmt = P2.holyAmt || 0;
+
+  let nextHoly1Local = nextHoly1, nextHoly2Local = nextHoly2;
+
+  if (p1HolyAmt > 0) nextHoly1Local = replaceHoly(nextHoly1Local, p1HolyAmt);
+  if (p2HolyAmt > 0) nextHoly2Local = replaceHoly(nextHoly2Local, p2HolyAmt);
+
+  // REPAIR
+  if (P1.repair) { nextPois1Local = []; nextHoly1Local = []; }
+  if (P2.repair) { nextPois2Local = []; nextHoly2Local = []; }
 
   // PARALYZE: set stun for next round if the hit landed
   let paraP2 = false, paraP1 = false;
@@ -1255,17 +1325,14 @@ async function resolveDuelRound(channel) {
   let p1hp = Math.max(0, Math.min(p1.max_hp, f.p1_hp - dmg2to1 + rec1));
   let p2hp = Math.max(0, Math.min(p2.max_hp, f.p2_hp - dmg1to2 + rec2));
 
-  // Apply ticks (poison hurts, holy heals) — includes the round of application
-  const { total: tickPoisonP1, next: poisAfterP1 } = tickPois(nextPoisP1);
-  const { total: tickPoisonP2, next: poisAfterP2 } = tickPois(nextPoisP2);
-  const { total: tickHolyP1,   next: holyAfterP1 } = tickHoly(nextHolyP1);
-  const { total: tickHolyP2,   next: holyAfterP2 } = tickHoly(nextHolyP2);
+  // Apply ticks (poison hurts, holy heals)
+  const { total: tickPoisonP1, next: poisAfterP1 } = tickPois(nextPois1Local);
+  const { total: tickPoisonP2, next: poisAfterP2 } = tickPois(nextPois2Local);
+  const { total: tickHolyP1,   next: holyAfterP1 } = tickHoly(nextHoly1Local);
+  const { total: tickHolyP2,   next: holyAfterP2 } = tickHoly(nextHoly2Local);
 
   p1hp = Math.max(0, Math.min(p1.max_hp, p1hp - tickPoisonP1 + tickHolyP1));
   p2hp = Math.max(0, Math.min(p2.max_hp, p2hp - tickPoisonP2 + tickHolyP2));
-
-  nextPoisP1 = poisAfterP1; nextPoisP2 = poisAfterP2;
-  nextHolyP1 = holyAfterP1; nextHolyP2 = holyAfterP2;
 
   // Counters / specials
   function bumpCounters(counts, specials, usedNames) {
@@ -1284,16 +1351,17 @@ async function resolveDuelRound(channel) {
 
   // Outcome check
   let outcome = '';
+  const p1IsBot = f.p1_id === client.user.id;
+  const p2IsBot = f.p2_id === client.user.id;
+
   if (p1hp === 0 && p2hp === 0) {
     outcome = '🤝 **Double KO!** No W/L changes.';
   } else if (p1hp === 0) {
     outcome = `🏆 **<@${f.p2_id}> wins**!`;
-    setRecord.run(0, 1, f.p1_id);
-    setRecord.run(1, 0, f.p2_id);
+    if (!p1IsBot && !p2IsBot) { setRecord.run(0, 1, f.p1_id); setRecord.run(1, 0, f.p2_id); }
   } else if (p2hp === 0) {
     outcome = `🏆 **<@${f.p1_id}> wins**!`;
-    setRecord.run(1, 0, f.p1_id);
-    setRecord.run(0, 1, f.p2_id);
+    if (!p1IsBot && !p2IsBot) { setRecord.run(1, 0, f.p1_id); setRecord.run(0, 1, f.p2_id); }
   }
 
   // Apply stuns (for next round)
@@ -1328,19 +1396,19 @@ async function resolveDuelRound(channel) {
 
   db.exec(`
     UPDATE duel_state SET
-      p1_hp=${p1hp}, p2_hp=${p2hp},
+      p1_hp='${p1hp}', p2_hp='${p2hp}',
       p1_def=0, p2_def=0,
       p1_counts_json='${nextP1Counts.replace(/'/g,"''")}',
       p2_counts_json='${nextP2Counts.replace(/'/g,"''")}',
       p1_special_used='${nextP1Spec.replace(/'/g,"''")}',
       p2_special_used='${nextP2Spec.replace(/'/g,"''")}',
       p1_action_json=NULL, p2_action_json=NULL,
-      round_deadline=${nextDeadline},
-      p1_stunned=${nextP1Stun}, p2_stunned=${nextP2Stun},
-      p1_poison_json='${JSON.stringify(nextPoisP1).replace(/'/g,"''")}',
-      p2_poison_json='${JSON.stringify(nextPoisP2).replace(/'/g,"''")}',
-      p1_holy_json='${JSON.stringify(nextHolyP1).replace(/'/g,"''")}',
-      p2_holy_json='${JSON.stringify(nextHolyP2).replace(/'/g,"''")}'
+      round_deadline='${nextDeadline}',
+      p1_stunned='${nextP1Stun}', p2_stunned='${nextP2Stun}',
+      p1_poison_json='${JSON.stringify(poisAfterP1).replace(/'/g,"''")}',
+      p2_poison_json='${JSON.stringify(poisAfterP2).replace(/'/g,"''")}',
+      p1_holy_json='${JSON.stringify(holyAfterP1).replace(/'/g,"''")}',
+      p2_holy_json='${JSON.stringify(holyAfterP2).replace(/'/g,"''")}'
     WHERE channel_id='${channel.id}';
   `);
 
@@ -1361,6 +1429,7 @@ async function resolveDuelRound(channel) {
   ].join('\n'));
 }
 
+// ---------- Round resolution (PVE) ----------
 // ---------- Round resolution (PVE) ----------
 async function resolvePveRound(channel) {
   const s0 = getPVE.get(channel.id);
@@ -1393,8 +1462,17 @@ async function resolvePveRound(channel) {
 
   if (!APlayer && !AVirus) {
     const nextDeadline = now() + ROUND_SECONDS * 1000;
-    updPVE.run(s.p_hp, s.v_hp, 0, 0, s.p_counts_json, s.p_special_used, s.v_special_used, null, null, nextDeadline, s.v_def_total, s.v_def_streak,
-      s.p_stunned|0, s.v_stunned|0, s.p_poison_json, s.v_poison_json, s.p_holy_json, s.v_holy_json, channel.id);
+    updPVE.run(
+      s.p_hp, s.v_hp,
+      0, 0,
+      s.p_counts_json, s.p_special_used, s.v_special_used,
+      null, null,
+      nextDeadline, s.v_def_total, s.v_def_streak,
+      s.p_stunned|0, s.v_stunned|0,
+      s.p_poison_json, s.v_poison_json,
+      s.p_holy_json, s.v_holy_json,
+      channel.id
+    );
     scheduleRoundTimer(channel.id, () => resolvePveRound(channel));
     await channel.send(`⏳ New round started. Submit your chip with **/use** in **${ROUND_SECONDS}s**.\n${hpLinePVE(getPVE.get(channel.id))}`);
     return;
@@ -1405,36 +1483,80 @@ async function resolvePveRound(channel) {
     const e = readEffect(r);
     return { r, e };
   };
+
   const interpret = (inv) => {
-    if (!inv) return { def:0, barrier:false, attackEff:null, rec:0, used:[], supportEff:null, repair:false, holyAmt:0 };
-    if (inv.type === 'chip') {
-      const { r, e } = rowAndEff(inv.name);
-      if (!r) return { def:0, barrier:false, attackEff:null, rec:0, used:[], supportEff:null, repair:false, holyAmt:0 };
+    const empty = { def:0, barrier:false, attackEff:null, rec:0, used:[], supportEff:null, repair:false, holyAmt:0 };
+    if (!inv) return empty;
+
+    // Virus move branch — no .type, direct move_json object
+    const looksLikeVirusMove =
+      inv && !inv.type &&
+      (inv.kinds || inv.kind ||
+       Number.isFinite(inv.dmg) || Number.isFinite(inv.def) ||
+       Number.isFinite(inv.heal) || Number.isFinite(inv.rec) || inv.special);
+
+    if (looksLikeVirusMove) {
+      const e = inv;
       let def=0, barrier=false, attackEff=null, rec=0;
+
       if (isDefense(e)) def += Number.isFinite(e.def) ? e.def : 0;
       if (isBarrier(e)) barrier = true;
       if (isRecovery(e)) rec += Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : 0);
-      if (isAttack(e)) attackEff = e;
-      const holyGuess = Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : (Number.isFinite(e.dmg) ? e.dmg : 0));
+      if (isAttack(e))  attackEff = e;
+
+      const holyGuess = Number.isFinite(e.heal) ? e.heal
+                      : (Number.isFinite(e.rec) ? e.rec
+                      : (Number.isFinite(e.dmg) ? e.dmg : 0));
       const holyAmt = isHoly(e) ? Math.max(0, holyGuess|0) : 0;
       if (holyAmt > 0) rec = 0;
+
+      const usedName = e.name || e.label || 'Move';
+      return { def, barrier, attackEff, rec, used:[usedName], supportEff:null, repair:isRepair(e), holyAmt };
+    }
+
+    // Player chip branch
+    if (inv.type === 'chip') {
+      const { r, e } = rowAndEff(inv.name);
+      if (!r) return empty;
+      let def=0, barrier=false, attackEff=null, rec=0;
+
+      if (isDefense(e)) def += Number.isFinite(e.def) ? e.def : 0;
+      if (isBarrier(e)) barrier = true;
+      if (isRecovery(e)) rec += Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : 0);
+      if (isAttack(e))  attackEff = e;
+
+      const holyGuess = Number.isFinite(e.heal) ? e.heal
+                      : (Number.isFinite(e.rec) ? e.rec
+                      : (Number.isFinite(e.dmg) ? e.dmg : 0));
+      const holyAmt = isHoly(e) ? Math.max(0, holyGuess|0) : 0;
+      if (holyAmt > 0) rec = 0;
+
       return { def, barrier, attackEff, rec, used:[r.name], supportEff:null, repair:isRepair(e), holyAmt };
     }
+
+    // Player support chain branch
     if (inv.type === 'support') {
       const { r: sr, e: se } = rowAndEff(inv.support);
       const { r: cr, e: ce } = rowAndEff(inv.with);
-      if (!sr || !cr) return { def:0, barrier:false, attackEff:null, rec:0, used:[], supportEff:null, repair:false, holyAmt:0 };
+      if (!sr || !cr) return empty;
+
       let def=0, barrier=false, attackEff=null, rec=0;
+
       if (isDefense(ce)) def += Number.isFinite(ce.def) ? ce.def : 0;
       if (isBarrier(ce)) barrier = true;
-      if (isRecovery(ce)) rec += Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : 0); // fixed ce.heal
-      if (isAttack(ce)) attackEff = ce;
-      const holyGuess = Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : (Number.isFinite(ce.dmg) ? ce.dmg : 0));
+      if (isRecovery(ce)) rec += Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : 0); // ce.rec fix
+      if (isAttack(ce))  attackEff = ce;
+
+      const holyGuess = Number.isFinite(ce.heal) ? ce.heal
+                      : (Number.isFinite(ce.rec) ? ce.rec
+                      : (Number.isFinite(ce.dmg) ? ce.dmg : 0));
       const holyAmt = isHoly(ce) ? Math.max(0, holyGuess|0) : 0;
       if (holyAmt > 0) rec = 0;
+
       return { def, barrier, attackEff, rec, used:[sr.name, cr.name], supportEff: se, repair:isRepair(ce), holyAmt };
     }
-    return { def:0, barrier:false, attackEff:null, rec:0, used:[], supportEff:null, repair:false, holyAmt:0 };
+
+    return empty;
   };
 
   const pStunned = (s.p_stunned || 0) > 0;
@@ -1526,17 +1648,26 @@ async function resolvePveRound(channel) {
   php = Math.max(0, Math.min(player.max_hp, php - tPoisP + tHolyP));
   vhp = Math.max(0, Math.min(s.virus_max_hp, vhp - tPoisV + tHolyV));
 
-  nextPoisP = poisAfterP; nextPoisV = poisAfterV;
-  nextHolyP = holyAfterP; nextHolyV = holyAfterV;
-
-  // Count usage & specials (player only)
+  // Count usage & specials (player and virus)
   const pCounts = parseMap(s.p_counts_json);
   const pSpec = new Set(parseList(s.p_special_used));
-  for (const n of (P.used||[])) {
-    pCounts[n] = (pCounts[n]||0) + 1;
+  for (const n of (P.used || [])) {
+    pCounts[n] = (pCounts[n] || 0) + 1;
     const eff = readEffect(getChip.get(n));
     if (isSpecial(eff)) pSpec.add(n);
   }
+
+  // NEW: virus specials spent
+  const vSpec = new Set(parseList(s.v_special_used));
+  if (AVirus?.special) {
+    const vUsedName =
+      (V.used && V.used[0]) ||
+      AVirus.name ||
+      AVirus.label ||
+      'special';
+    vSpec.add(vUsedName);
+  }
+
 
   // Outcome?
   if (php === 0 && vhp === 0) {
@@ -1593,7 +1724,6 @@ async function resolvePveRound(channel) {
 
     await channel.send([
       `🎲 **Round resolved!**`,
-      `• You used: ${P.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
       `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
       `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
       '',
@@ -1627,18 +1757,19 @@ async function resolvePveRound(channel) {
 
   db.exec(`
     UPDATE pve_state SET
-      p_hp=${php}, v_hp=${vhp},
+      p_hp='${php}', v_hp='${vhp}',
       p_def=0, v_def=0,
       p_counts_json='${nextCounts.replace(/'/g,"''")}',
       p_special_used='${nextSpec.replace(/'/g,"''")}',
+      v_special_used='${JSON.stringify(Array.from(vSpec)).replace(/'/g,"''")}',
       player_action_json=NULL, virus_action_json=NULL,
-      round_deadline=${nextDeadline},
-      v_def_total=${vDefTotal}, v_def_streak=${vDefStreak},
-      p_stunned=${stunPNext}, v_stunned=${stunVNext},
-      p_poison_json='${JSON.stringify(nextPoisP).replace(/'/g,"''")}',
-      v_poison_json='${JSON.stringify(nextPoisV).replace(/'/g,"''")}',
-      p_holy_json='${JSON.stringify(nextHolyP).replace(/'/g,"''")}',
-      v_holy_json='${JSON.stringify(nextHolyV).replace(/'/g,"''")}'
+      round_deadline='${nextDeadline}',
+      v_def_total='${vDefTotal}', v_def_streak='${vDefStreak}',
+      p_stunned='${stunPNext}', v_stunned='${stunVNext}',
+      p_poison_json='${JSON.stringify(poisAfterP).replace(/'/g,"''")}',
+      v_poison_json='${JSON.stringify(poisAfterV).replace(/'/g,"''")}',
+      p_holy_json='${JSON.stringify(holyAfterP).replace(/'/g,"''")}',
+      v_holy_json='${JSON.stringify(holyAfterV).replace(/'/g,"''")}'
     WHERE channel_id='${channel.id}';
   `);
 
@@ -1668,10 +1799,26 @@ async function pickVirusForUser(userId) {
   return weightedPick(pool);
 }
 
+// Give starters (zenny + chips) if the user looks fresh
+function grantStartersIfNeeded(userId) {
+  const n = ensureNavi(userId);
+  // Top up zenny only up to STARTER_ZENNY (do not overwrite higher balances)
+  if (STARTER_ZENNY > 0 && (n.zenny|0) < STARTER_ZENNY) {
+    setZenny.run(STARTER_ZENNY, userId);
+  }
+  // If they own nothing, seed their folder
+  const owned = listInv.all(userId).reduce((s,r)=>s + (r.qty||0), 0);
+  if (owned === 0 && STARTER_CHIPS.length) {
+    for (const ent of starterEntries()) {
+      invAdd(userId, ent.name, ent.qty);
+    }
+  }
+}
+
 // ---------- Interaction handlers ----------
 client.on('interactionCreate', async (ix) => {
   try {
-    // Autocomplete
+    // -------- Autocomplete --------
     if (ix.isAutocomplete()) {
       const focused = ix.options.getFocused(true);
       const name = ix.commandName;
@@ -1687,7 +1834,36 @@ client.on('interactionCreate', async (ix) => {
         return;
       }
 
-      // Chip autocompletes: show names
+      // Personalized autocomplete for /use: only user's folder; for 'support' filter by support kind
+      if (name === 'use') {
+        const q = (focused.value || '').toLowerCase();
+        const inv = listInv.all(ix.user.id); // [{chip_name, qty}]
+        const names = inv.map(r => r.chip_name);
+        let rows = names.map(n => getChip.get(n)).filter(Boolean);
+        if (focused.name === 'support') {
+          rows = rows.filter(r => isSupport(readEffect(r)));
+        } else if (focused.name === 'chip') {
+          rows = rows.filter(r => !r.is_upgrade);
+        }
+        const opts = rows
+          .filter(r => r.name.toLowerCase().includes(q))
+          .sort((a,b)=> a.name.localeCompare(b.name))
+          .slice(0,25)
+          .map(r => ({ name:r.name, value:r.name }));
+        await ix.respond(opts);
+        return;
+      }
+
+      // Admin chip_grant/remove autocomplete (global names, 25 max due to Discord)
+      if ((name === 'chip_grant' || name === 'chip_remove') && focused.name === 'name') {
+        const q = (focused.value || '').toLowerCase();
+        const names = listAllChipNames.all().map(r => r.name);
+        const opts = names.filter(n => n.toLowerCase().includes(q)).slice(0,25).map(n => ({ name:n, value:n }));
+        await ix.respond(opts);
+        return;
+      }
+
+      // Default: global names (kept for backwards compat)
       const q = (focused.value || '').toLowerCase();
       const names = listAllChipNames.all().map(r => r.name);
       const opts = names.filter(n => n.toLowerCase().includes(q)).slice(0,25).map(n => ({ name:n, value:n }));
@@ -1703,7 +1879,10 @@ client.on('interactionCreate', async (ix) => {
 
       if (cmd === 'navi_register') {
         const row = ensureNavi(ix.user.id);
-        await ix.reply({ content: `✅ Registered. Max HP **${row.max_hp}**, Dodge **${row.dodge}%**, Crit **${row.crit}%**.`, ephemeral: true });
+        // Seed starters on (re)register if appropriate
+        grantStartersIfNeeded(ix.user.id);
+        const after = ensureNavi(ix.user.id);
+        await ix.reply({ content: `✅ Registered. Max HP **${after.max_hp}**, Dodge **${after.dodge}%**, Crit **${after.crit}%**. Starting ${zennyIcon()} **${after.zenny}**.`, ephemeral: true });
         return;
       }
 
@@ -1730,58 +1909,11 @@ client.on('interactionCreate', async (ix) => {
 
       if (cmd === 'navi_leaderboard') {
         const limit = Math.min(25, Math.max(5, ix.options.getInteger('limit') || 10));
-        const rows = db.prepare(`SELECT user_id, wins, losses FROM navis ORDER BY wins DESC, losses ASC LIMIT ?`).all(limit);
+        const rows = db.prepare(`SELECT user_id, wins, losses FROM navis WHERE user_id != ? ORDER BY wins DESC, losses ASC LIMIT ?`).all(client.user.id, limit);
         const lines = rows
           .map((r,i)=> `**${i+1}.** <@${r.user_id}> — **${r.wins}-${r.losses}**`)
           .join('\n') || '—';
         await ix.reply({ embeds: [ new EmbedBuilder().setTitle('🏆 Leaderboard').setDescription(lines) ] });
-        return;
-      }
-
-      if (cmd === 'navi_upgrade') {
-        const stat = ix.options.getString('stat');
-        let amount = ix.options.getInteger('amount') || 1;
-        const n = ensureNavi(ix.user.id);
-
-        if (MANUAL_UPGRADES_MODE === 'points') {
-          if (stat === 'hp') {
-            const steps = Math.max(1, Math.floor((amount||1)));
-            const cost = steps * Math.ceil(HP_POINTS_PER_STEP);
-            if ((n.upgrade_pts|0) < cost) { await ix.reply({ content:`❌ Need **${cost}** points. You have **${n.upgrade_pts}**.`, ephemeral:true }); return; }
-            const nextHP = Math.min(MAX_HP_CAP, n.max_hp + (steps * HP_STEP_SIZE));
-            updHP.run(nextHP, ix.user.id);
-            updPts.run(n.upgrade_pts - cost, ix.user.id);
-            await ix.reply(`🧬 Max HP increased to **${nextHP}** (spent ${cost} points).`);
-          } else if (stat === 'dodge') {
-            const steps = Math.max(1, Math.floor(amount));
-            const cost = steps * CRIT_DODGE_COST;
-            if ((n.upgrade_pts|0) < cost) { await ix.reply({ content:`❌ Need **${cost}** points. You have **${n.upgrade_pts}**.`, ephemeral:true }); return; }
-            const next = Math.min(MAX_DODGE_CAP, n.dodge + steps);
-            updDodge.run(next, ix.user.id);
-            updPts.run(n.upgrade_pts - cost, ix.user.id);
-            await ix.reply(`🧬 Dodge increased to **${next}%** (spent ${cost} points).`);
-          } else if (stat === 'crit') {
-            const steps = Math.max(1, Math.floor(amount));
-            const cost = steps * CRIT_DODGE_COST;
-            if ((n.upgrade_pts|0) < cost) { await ix.reply({ content:`❌ Need **${cost}** points. You have **${n.upgrade_pts}**.`, ephemeral:true }); return; }
-            const next = Math.min(MAX_CRIT_CAP, n.crit + steps);
-            updCrit.run(next, ix.user.id);
-            updPts.run(n.upgrade_pts - cost, ix.user.id);
-            await ix.reply(`🧬 Crit increased to **${next}%** (spent ${cost} points).`);
-          } else {
-            await ix.reply({ content:'❌ Invalid stat.', ephemeral:true });
-          }
-        } else {
-          // admin-only mode
-          if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin-only in this mode.', ephemeral:true }); return; }
-          const clamp = (s,val) => s==='hp' ? Math.min(MAX_HP_CAP, Math.max(1,val)) :
-                                   (s==='dodge' ? Math.min(MAX_DODGE_CAP, Math.max(0,val)) :
-                                   (s==='crit' ? Math.min(MAX_CRIT_CAP, Math.max(0,val)) : val));
-          if (stat === 'hp') { updHP.run(clamp('hp', (n.max_hp + amount)), ix.user.id); }
-          if (stat === 'dodge') { updDodge.run(clamp('dodge', (n.dodge + amount)), ix.user.id); }
-          if (stat === 'crit') { updCrit.run(clamp('crit', (n.crit + amount)), ix.user.id); }
-          await ix.reply('✅ Updated.');
-        }
         return;
       }
 
@@ -1815,8 +1947,12 @@ client.on('interactionCreate', async (ix) => {
           const loser = (ix.user.id === f.p1_id) ? f.p1_id : (ix.user.id === f.p2_id ? f.p2_id : null);
           if (!loser) { await ix.reply({ content:'❌ Only participants may forfeit.', ephemeral:true }); return; }
           const winner = (loser === f.p1_id) ? f.p2_id : f.p1_id;
-          setRecord.run(0,1,loser);
-          setRecord.run(1,0,winner);
+          const p1IsBot = f.p1_id === client.user.id;
+          const p2IsBot = f.p2_id === client.user.id;
+          if (!p1IsBot && !p2IsBot) {
+            setRecord.run(0,1,loser);
+            setRecord.run(1,0,winner);
+          }
           endFight.run(ix.channel.id);
           clearRoundTimer(ix.channel.id);
           await ix.reply(`🏳️ **<@${loser}> forfeits!** <@${winner}> wins!`);
@@ -1863,7 +1999,17 @@ client.on('interactionCreate', async (ix) => {
         return;
       }
 
+      if (cmd === 'chips_catalog') {
+        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+        const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
+        const { embed, components } = buildCatalogPage(rows, 0);
+        await ix.reply({ embeds:[embed], components, ephemeral: true });
+        return;
+      }
+
       if (cmd === 'folder') {
+        // Ensure starters if they somehow haven't been granted yet
+        grantStartersIfNeeded(ix.user.id);
         const inv = listInv.all(ix.user.id);
         const lines = inv.map(r=>`• **${r.chip_name}** × **${r.qty}**`).join('\n') || '—';
         await ix.reply({ embeds:[ new EmbedBuilder().setTitle('📁 Your Folder').setDescription(lines) ] });
@@ -1923,10 +2069,10 @@ client.on('interactionCreate', async (ix) => {
         const value = ix.options.getInteger('value');
         if (stat==='hp') updHP.run(Math.min(MAX_HP_CAP, Math.max(1,value)), user.id);
         if (stat==='dodge') updDodge.run(Math.min(MAX_DODGE_CAP, Math.max(0,value)), user.id);
-        if (stat==='crit') updCrit.run(Math.min(MAX_CRIT_CAP, Math.max(0,value)), user.id);
-        if (stat==='wins') updWins.run(Math.max(0,value), user.id);
-        if (stat==='losses') updLosses.run(Math.max(0,value), user.id);
-        if (stat==='points') updPts.run(Math.max(0,value), user.id);
+        if (stat==='crit')  updCrit.run(Math.min(MAX_CRIT_CAP, Math.max(0,value)), user.id);
+        if (stat==='wins')  updWins.run(Math.max(0,value), user.id);
+        if (stat==='losses')updLosses.run(Math.max(0,value), user.id);
+        if (stat==='points')updPts.run(Math.max(0,value), user.id);
         await ix.reply('✅ Updated.');
         return;
       }
@@ -1982,8 +2128,9 @@ client.on('interactionCreate', async (ix) => {
           v.name, v.image_url||null,
           v.hp|0, v.dodge|0, v.crit|0, v.boss?1:0,
           JSON.stringify(v.moves||[]), v.zmin|0, v.zmax|0,
-          me.max_hp|0, v.hp|0, 0, 0, '{}', '[]', '[]', null, null, now()+ROUND_SECONDS*1000, 0, 0, now(),
-          0, 0, '[]', '[]', '[]', '[]'
+          me.max_hp|0, v.hp|0, 0, 0, '{}', '[]', '[]', null, null,
+          now()+ROUND_SECONDS*1000, 0, 0, now()
+          // DO NOT pass p_stunned..v_holy_json here — they are literals in the SQL
         );
         scheduleRoundTimer(ix.channel.id, () => resolvePveRound(ix.channel));
         const here = ensureLoc(ix.user.id);
@@ -2160,7 +2307,9 @@ client.on('interactionCreate', async (ix) => {
       await ix.reply({ content:'❌ Unknown command.', ephemeral:true });
     }
 
-    // -------- Component handlers (Shop pagination & selection) --------
+    // -------- Component handlers --------
+
+    // Shop selection
     if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
       const page = parseInt(ix.customId.split(':')[2], 10) || 0;
       const name = ix.values[0];
@@ -2178,7 +2327,6 @@ client.on('interactionCreate', async (ix) => {
           `${zennyIcon()} Cost: **${row.is_upgrade ? `${dynCost} (dynamic)` : row.zenny_cost}**`
         ].filter(Boolean).join('\n'));
 
-      // PATCH #1: upgrades => only Buy 1; chips => Buy 1 / Buy 5
       const rowBtns = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`shop:buy:${name}:1`).setLabel('Buy 1').setStyle(ButtonStyle.Primary)
       );
@@ -2193,11 +2341,31 @@ client.on('interactionCreate', async (ix) => {
       return;
     }
 
+    // Catalog selection (admin)
+    if (ix.isStringSelectMenu() && ix.customId.startsWith('catalog:select:')) {
+      if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+      const name = ix.values[0];
+      const row = getChip.get(name);
+      if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
+      const eff = readEffect(row);
+      const embed = new EmbedBuilder()
+        .setTitle(`${row.is_upgrade ? '🧬 Upgrade' : '💾 Chip'} — ${row.name}`)
+        .setDescription([
+          row.image_url ? `[image](${row.image_url})` : '',
+          summarizeEffect(eff),
+          '',
+          `${zennyIcon()} Cost: **${row.zenny_cost}**`,
+          `Stock status: **${row.stock ? 'shop' : 'hidden'}**`
+        ].filter(Boolean).join('\n'));
+      await ix.reply({ embeds:[embed], ephemeral:true });
+      return;
+    }
+
     if (ix.isButton()) {
+      // Shop nav
       if (ix.customId === 'shop:close') {
-        // Attempt to delete if not ephemeral (ephemeral can't be deleted)
         try {
-          if (!ix.message?.flags?.has?.(4096)) { // EPHEMERAL flag
+          if (!ix.message?.flags?.has?.(4096)) {
             await ix.message.delete();
           }
         } catch {}
@@ -2207,6 +2375,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId.startsWith('shop:prev:') || ix.customId.startsWith('shop:next:')) {
         const parts = ix.customId.split(':');
         const dir = parts[1];
+        thepage:
         const page = parseInt(parts[2], 10) || 0;
         const rows = listShop.all();
         const nextPage = dir === 'prev' ? Math.max(0, page-1) : Math.min(Math.ceil(rows.length/25)-1, page+1);
@@ -2215,7 +2384,6 @@ client.on('interactionCreate', async (ix) => {
         return;
       }
       if (ix.customId.startsWith('shop:buy:')) {
-        // PATCH #2: server-side clamp for upgrades
         const [, , name, qtyStr] = ix.customId.split(':');
         let qty = Math.max(1, parseInt(qtyStr, 10) || 1);
         const row = getChip.get(name);
@@ -2225,7 +2393,7 @@ client.on('interactionCreate', async (ix) => {
 
         const n = ensureNavi(ix.user.id);
         const cost = row.is_upgrade
-          ? Math.floor(dynamicUpgradeTotalFor(ix.user.id, row, qty)) // qty=1 for upgrades after clamp
+          ? Math.floor(dynamicUpgradeTotalFor(ix.user.id, row, qty))
           : (row.zenny_cost * qty);
 
         if ((n.zenny|0) < cost) { await ix.reply({ content:`❌ Need **${cost}** ${zennyIcon()}. You have **${n.zenny}**.`, ephemeral:true }); return; }
@@ -2233,13 +2401,31 @@ client.on('interactionCreate', async (ix) => {
         setZenny.run(n.zenny - cost, ix.user.id);
 
         if (row.is_upgrade) {
-          applyUpgrade(ix.user.id, row, 1);               // force 1
-          bumpUpgCountBy.run(ix.user.id, row.name, 1);    // force 1
+          applyUpgrade(ix.user.id, row, 1);
+          bumpUpgCountBy.run(ix.user.id, row.name, 1);
           await ix.reply(`✅ Purchased **1× ${row.name}**. Stats updated. (-${cost} ${zennyIcon()})`);
         } else {
           invAdd(ix.user.id, row.name, qty);
           await ix.reply(`✅ Purchased **${qty}× ${row.name}** to your folder. (-${cost} ${zennyIcon()})`);
         }
+        return;
+      }
+
+      // Catalog nav (admin)
+      if (ix.customId === 'catalog:close') {
+        await ix.reply({ content:'🛑 Closed.', ephemeral:true });
+        return;
+      }
+      if (ix.customId.startsWith('catalog:prev:') || ix.customId.startsWith('catalog:next:')) {
+        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+        const parts = ix.customId.split(':');
+        const dir = parts[1];
+        const page = parseInt(parts[2], 10) || 0;
+        const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
+        const totalPages = Math.max(1, Math.ceil(rows.length / 25));
+        const nextPage = dir === 'prev' ? Math.max(0, page-1) : Math.min(totalPages-1, page+1);
+        const { embed, components } = buildCatalogPage(rows, nextPage);
+        await ix.update({ embeds:[embed], components });
         return;
       }
     }
