@@ -18,17 +18,6 @@ import {
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 
-// Optional fetch polyfill for Node < 18 (no-op on >=18)
-try {
-  if (typeof fetch === 'undefined') {
-    // eslint-disable-next-line no-undef
-    await import('node-fetch').then(({ default: f }) => {
-      // @ts-ignore
-      global.fetch = f;
-    });
-  }
-} catch { /* ignore */ }
-
 // ---------- Config ----------
 const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || '830126829352386601';
 
@@ -1420,19 +1409,6 @@ nextPois2 = nextPois2Local;
 
   scheduleRoundTimer(channel.id, () => resolveDuelRound(channel));
 
-  const critLine = (c1,c2)=>`Crits: P1→${c1?'✅':'❌'} | P2→${c2?'✅':'❌'}`;
- await channel.send([
- `🎲 **Round resolved!**`,
- `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
- `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
- `• Damage dealt: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
- `• Absorbed by DEF: P1→**${absorbed2}** | P2→**${absorbed1}**`,
- `• ${critLine(crit1,crit2)}`,
- `• Ticks: Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`,
- '',
- hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
- `⏳ Next round: **${ROUND_SECONDS}s** — play with **/use**`
- ].join('\n'));
  const lines = [
  `🎲 **Round resolved!**`,
  `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
@@ -1450,7 +1426,6 @@ nextPois2 = nextPois2Local;
  await channel.send(lines.join('\n'));
 }
 
-// ---------- Round resolution (PVE) ----------
 // ---------- Round resolution (PVE) ----------
 async function resolvePveRound(channel) {
   const s0 = getPVE.get(channel.id);
@@ -1719,8 +1694,9 @@ async function resolvePveRound(channel) {
         const drops = vr?.chip_drops || [];
         if (drops.length) {
           const pick = drops[Math.floor(Math.random() * drops.length)];
-          invAdd(s.player_id, pick, 1);
-          dropLine = `\n📦 Chip drop: **${pick}** (+1)`;
+ if (getChip.get(pick)) {
+   invAdd(s.player_id, pick, 1);
+   dropLine = `\n📦 Chip drop: **${pick}** (+1)`;
         }
       } catch {}
     }
@@ -1830,9 +1806,9 @@ function grantStartersIfNeeded(userId) {
   // If they own nothing, seed their folder
   const owned = listInv.all(userId).reduce((s,r)=>s + (r.qty||0), 0);
   if (owned === 0 && STARTER_CHIPS.length) {
-    for (const ent of starterEntries()) {
-      invAdd(userId, ent.name, ent.qty);
-    }
+     for (const ent of starterEntries()) {
+   if (getChip.get(ent.name)) invAdd(userId, ent.name, ent.qty);
+ }
   }
 }
 
@@ -2157,13 +2133,7 @@ client.on('interactionCreate', async (ix) => {
           // DO NOT pass p_stunned..v_holy_json here — they are literals in the SQL
         );
         const here = ensureLoc(ix.user.id);
-        await ix.reply([
-   `🦠 **Encounter!** ${v.boss?'💀 **Boss** — ':''}**${v.name}** appears!`,
-   `Region filter: ${here.region} / Zone ${here.zone}`,
-   `⏳ Play with **/use** (you may chain a Support). Timer **${ROUND_SECONDS}s**`,
-   hpLinePVE(getPVE.get(ix.channel.id))
- ].join('\n'));
- const startEmb = new EmbedBuilder()
+        const startEmb = new EmbedBuilder()
   .setTitle(`🦠 Encounter: ${v.boss ? '💀 ' : ''}${v.name}`)
   .setDescription([
     `Region **${here.region}** / Zone **${here.zone}**`,
@@ -2362,6 +2332,47 @@ return;
 
     // -------- Component handlers --------
 
+// Accept / Decline duel
+if (ix.isButton() && ix.customId.startsWith('duel:')) {
+  const [, action, p1, p2] = ix.customId.split(':');
+  const pending = PendingDuels.get(ix.channel.id);
+  if (!pending || pending.p1 !== p1 || pending.p2 !== p2) {
+    await ix.reply({ content: '❌ This challenge has expired.', ephemeral: true }); 
+    return;
+  }
+
+  if (action === 'decline') {
+    clearTimeout(pending.timeout);
+    PendingDuels.delete(ix.channel.id);
+    await ix.update({ content: '🚫 Challenge declined.', embeds: [], components: [] });
+    return;
+  }
+
+  // accept
+  if (ix.user.id !== p2) {
+    await ix.reply({ content: '❌ Only the challenged user can accept.', ephemeral: true });
+    return;
+  }
+
+  clearTimeout(pending.timeout);
+  PendingDuels.delete(ix.channel.id);
+
+  const n1 = ensureNavi(p1);
+  const n2 = ensureNavi(p2);
+  startFight.run(
+    ix.channel.id, p1, p2,
+    n1.max_hp|0, n2.max_hp|0,
+    0, 0, '{}', '{}', '[]', '[]',
+    null, null,
+    now()+ROUND_SECONDS*1000, now()
+  );
+  scheduleRoundTimer(ix.channel.id, () => resolveDuelRound(ix.channel));
+
+  await ix.update({ content: '⚔️ Duel started! Submit your chips with **/use**.', embeds: [], components: [] });
+  await ix.followUp(hpLineDuel(getFight.get(ix.channel.id)));
+  return;
+}
+
    // Shop selection
 if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
   const name = ix.values[0];
@@ -2448,7 +2459,7 @@ function buildGrantUI(st) {
 }
 
 // Recipient picked
-if (ix.isUserSelectMenu && ix.isUserSelectMenu() && ix.customId === 'grant:recipient') {
+if (ix.isUserSelectMenu() && ix.customId === 'grant:recipient') {
   if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
   const st = CatalogGrantState.get(ix.user.id);
   if (!st) { await ix.reply({ content:'❌ Start with **/chip_grant** and select a chip first.', ephemeral:true }); return; }
