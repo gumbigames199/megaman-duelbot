@@ -1702,19 +1702,19 @@ async function resolvePveRound(channel) {
     }
 
     // Mission completion
-    let missionLine = '';
-    try {
-      const am = getActiveMission.get(s.player_id);
-      if (am) {
-        const chipMatch = am.target_chip && (P.used||[]).some(n => normalize(n) === normalize(am.target_chip));
-        const bossMatch = am.target_boss && normalize(s.virus_name) === normalize(am.target_boss);
-        if (chipMatch || bossMatch) {
-          completeMission.run(s.player_id, am.mission_id);
-          if (am.reward_zenny) addZenny.run(s.player_id, am.reward_zenny);
-          missionLine = `\n🧾 Mission **${am.mission_id}** completed! +${am.reward_zenny} ${zennyIcon()}`;
-        }
-      }
-    } catch {}
+   let missionLine = '';
+try {
+  const am = getActiveMission.get(s.player_id);
+  if (am) {
+    const chipMatch = am.target_chip && (P.used || []).some(n => normalize(n) === normalize(am.target_chip));
+    const bossMatch = am.target_boss && normalize(s.virus_name) === normalize(am.target_boss);
+    if (chipMatch || bossMatch) {
+      completeMission.run(s.player_id, am.mission_id);
+      if (am.reward_zenny) addZenny.run(s.player_id, am.reward_zenny);
+      missionLine = `\n🧾 Mission **${am.mission_id}** completed! +${am.reward_zenny} ${zennyIcon()}`;
+    }
+  }
+} catch (e) {}
 
     endPVE.run(channel.id);
     clearRoundTimer(channel.id);
