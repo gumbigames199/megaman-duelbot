@@ -1,8 +1,12 @@
 {
   "name": "megaman-duelbot",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
   "main": "index.js",
+  "engines": {
+    "node": ">=18.17"
+  },
   "scripts": {
     "start": "node index.js",
     "deploy:commands": "node scripts/deploy-commands.js"
