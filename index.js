@@ -1,5 +1,3 @@
-okay now check the entire thing for issues:
-
 // index.js
 import 'dotenv/config';
 import {
