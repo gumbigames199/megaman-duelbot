@@ -1,5 +1,3 @@
-Here is the completed index, does this read correctly and cover all your edits?
-
 // index.js
 import 'dotenv/config';
 import {
