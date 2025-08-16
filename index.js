@@ -2088,18 +2088,6 @@ catch { await ix.deferUpdate(); }
         break;
       }
 
-      case 'give_zenny': {
-        const to = ix.options.getUser('to', true);
-        const amt = Math.max(1, ix.options.getInteger('amount', true));
-        if (to.id === ix.user.id) return ix.reply({ content: '❌ You cannot pay yourself.', ephemeral: true });
-        const me = ensureNavi(ix.user.id);
-        if ((me.zenny | 0) < amt) return ix.reply({ content: `❌ You need **${amt}** ${zennyIcon()}.`, ephemeral: true });
-        addZenny.run(ix.user.id, -amt);
-        addZenny.run(to.id, amt);
-        await ix.reply(`💸 <@${ix.user.id}> sent **${amt}** ${zennyIcon()} to <@${to.id}>.`);
-        break;
-      }
-
       case 'shop': {
         const rows = listShop.all();
         if (!rows.length) return ix.reply('🛒 The shop is empty.');
@@ -2196,12 +2184,26 @@ catch { await ix.deferUpdate(); }
         break;
       }
 
+      case 'give_zenny': {
+        const to = ix.options.getUser('to', true);
+        const amt = Math.max(1, ix.options.getInteger('amount', true));
+        if (to.id === ix.user.id) return ix.reply({ content: '❌ You cannot pay yourself.', ephemeral: true });
+        const me = ensureNavi(ix.user.id);
+        ensureNavi(to.id); // <-- keep this version
+        if ((me.zenny | 0) < amt) return ix.reply({ content: `❌ You need **${amt}** ${zennyIcon()}.`, ephemeral: true });
+        addZenny.run(ix.user.id, -amt);
+        addZenny.run(to.id, amt);
+        await ix.reply(`💸 <@${ix.user.id}> sent **${amt}** ${zennyIcon()} to <@${to.id}>.`);
+        break;
+      }
+
       case 'zenny_override': {
         if (!isAdmin(ix)) return ix.reply({ content: '⛔ Admins only.', ephemeral: true });
         const target = ix.options.getUser('user', true);
-        const amt = ix.options.getInteger('amount', true);
-        addZenny.run(target.id, amt);
-        await ix.reply({ content: `✅ Added **${amt}** ${zennyIcon()} to ${target}.`, ephemeral: true });
+        const amount = ix.options.getInteger('amount', true);
+        ensureNavi(target.id);
+        addZenny.run(target.id, amount);
+        await ix.reply({ content: `✅ Added **${amount}** ${zennyIcon()} to ${target}.`, ephemeral: true });
         break;
       }
 
