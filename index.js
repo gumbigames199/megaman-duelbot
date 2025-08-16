@@ -13,6 +13,7 @@ import {
   SlashCommandBuilder,
   EmbedBuilder,
   StringSelectMenuBuilder,
+  UserSelectMenuBuilder, // added for admin grant UI
 } from 'discord.js';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -94,8 +95,6 @@ if (!fs.existsSync('./data')) fs.mkdirSync('./data');
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    //GatewayIntentBits.GuildMessages, // (not needed for slash interactions)
-    //GatewayIntentBits.MessageContent, // (not needed for slash interactions)
   ],
   partials: [Partials.Channel, Partials.Message],
 });
@@ -127,7 +126,7 @@ async function registerCommands() {
           .addChoices({ name: 'hp', value: 'hp' }, { name: 'dodge', value: 'dodge' }, { name: 'crit', value: 'crit' }),
       )
       .addIntegerOption((o) =>
-        o.setName('amount').setDescription('Optional amount (may be ignored in points mode)').setRequired(false),
+        o.setName('amount').setDescription('Amount (steps for HP, +1s for crit/dodge)').setRequired(false),
       ),
 
     new SlashCommandBuilder()
@@ -196,11 +195,16 @@ async function registerCommands() {
 
     new SlashCommandBuilder()
       .setName('chip_grant')
-      .setDescription('Admin: grant chips to a user')
+      .setDescription('Admin: grant chips to a user (parameters)')
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
       .addUserOption((o) => o.setName('user').setDescription('Target user').setRequired(true))
       .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
       .addIntegerOption((o) => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
+
+    new SlashCommandBuilder()
+      .setName('grant_chip')
+      .setDescription('Admin: open catalog to grant a chip (interactive)')
+      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
     new SlashCommandBuilder()
       .setName('chip_remove')
@@ -849,7 +853,7 @@ function extractKinds(effect) {
   if (!effect) return [];
   const k = effect.kinds || effect.kind || '';
   if (Array.isArray(k)) return k.map((x) => String(x).toLowerCase());
-  return String(k || '').toLowerCase().split(/[+,/\s]+/).filter(Boolean); // restored '+' separator
+  return String(k || '').toLowerCase().split(/[+,/\s]+/).filter(Boolean);
 }
 function isAttack(effect) { const kinds = extractKinds(effect); return kinds.includes('attack') || kinds.includes('break'); }
 function isBreak(effect)  { const kinds = extractKinds(effect); return kinds.includes('break'); }
@@ -972,7 +976,6 @@ function pickVirusMove(pveRow) {
   if (defStreak >= VIRUS_DEFENSE_CAP_STREAK) {
     const attacks = notSpent.filter((m) => !isDefLikeMove(m));
     if (attacks.length) return attacks[Math.floor(Math.random() * attacks.length)];
-    // fall through if nothing but defense remains
   }
 
   // Respect total defense cap
@@ -982,7 +985,6 @@ function pickVirusMove(pveRow) {
     return notSpent[Math.floor(Math.random() * notSpent.length)];
   }
 
-  // Otherwise free choice
   return notSpent[Math.floor(Math.random() * notSpent.length)];
 }
 
@@ -1042,7 +1044,7 @@ function buildShopPage(rows, page = 0) {
 }
 
 // Admin: Chips catalog pager (all chips, paged)
-function buildCatalogPage(rows, page=0) {
+function buildCatalogPage(rows, page=0, prefix='catalog') {
   const PER = 25;
   const totalPages = Math.max(1, Math.ceil(rows.length / PER));
   page = Math.min(totalPages - 1, Math.max(0, page));
@@ -1050,7 +1052,7 @@ function buildCatalogPage(rows, page=0) {
   const slice = rows.slice(start, start + PER);
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId(`catalog:select:${page}`)
+    .setCustomId(`${prefix}:select:${page}`)
     .setPlaceholder(`Select a chip (${page+1}/${totalPages})`)
     .addOptions(slice.map(r => ({
       label: r.name.slice(0,100),
@@ -1059,16 +1061,16 @@ function buildCatalogPage(rows, page=0) {
         .slice(0,100)
     })));
 
-  const prev = new ButtonBuilder().setCustomId(`catalog:prev:${page}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(page===0);
-  const next = new ButtonBuilder().setCustomId(`catalog:next:${page}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page>=totalPages-1);
-  const close= new ButtonBuilder().setCustomId('catalog:close').setLabel('Close').setStyle(ButtonStyle.Danger);
+  const prev = new ButtonBuilder().setCustomId(`${prefix}:prev:${page}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(page===0);
+  const next = new ButtonBuilder().setCustomId(`${prefix}:next:${page}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page>=totalPages-1);
+  const close= new ButtonBuilder().setCustomId(`${prefix}:close`).setLabel('Close').setStyle(ButtonStyle.Danger);
 
   const rowSel = new ActionRowBuilder().addComponents(select);
   const rowNav = new ActionRowBuilder().addComponents(prev, next, close);
 
   const list = slice.map(r => `• **${r.name}** — ${r.is_upgrade?'Upgrade':'Chip'} — ${r.zenny_cost} ${zennyIcon()}${r.stock?'':' (hidden)'}`).join('\n');
   const embed = new EmbedBuilder()
-    .setTitle('📚 Chips Catalog (admin)')
+    .setTitle(prefix==='grant' ? '🎁 Grant: Chip Catalog (admin)' : '📚 Chips Catalog (admin)')
     .setDescription(list || '—')
     .setFooter({ text: `Items ${start+1}-${Math.min(rows.length,start+PER)} of ${rows.length} • Page ${page+1}/${totalPages}`});
   return { embed, components:[rowSel, rowNav], page, totalPages };
@@ -1101,7 +1103,6 @@ function dynamicUpgradeTotalFor(userId, chipRow, qty) {
 }
 
 // ---------- Status tick helpers ----------
-// POISON: list of at most 1 item: { dmg:number, ticks:number }
 function parsePois(s) {
   const arr = parseList(s);
   if (!Array.isArray(arr)) return [];
@@ -1110,7 +1111,6 @@ function parsePois(s) {
     .filter(x => x && x.dmg > 0 && x.ticks > 0)
     .slice(0,1);
 }
-// HOLY: list of at most 1 item: { heal:number, ticks:number }
 function parseHoly(s) {
   const arr = parseList(s);
   if (!Array.isArray(arr)) return [];
@@ -1119,12 +1119,8 @@ function parseHoly(s) {
     .filter(x => x && x.heal > 0 && x.ticks > 0)
     .slice(0,1);
 }
-
-// Replace (no stacking): latest amount, 3 ticks
 function replacePoison(_list, dmg) { const n = Math.max(0, Math.floor(dmg)); return n > 0 ? [{ dmg: n, ticks: 3 }] : []; }
 function replaceHoly(_list, heal)  { const n = Math.max(0, Math.floor(heal)); return n > 0 ? [{ heal: n, ticks: 3 }] : []; }
-
-// Consume one tick & return total + next state
 function tickPois(list) {
   if (!list.length) return { total: 0, next: [] };
   const p = list[0];
@@ -1281,27 +1277,25 @@ async function resolveDuelRound(channel) {
   let rec1 = P1.rec || 0; if (P1.attackEff && p2Barrier && !isBreak(P1.attackEff)) rec1 = 0;
   let rec2 = P2.rec || 0; if (P2.attackEff && p1Barrier && !isBreak(P2.attackEff)) rec2 = 0;
 
-// POISON apply (must land). Convert immediate damage → DoT ticks (no upfront hit)
-const p1IsPoison = P1.attackEff && isPoison(P1.attackEff) && !dodged1 && !cancelledByBarrier1;
-const p2IsPoison = P2.attackEff && isPoison(P2.attackEff) && !dodged2 && !cancelledByBarrier2;
+  // POISON → DoT if landed
+  const p1IsPoison = P1.attackEff && isPoison(P1.attackEff) && !dodged1 && !cancelledByBarrier1;
+  const p2IsPoison = P2.attackEff && isPoison(P2.attackEff) && !dodged2 && !cancelledByBarrier2;
 
-// use existing nextPois1/nextPois2 from earlier in the function
-let nextPois1Local = nextPois1, nextPois2Local = nextPois2;
+  let nextPois1Local = nextPois1, nextPois2Local = nextPois2;
 
-if (p1IsPoison) {
-  const tick = (dmg1to2 | 0) + (absorbed1 | 0);
-  nextPois2Local = replacePoison(nextPois2Local, tick);
-  dmg1to2 = 0;
-}
-if (p2IsPoison) {
-  const tick = (dmg2to1 | 0) + (absorbed2 | 0);
-  nextPois1Local = replacePoison(nextPois1Local, tick);
-  dmg2to1 = 0;
-}
+  if (p1IsPoison) {
+    const tick = (dmg1to2 | 0) + (absorbed1 | 0);
+    nextPois2Local = replacePoison(nextPois2Local, tick);
+    dmg1to2 = 0;
+  }
+  if (p2IsPoison) {
+    const tick = (dmg2to1 | 0) + (absorbed2 | 0);
+    nextPois1Local = replacePoison(nextPois1Local, tick);
+    dmg2to1 = 0;
+  }
 
-// overwrite the main refs
-nextPois1 = nextPois1Local;
-nextPois2 = nextPois2Local;
+  nextPois1 = nextPois1Local;
+  nextPois2 = nextPois2Local;
 
   // HOLY self-apply (non-stacking)
   const p1HolyAmt = P1.holyAmt || 0;
@@ -1368,26 +1362,32 @@ nextPois2 = nextPois2Local;
   const nextP1Stun = paraP1 ? 1 : 0;
   const nextP2Stun = paraP2 ? 1 : 0;
 
-  // If fight ended, clear and announce
+  // Build round lines with conditional tick visibility
+  const lines = [
+    `🎲 **Round resolved!**`,
+    `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
+    `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
+    `• Damage dealt: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
+    (absorbed1 || absorbed2) ? `• Absorbed by DEF: P1→**${absorbed2}** | P2→**${absorbed1}**` : null,
+    (crit1 || crit2) ? `• Crits: P1→${crit1?'✅':'❌'} | P2→${crit2?'✅':'❌'}` : null,
+    (dodged1 || dodged2) ? `• Dodges: P1→${dodged2?'✅':'❌'} | P2→${dodged1?'✅':'❌'}` : null,
+    (tickPoisonP1 || tickPoisonP2 || nextPois1Local.length || nextPois2Local.length)
+      ? `• Poison ticks: P1 **-${tickPoisonP1}** | P2 **-${tickPoisonP2}**` : null,
+    (tickHolyP1 || tickHolyP2 || nextHoly1Local.length || nextHoly2Local.length)
+      ? `• Holy ticks: P1 **+${tickHolyP1}** | P2 **+${tickHolyP2}**` : null,
+    '',
+    hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
+  ].filter(Boolean);
+
   if (outcome) {
     endFight.run(channel.id);
     clearRoundTimer(channel.id);
-    await channel.send([
-      `🎲 **Round resolved!**`,
-      `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-      `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-      `• Damage dealt: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
-      `• Ticks: Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`,
-      `• Attack cancelled by barrier: P1→${cancelledByBarrier1?'✅':'❌'} | P2→${cancelledByBarrier2?'✅':'❌'}`,
-      `• Dodges: P1→${dodged2?'✅':'❌'} | P2→${dodged1?'✅':'❌'}`,
-      '',
-      hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
-      outcome
-    ].join('\n'));
+    lines.push(outcome);
+    await channel.send(lines.join('\n'));
     return;
   }
 
-  // Persist next state and schedule next round
+  // Persist next state and schedule next round (PvP only)
   const nextDeadline = now() + ROUND_SECONDS * 1000;
   const nextP1Counts = JSON.stringify(p1Counts);
   const nextP2Counts = JSON.stringify(p2Counts);
@@ -1413,23 +1413,10 @@ nextPois2 = nextPois2Local;
   `);
 
   scheduleRoundTimer(channel.id, () => resolveDuelRound(channel));
-
-  const critLine = (c1,c2)=>`Crits: P1→${c1?'✅':'❌'} | P2→${c2?'✅':'❌'}`; // fixed order
-  await channel.send([
-    `🎲 **Round resolved!**`,
-    `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-    `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-    `• Damage dealt: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
-    `• Absorbed by DEF: P1→**${absorbed2}** | P2→**${absorbed1}**`,
-    `• ${critLine(crit1,crit2)}`,
-    `• Ticks: Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`,
-    '',
-    hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
-    `⏳ Next round: **${ROUND_SECONDS}s** — play with **/use**`
-  ].join('\n'));
+  lines.push(`⏳ Next round: **${ROUND_SECONDS}s** — play with **/use**`);
+  await channel.send(lines.join('\n'));
 }
 
-// ---------- Round resolution (PVE) ----------
 // ---------- Round resolution (PVE) ----------
 async function resolvePveRound(channel) {
   const s0 = getPVE.get(channel.id);
@@ -1437,7 +1424,7 @@ async function resolvePveRound(channel) {
 
   const player = ensureNavi(s0.player_id);
 
-  // Virus pick if needed
+  // Virus pick if needed (no timers in PVE)
   let s = s0;
   if (!s.virus_action_json && !(s.v_stunned > 0)) {
     const mv = pickVirusMove(s);
@@ -1447,7 +1434,7 @@ async function resolvePveRound(channel) {
         s.p_def, s.v_def,
         s.p_counts_json, s.p_special_used, s.v_special_used,
         s.player_action_json, JSON.stringify(mv),
-        s.round_deadline, s.v_def_total, s.v_def_streak,
+        0, s.v_def_total, s.v_def_streak,
         s.p_stunned|0, s.v_stunned|0,
         s.p_poison_json, s.v_poison_json,
         s.p_holy_json, s.v_holy_json,
@@ -1461,20 +1448,8 @@ async function resolvePveRound(channel) {
   const AVirus  = decodeAction(s.virus_action_json);
 
   if (!APlayer && !AVirus) {
-    const nextDeadline = now() + ROUND_SECONDS * 1000;
-    updPVE.run(
-      s.p_hp, s.v_hp,
-      0, 0,
-      s.p_counts_json, s.p_special_used, s.v_special_used,
-      null, null,
-      nextDeadline, s.v_def_total, s.v_def_streak,
-      s.p_stunned|0, s.v_stunned|0,
-      s.p_poison_json, s.v_poison_json,
-      s.p_holy_json, s.v_holy_json,
-      channel.id
-    );
-    scheduleRoundTimer(channel.id, () => resolvePveRound(channel));
-    await channel.send(`⏳ New round started. Submit your chip with **/use** in **${ROUND_SECONDS}s**.\n${hpLinePVE(getPVE.get(channel.id))}`);
+    // Just prompt; no timer
+    await channel.send(`▶️ Your turn. Play with **/use**.\n${hpLinePVE(getPVE.get(channel.id))}`);
     return;
   }
 
@@ -1488,7 +1463,6 @@ async function resolvePveRound(channel) {
     const empty = { def:0, barrier:false, attackEff:null, rec:0, used:[], supportEff:null, repair:false, holyAmt:0 };
     if (!inv) return empty;
 
-    // Virus move branch — no .type, direct move_json object
     const looksLikeVirusMove =
       inv && !inv.type &&
       (inv.kinds || inv.kind ||
@@ -1498,61 +1472,43 @@ async function resolvePveRound(channel) {
     if (looksLikeVirusMove) {
       const e = inv;
       let def=0, barrier=false, attackEff=null, rec=0;
-
       if (isDefense(e)) def += Number.isFinite(e.def) ? e.def : 0;
       if (isBarrier(e)) barrier = true;
       if (isRecovery(e)) rec += Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : 0);
       if (isAttack(e))  attackEff = e;
-
-      const holyGuess = Number.isFinite(e.heal) ? e.heal
-                      : (Number.isFinite(e.rec) ? e.rec
-                      : (Number.isFinite(e.dmg) ? e.dmg : 0));
+      const holyGuess = Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : (Number.isFinite(e.dmg) ? e.dmg : 0));
       const holyAmt = isHoly(e) ? Math.max(0, holyGuess|0) : 0;
       if (holyAmt > 0) rec = 0;
-
       const usedName = e.name || e.label || 'Move';
       return { def, barrier, attackEff, rec, used:[usedName], supportEff:null, repair:isRepair(e), holyAmt };
     }
 
-    // Player chip branch
     if (inv.type === 'chip') {
       const { r, e } = rowAndEff(inv.name);
       if (!r) return empty;
       let def=0, barrier=false, attackEff=null, rec=0;
-
       if (isDefense(e)) def += Number.isFinite(e.def) ? e.def : 0;
       if (isBarrier(e)) barrier = true;
       if (isRecovery(e)) rec += Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : 0);
       if (isAttack(e))  attackEff = e;
-
-      const holyGuess = Number.isFinite(e.heal) ? e.heal
-                      : (Number.isFinite(e.rec) ? e.rec
-                      : (Number.isFinite(e.dmg) ? e.dmg : 0));
+      const holyGuess = Number.isFinite(e.heal) ? e.heal : (Number.isFinite(e.rec) ? e.rec : (Number.isFinite(e.dmg) ? e.dmg : 0));
       const holyAmt = isHoly(e) ? Math.max(0, holyGuess|0) : 0;
       if (holyAmt > 0) rec = 0;
-
       return { def, barrier, attackEff, rec, used:[r.name], supportEff:null, repair:isRepair(e), holyAmt };
     }
 
-    // Player support chain branch
     if (inv.type === 'support') {
       const { r: sr, e: se } = rowAndEff(inv.support);
       const { r: cr, e: ce } = rowAndEff(inv.with);
       if (!sr || !cr) return empty;
-
       let def=0, barrier=false, attackEff=null, rec=0;
-
       if (isDefense(ce)) def += Number.isFinite(ce.def) ? ce.def : 0;
       if (isBarrier(ce)) barrier = true;
-      if (isRecovery(ce)) rec += Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : 0); // ce.rec fix
+      if (isRecovery(ce)) rec += Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : 0);
       if (isAttack(ce))  attackEff = ce;
-
-      const holyGuess = Number.isFinite(ce.heal) ? ce.heal
-                      : (Number.isFinite(ce.rec) ? ce.rec
-                      : (Number.isFinite(ce.dmg) ? ce.dmg : 0));
+      const holyGuess = Number.isFinite(ce.heal) ? ce.heal : (Number.isFinite(ce.rec) ? ce.rec : (Number.isFinite(ce.dmg) ? ce.dmg : 0));
       const holyAmt = isHoly(ce) ? Math.max(0, holyGuess|0) : 0;
       if (holyAmt > 0) rec = 0;
-
       return { def, barrier, attackEff, rec, used:[sr.name, cr.name], supportEff: se, repair:isRepair(ce), holyAmt };
     }
 
@@ -1571,7 +1527,7 @@ async function resolvePveRound(channel) {
   // AI caps tracking
   let vDefTotal = Number(s.v_def_total||0);
   let vDefStreak = Number(s.v_def_streak||0);
-  if (isDefLikeMove(AVirus)) {
+  if (AVirus && isDefLikeMove(AVirus)) {
     vDefTotal++;
     vDefStreak++;
   } else {
@@ -1611,7 +1567,6 @@ async function resolvePveRound(channel) {
   let nextPoisP = pPois, nextPoisV = vPois;
   let nextHolyP = pHoly, nextHolyV = vHoly;
 
-  // Poison application converts immediate damage into ticks (includes absorbed)
   if (P.attackEff && isPoison(P.attackEff) && !dodgedP && !cancelledByBarrierP) {
     const t = (dmgPtoV|0) + (absorbedP|0);
     nextPoisV = replacePoison(nextPoisV, t);
@@ -1623,23 +1578,18 @@ async function resolvePveRound(channel) {
     dmgVtoP = 0;
   }
 
-  // Holy application (regen ticks only)
   if (P.holyAmt > 0) nextHolyP = replaceHoly(nextHolyP, P.holyAmt);
   if (V.holyAmt > 0) nextHolyV = replaceHoly(nextHolyV, V.holyAmt);
 
-  // Repair: cleanse self
   if (P.repair) { nextPoisP = []; nextHolyP = []; }
   if (V.repair) { nextPoisV = []; nextHolyV = []; }
 
-  // Paralyze for next round (if landed)
   const stunVNext = (P.attackEff && isParalyze(P.attackEff) && !dodgedP && !cancelledByBarrierP) ? 1 : 0;
   const stunPNext = (V.attackEff && isParalyze(V.attackEff) && !dodgedV && !cancelledByBarrierV) ? 1 : 0;
 
-  // Immediate HP with direct dmg + instant rec (ticks later)
   let php = Math.max(0, Math.min(player.max_hp, s.p_hp - dmgVtoP + pRec));
   let vhp = Math.max(0, Math.min(s.virus_max_hp, s.v_hp - dmgPtoV + vRec));
 
-  // Apply ticks
   const { total: tPoisP, next: poisAfterP } = tickPois(nextPoisP);
   const { total: tPoisV, next: poisAfterV } = tickPois(nextPoisV);
   const { total: tHolyP, next: holyAfterP } = tickHoly(nextHolyP);
@@ -1648,7 +1598,6 @@ async function resolvePveRound(channel) {
   php = Math.max(0, Math.min(player.max_hp, php - tPoisP + tHolyP));
   vhp = Math.max(0, Math.min(s.virus_max_hp, vhp - tPoisV + tHolyV));
 
-  // Count usage & specials (player and virus)
   const pCounts = parseMap(s.p_counts_json);
   const pSpec = new Set(parseList(s.p_special_used));
   for (const n of (P.used || [])) {
@@ -1657,7 +1606,6 @@ async function resolvePveRound(channel) {
     if (isSpecial(eff)) pSpec.add(n);
   }
 
-  // NEW: virus specials spent
   const vSpec = new Set(parseList(s.v_special_used));
   if (AVirus?.special) {
     const vUsedName =
@@ -1668,28 +1616,29 @@ async function resolvePveRound(channel) {
     vSpec.add(vUsedName);
   }
 
+  const lines = [
+    `🎲 **Round resolved!**`,
+    `• You used: ${P.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
+    `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
+    `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
+    (absorbedP || absorbedV) ? `• Absorbed by DEF: You→**${absorbedV}** | Virus→**${absorbedP}**` : null,
+    (critP || critV) ? `• Crits: You→${critP?'✅':'❌'} | Virus→${critV?'✅':'❌'}` : null,
+    (dodgedP || dodgedV) ? `• Dodges: You→${dodgedV?'✅':'❌'} | Virus→${dodgedP?'✅':'❌'}` : null,
+    (tPoisP || tPoisV || nextPoisP.length || nextPoisV.length) ? `• Poison ticks: You **-${tPoisP}** | Virus **-${tPoisV}**` : null,
+    (tHolyP || tHolyV || nextHolyP.length || nextHolyV.length) ? `• Holy ticks: You **+${tHolyP}** | Virus **+${tHolyV}**` : null,
+    '',
+    hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
+  ].filter(Boolean);
 
-  // Outcome?
   if (php === 0 && vhp === 0) {
     endPVE.run(channel.id);
-    clearRoundTimer(channel.id);
-    await channel.send([
-      `🎲 **Round resolved!**`,
-      `• You used: ${P.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-      `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
-      `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
-      '',
-      hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
-      '🤝 **Double KO!**'
-    ].join('\n'));
+    await channel.send(lines.concat('🤝 **Double KO!**').join('\n'));
     return;
   }
   if (vhp === 0) {
-    // Rewards
     const z = Math.max(0, Math.floor(Math.random() * (s.virus_zmax - s.virus_zmin + 1)) + s.virus_zmin);
     if (z) addZenny.run(s.player_id, z);
 
-    // Chip drop chance
     let dropLine = '';
     if (Math.random() < VIRUS_CHIP_DROP_PCT) {
       try {
@@ -1704,7 +1653,6 @@ async function resolvePveRound(channel) {
       } catch {}
     }
 
-    // Mission completion
     let missionLine = '';
     try {
       const am = getActiveMission.get(s.player_id);
@@ -1720,38 +1668,17 @@ async function resolvePveRound(channel) {
     } catch {}
 
     endPVE.run(channel.id);
-    clearRoundTimer(channel.id);
-
-    await channel.send([
-      `🎲 **Round resolved!**`,
-      `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
-      `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
-      '',
-      `🏆 **Victory!** You defeated **${s.virus_name}**.`,
-      z ? `+${z} ${zennyIcon()} awarded.` : '',
-      dropLine,
-      missionLine
-    ].filter(Boolean).join('\n'));
+    await channel.send(lines.concat([`🏆 **Victory!** You defeated **${s.virus_name}**.`, z ? `+${z} ${zennyIcon()} awarded.` : '', dropLine, missionLine].filter(Boolean)).join('\n'));
     return;
 
   }
   if (php === 0) {
     endPVE.run(channel.id);
-    clearRoundTimer(channel.id);
-    await channel.send([
-      `🎲 **Round resolved!**`,
-      `• You used: ${P.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-      `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
-      `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
-      '',
-      hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
-      `💀 **Defeat...** Try again with **/virus_busting**.`
-    ].join('\n'));
+    await channel.send(lines.concat(`💀 **Defeat...** Try again with **/virus_busting**.`).join('\n'));
     return;
   }
 
-  // Persist next state
-  const nextDeadline = now() + ROUND_SECONDS * 1000;
+  // Persist next state (no timer)
   const nextCounts = JSON.stringify(pCounts);
   const nextSpec = JSON.stringify(Array.from(pSpec));
 
@@ -1763,7 +1690,7 @@ async function resolvePveRound(channel) {
       p_special_used='${nextSpec.replace(/'/g,"''")}',
       v_special_used='${JSON.stringify(Array.from(vSpec)).replace(/'/g,"''")}',
       player_action_json=NULL, virus_action_json=NULL,
-      round_deadline='${nextDeadline}',
+      round_deadline='0',
       v_def_total='${vDefTotal}', v_def_streak='${vDefStreak}',
       p_stunned='${stunPNext}', v_stunned='${stunVNext}',
       p_poison_json='${JSON.stringify(poisAfterP).replace(/'/g,"''")}',
@@ -1773,19 +1700,8 @@ async function resolvePveRound(channel) {
     WHERE channel_id='${channel.id}';
   `);
 
-  scheduleRoundTimer(channel.id, () => resolvePveRound(channel));
-
-  await channel.send([
-    `🎲 **Round resolved!**`,
-    `• You used: ${P.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-    `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
-    `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
-    `• Absorbed by DEF: You→**${absorbedV}** | Virus→**${absorbedP}**`,
-    `• Ticks (you/virus): Poison **-${tPoisP}**/**-${tPoisV}**, Holy **+${tHolyP}**/**+${tHolyV}**`,
-    '',
-    hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
-    `⏳ Next round: **${ROUND_SECONDS}s** — play with **/use**`
-  ].join('\n'));
+  // Immediately prompt next action (no countdown)
+  await channel.send(lines.concat(`▶️ Your turn. Play with **/use**.`).join('\n'));
 }
 
 // ---------- Virus selection ----------
@@ -1802,11 +1718,9 @@ async function pickVirusForUser(userId) {
 // Give starters (zenny + chips) if the user looks fresh
 function grantStartersIfNeeded(userId) {
   const n = ensureNavi(userId);
-  // Top up zenny only up to STARTER_ZENNY (do not overwrite higher balances)
   if (STARTER_ZENNY > 0 && (n.zenny|0) < STARTER_ZENNY) {
     setZenny.run(STARTER_ZENNY, userId);
   }
-  // If they own nothing, seed their folder
   const owned = listInv.all(userId).reduce((s,r)=>s + (r.qty||0), 0);
   if (owned === 0 && STARTER_CHIPS.length) {
     for (const ent of starterEntries()) {
@@ -1814,6 +1728,9 @@ function grantStartersIfNeeded(userId) {
     }
   }
 }
+
+// ---------- Admin Grant UI state ----------
+const GrantState = new Map(); // adminUserId -> { chipName, qty, targetUserId, page }
 
 // ---------- Interaction handlers ----------
 client.on('interactionCreate', async (ix) => {
@@ -1863,592 +1780,682 @@ client.on('interactionCreate', async (ix) => {
         return;
       }
 
-      // Default: global names (kept for backwards compat)
+      // Default: global names
       const q = (focused.value || '').toLowerCase();
       const names = listAllChipNames.all().map(r => r.name);
-      const opts = names.filter(n => n.toLowerCase().includes(q)).slice(0,25).map(n => ({ name:n, value:n }));
+      const opts = names
+        .filter(n => n.toLowerCase().includes(q))
+        .slice(0, 25)
+        .map(n => ({ name: n, value: n }));
       await ix.respond(opts);
       return;
     }
 
-    if (!ix.isChatInputCommand() && !ix.isButton() && !ix.isStringSelectMenu()) return;
+    // -------- Buttons/Menus (Components) --------
+    if (ix.isButton() || ix.isStringSelectMenu() || ix.isUserSelectMenu()) {
+      const id = ix.customId || '';
+      // --- Shop pager ---
+      if (id.startsWith('shop:')) {
+        const parts = id.split(':'); // shop:action:page
+        const action = parts[1];
+        const page = parseInt(parts[2] || '0', 10) || 0;
 
-    // -------- Commands --------
-    if (ix.isChatInputCommand()) {
-      const cmd = ix.commandName;
-
-      if (cmd === 'navi_register') {
-        const row = ensureNavi(ix.user.id);
-        // Seed starters on (re)register if appropriate
-        grantStartersIfNeeded(ix.user.id);
-        const after = ensureNavi(ix.user.id);
-        await ix.reply({ content: `✅ Registered. Max HP **${after.max_hp}**, Dodge **${after.dodge}%**, Crit **${after.crit}%**. Starting ${zennyIcon()} **${after.zenny}**.`, ephemeral: true });
-        return;
-      }
-
-      if (cmd === 'navi_stats') {
-        const user = ix.options.getUser('user') || ix.user;
-        const n = ensureNavi(user.id);
-        const loc = ensureLoc(user.id);
-        const inv = listInv.all(user.id);
-        const chipsOwned = inv.reduce((a,c)=>a+c.qty,0);
-
-        const embed = new EmbedBuilder()
-          .setTitle(`📊 ${user.username}'s Navi`)
-          .setDescription([
-            `HP **${n.max_hp}** • Dodge **${n.dodge}%** • Crit **${n.crit}%**`,
-            `Record **${n.wins}-${n.losses}**`,
-            `${zennyIcon()} **${n.zenny}** • Points **${n.upgrade_pts}**`,
-            `📍 Region **${loc.region}** / Zone **${loc.zone}**`,
-            `🧾 Chips: **${chipsOwned}**`
-          ].join('\n'))
-          .setThumbnail(user.displayAvatarURL());
-        await ix.reply({ embeds:[embed] });
-        return;
-      }
-
-      if (cmd === 'navi_leaderboard') {
-        const limit = Math.min(25, Math.max(5, ix.options.getInteger('limit') || 10));
-        const rows = db.prepare(`SELECT user_id, wins, losses FROM navis WHERE user_id != ? ORDER BY wins DESC, losses ASC LIMIT ?`).all(client.user.id, limit);
-        const lines = rows
-          .map((r,i)=> `**${i+1}.** <@${r.user_id}> — **${r.wins}-${r.losses}**`)
-          .join('\n') || '—';
-        await ix.reply({ embeds: [ new EmbedBuilder().setTitle('🏆 Leaderboard').setDescription(lines) ] });
-        return;
-      }
-
-      if (cmd === 'duel') {
-        const opp = ix.options.getUser('opponent');
-        if (!opp || opp.id === ix.user.id) { await ix.reply({ content:'❌ Pick another user.', ephemeral:true }); return; }
-        if (getFight.get(ix.channel.id) || getPVE.get(ix.channel.id)) { await ix.reply({ content:'❌ A fight/encounter is already running in this channel.', ephemeral:true }); return; }
-        const p1 = ensureNavi(ix.user.id);
-        const p2 = ensureNavi(opp.id);
-        startFight.run(
-          ix.channel.id, ix.user.id, opp.id,
-          p1.max_hp, p2.max_hp,
-          0, 0, '{}', '{}', '[]', '[]',
-          null, null, now() + ROUND_SECONDS*1000, now()
-        );
-        scheduleRoundTimer(ix.channel.id, () => resolveDuelRound(ix.channel));
-        await ix.reply([
-          `⚔️ **Duel started!** <@${ix.user.id}> vs <@${opp.id}>`,
-          `⏳ Play your chips with **/use** (you may chain a Support).`,
-          `Timer: **${ROUND_SECONDS}s**`,
-          hpLineDuel(getFight.get(ix.channel.id))
-        ].join('\n'));
-        return;
-      }
-
-      if (cmd === 'forfeit') {
-        const f = getFight.get(ix.channel.id);
-        const s = getPVE.get(ix.channel.id);
-        if (!f && !s) { await ix.reply({ content:'❌ No duel/encounter here.', ephemeral:true }); return; }
-        if (f) {
-          const loser = (ix.user.id === f.p1_id) ? f.p1_id : (ix.user.id === f.p2_id ? f.p2_id : null);
-          if (!loser) { await ix.reply({ content:'❌ Only participants may forfeit.', ephemeral:true }); return; }
-          const winner = (loser === f.p1_id) ? f.p2_id : f.p1_id;
-          const p1IsBot = f.p1_id === client.user.id;
-          const p2IsBot = f.p2_id === client.user.id;
-          if (!p1IsBot && !p2IsBot) {
-            setRecord.run(0,1,loser);
-            setRecord.run(1,0,winner);
-          }
-          endFight.run(ix.channel.id);
-          clearRoundTimer(ix.channel.id);
-          await ix.reply(`🏳️ **<@${loser}> forfeits!** <@${winner}> wins!`);
-        } else {
-          if (ix.user.id !== s.player_id) { await ix.reply({ content:'❌ Only the participant may forfeit.', ephemeral:true }); return; }
-          endPVE.run(ix.channel.id);
-          clearRoundTimer(ix.channel.id);
-          await ix.reply('🏳️ You left the encounter.');
-        }
-        return;
-      }
-
-      if (cmd === 'duel_state') {
-        const f = getFight.get(ix.channel.id);
-        const s = getPVE.get(ix.channel.id);
-        if (!f && !s) { await ix.reply('— No active duel/encounter here.'); return; }
-        if (f) { await ix.reply(hpLineDuel(f)); return; }
-        if (s) { await ix.reply(hpLinePVE(s)); return; }
-      }
-
-      if (cmd === 'zenny') {
-        const user = ix.options.getUser('user') || ix.user;
-        const n = ensureNavi(user.id);
-        await ix.reply(`${zennyIcon()} **${user.username}** has **${n.zenny}** Zenny.`);
-        return;
-      }
-
-      if (cmd === 'give_zenny') {
-        const to = ix.options.getUser('to');
-        const amount = ix.options.getInteger('amount') || 0;
-        if (!to || amount <= 0) { await ix.reply({ content:'❌ Specify a valid recipient and amount.', ephemeral:true }); return; }
-        const me = ensureNavi(ix.user.id);
-        if ((me.zenny|0) < amount) { await ix.reply({ content:`❌ Not enough ${zennyIcon()}.`, ephemeral:true }); return; }
-        setZenny.run(me.zenny - amount, ix.user.id);
-        addZenny.run(to.id, amount);
-        await ix.reply(`✅ Sent **${amount}** ${zennyIcon()} to <@${to.id}>.`);
-        return;
-      }
-
-      if (cmd === 'shop') {
         const rows = listShop.all();
-        const { embed, components } = buildShopPage(rows, 0);
-        await ix.reply({ embeds:[embed], components });
-        return;
-      }
-
-      if (cmd === 'chips_catalog') {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-        const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
-        const { embed, components } = buildCatalogPage(rows, 0);
-        await ix.reply({ embeds:[embed], components, ephemeral: true });
-        return;
-      }
-
-      if (cmd === 'folder') {
-        // Ensure starters if they somehow haven't been granted yet
-        grantStartersIfNeeded(ix.user.id);
-        const inv = listInv.all(ix.user.id);
-        const lines = inv.map(r=>`• **${r.chip_name}** × **${r.qty}**`).join('\n') || '—';
-        await ix.reply({ embeds:[ new EmbedBuilder().setTitle('📁 Your Folder').setDescription(lines) ] });
-        return;
-      }
-
-      if (cmd === 'give_chip') {
-        const to = ix.options.getUser('to');
-        const name = ix.options.getString('name');
-        const qty = ix.options.getInteger('qty') || 1;
-        if (!to || !name || qty <= 0) { await ix.reply({ content:'❌ Provide recipient, chip, qty.', ephemeral:true }); return; }
-        const have = invGetQty(ix.user.id, name);
-        if (have < qty) { await ix.reply({ content:`❌ You only have **${have}** of **${name}**.`, ephemeral:true }); return; }
-        invAdd(ix.user.id, name, -qty);
-        invAdd(to.id, name, qty);
-        await ix.reply(`✅ Gave **${qty}× ${name}** to <@${to.id}>.`);
-        return;
-      }
-
-      if (cmd === 'chips_reload') {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-        try {
-          await reloadChipsFromTSV();
-          await ix.reply('✅ Chips reloaded.');
-        } catch (e) {
-          await ix.reply({ content:`❌ ${e.message}`, ephemeral:true });
-        }
-        return;
-      }
-
-      if (cmd === 'chip_grant') {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-        const user = ix.options.getUser('user');
-        const name = ix.options.getString('name');
-        const qty = ix.options.getInteger('qty') || 1;
-        if (!getChip.get(name)) { await ix.reply({ content:'❌ Unknown chip.', ephemeral:true }); return; }
-        invAdd(user.id, name, qty);
-        await ix.reply(`✅ Granted **${qty}× ${name}** to <@${user.id}>.`);
-        return;
-      }
-
-      if (cmd === 'chip_remove') {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-        const user = ix.options.getUser('user');
-        const name = ix.options.getString('name');
-        const qty = ix.options.getInteger('qty') || 1;
-        const have = invGetQty(user.id, name);
-        invAdd(user.id, name, -Math.min(have, qty));
-        await ix.reply(`✅ Removed up to **${qty}× ${name}** from <@${user.id}>.`);
-        return;
-      }
-
-      if (cmd === 'stat_override') {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-        const user = ix.options.getUser('user');
-        const stat = ix.options.getString('stat');
-        const value = ix.options.getInteger('value');
-        if (stat==='hp') updHP.run(Math.min(MAX_HP_CAP, Math.max(1,value)), user.id);
-        if (stat==='dodge') updDodge.run(Math.min(MAX_DODGE_CAP, Math.max(0,value)), user.id);
-        if (stat==='crit')  updCrit.run(Math.min(MAX_CRIT_CAP, Math.max(0,value)), user.id);
-        if (stat==='wins')  updWins.run(Math.max(0,value), user.id);
-        if (stat==='losses')updLosses.run(Math.max(0,value), user.id);
-        if (stat==='points')updPts.run(Math.max(0,value), user.id);
-        await ix.reply('✅ Updated.');
-        return;
-      }
-
-      if (cmd === 'zenny_override') {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-        const user = ix.options.getUser('user');
-        const amt = ix.options.getInteger('amount') || 0;
-        addZenny.run(user.id, amt);
-        await ix.reply(`✅ Added **${amt}** ${zennyIcon()} to <@${user.id}>.`);
-        return;
-      }
-
-      if (cmd === 'virus_search') {
-        const name = ix.options.getString('name');
-        const viruses = await loadViruses(false);
-        const v = viruses.find(x => normalize(x.name) === normalize(name)) || viruses.find(x => x.name.toLowerCase().includes(name.toLowerCase()));
-        if (!v) { await ix.reply('❌ Not found.'); return; }
-        const m = (v.moves||[]).map(o=>{
-          const kinds = extractKinds(o);
-          const line = [
-            `• **${o.name || o.label || 'Move'}**`,
-            kinds.length ? `(${kinds.join(', ')})` : '',
-            Number.isFinite(o.dmg) ? `DMG ${o.dmg}` : '',
-            Number.isFinite(o.def) ? `DEF ${o.def}` : '',
-            Number.isFinite(o.heal) ? `Heal ${o.heal}` : (Number.isFinite(o.rec) ? `Heal ${o.rec}` : ''),
-            o.special ? '⭐Special' : ''
-          ].filter(Boolean).join(' ');
-          return line;
-        }).join('\n') || '—';
-        const drops = (v.chip_drops||[]).length ? v.chip_drops.join(', ') : (v.chip_drop||'—');
-        const desc = [
-          `HP **${v.hp}** • Dodge **${v.dodge}%** • Crit **${v.crit}%**${v.boss?' • 💀 **Boss**':''}`,
-          `Zenny **${v.zmin}–${v.zmax}**`,
-          `Region **${v.region||'Any'}** / Zone **${v.zone||'Any'}**`,
-          '',
-          `Moves:\n${m}`,
-          '',
-          `Possible chip drops (chance ${Math.round(VIRUS_CHIP_DROP_PCT*100)}%): ${drops || '—'}`
-        ].join('\n');
-        const emb = new EmbedBuilder().setTitle(`🦠 ${v.name}`).setDescription(desc);
-        if (v.image_url) emb.setThumbnail(v.image_url);
-        await ix.reply({ embeds:[emb] });
-        return;
-      }
-
-      if (cmd === 'virus_busting') {
-        if (getFight.get(ix.channel.id) || getPVE.get(ix.channel.id)) { await ix.reply({ content:'❌ Already running here.', ephemeral:true }); return; }
-        const v = await pickVirusForUser(ix.user.id);
-        const me = ensureNavi(ix.user.id);
-        startPVE.run(
-          ix.channel.id, ix.user.id,
-          v.name, v.image_url||null,
-          v.hp|0, v.dodge|0, v.crit|0, v.boss?1:0,
-          JSON.stringify(v.moves||[]), v.zmin|0, v.zmax|0,
-          me.max_hp|0, v.hp|0, 0, 0, '{}', '[]', '[]', null, null,
-          now()+ROUND_SECONDS*1000, 0, 0, now()
-          // DO NOT pass p_stunned..v_holy_json here — they are literals in the SQL
-        );
-        scheduleRoundTimer(ix.channel.id, () => resolvePveRound(ix.channel));
-        const here = ensureLoc(ix.user.id);
-        await ix.reply([
-          `🦠 **Encounter!** ${v.boss?'💀 **Boss** — ':''}**${v.name}** appears!`,
-          `Region filter: ${here.region} / Zone ${here.zone}`,
-          `⏳ Play with **/use** (you may chain a Support). Timer **${ROUND_SECONDS}s**`,
-          hpLinePVE(getPVE.get(ix.channel.id))
-        ].join('\n'));
-        return;
-      }
-
-      if (cmd === 'use') {
-        const chip = ix.options.getString('chip');
-        const support = ix.options.getString('support');
-        const f = getFight.get(ix.channel.id);
-        const s = getPVE.get(ix.channel.id);
-        if (!f && !s) { await ix.reply({ content:'❌ No active duel/encounter here.', ephemeral:true }); return; }
-
-        // Validate chips exist
-        const chipRow = getChip.get(chip);
-        if (!chipRow || chipRow.is_upgrade) { await ix.reply({ content:'❌ Invalid chip.', ephemeral:true }); return; }
-
-        let supportRow = null;
-        if (support) {
-          supportRow = getChip.get(support);
-          if (!supportRow || supportRow.is_upgrade) { await ix.reply({ content:'❌ Invalid Support chip.', ephemeral:true }); return; }
-          if (!isSupport(readEffect(supportRow))) { await ix.reply({ content:'❌ The support chip must have kind "support".', ephemeral:true }); return; }
+        if (!rows.length) {
+          await ix.reply({ content: '🛒 The shop is empty.', ephemeral: true });
+          return;
         }
 
-        // Folder ownership check
-        if (invGetQty(ix.user.id, chip) <= 0) { await ix.reply({ content:`❌ You do not own **${chip}**.`, ephemeral:true }); return; }
-        if (support && invGetQty(ix.user.id, support) <= 0) { await ix.reply({ content:`❌ You do not own **${support}**.`, ephemeral:true }); return; }
+        if (ix.isStringSelectMenu() && action === 'select') {
+          const name = (ix.values && ix.values[0]) || null;
+          const r = name ? getChip.get(name) : null;
+          if (!r) return ix.deferUpdate();
 
-        if (f) {
-          if (ix.user.id !== f.p1_id && ix.user.id !== f.p2_id) { await ix.reply({ content:'❌ Only participants may act.', ephemeral:true }); return; }
-          const isP1 = ix.user.id === f.p1_id;
+          const eff = readEffect(r);
+          const embed = new EmbedBuilder()
+            .setTitle(`${r.is_upgrade ? '🧩 Upgrade' : '🎴 Chip'} — ${r.name}`)
+            .setDescription(summarizeEffect(eff))
+            .addFields(
+              { name: 'Price', value: `${dynamicUpgradeCostFor(ix.user.id, r)} ${zennyIcon()}`, inline: true },
+              { name: 'Stock', value: r.stock ? 'Available' : 'Hidden', inline: true }
+            );
 
-          // per-battle limits & specials
-          const counts = parseMap(isP1 ? f.p1_counts_json : f.p2_counts_json);
-          const specials = new Set(parseList(isP1 ? f.p1_special_used : f.p2_special_used));
-          const useNames = [chipRow.name].concat(supportRow ? [supportRow.name] : []);
-          for (const n of useNames) {
-            const r = getChip.get(n);
-            if ((counts[n]||0) >= MAX_PER_CHIP) { await ix.reply({ content:`❌ Per-battle limit reached for **${n}** (max ${MAX_PER_CHIP}).`, ephemeral:true }); return; }
-            if (isSpecial(readEffect(r)) && specials.has(n)) { await ix.reply({ content:`❌ **${n}** is Special and already used this battle.`, ephemeral:true }); return; }
-          }
+          const buy1 = new ButtonBuilder().setCustomId(`shop:buy:${r.name}:1:${page}`).setLabel('Buy 1').setStyle(ButtonStyle.Primary);
+          const buy5 = new ButtonBuilder().setCustomId(`shop:buy:${r.name}:5:${page}`).setLabel('Buy 5').setStyle(ButtonStyle.Secondary);
+          const close = new ButtonBuilder().setCustomId(`shop:close`).setLabel('Close').setStyle(ButtonStyle.Danger);
+          const back  = new ButtonBuilder().setCustomId(`shop:back:${page}`).setLabel('Back').setStyle(ButtonStyle.Secondary);
 
-          // Stun check
-          if ((isP1 && (f.p1_stunned||0)>0) || (!isP1 && (f.p2_stunned||0)>0)) {
-            await ix.reply({ content:`⚡ You are stunned and cannot act this round.`, ephemeral:true });
+          await ix.update({ embeds: [embed], components: [new ActionRowBuilder().addComponents(buy1, buy5, back, close)] });
+          return;
+        }
+
+        if (action === 'buy') {
+          const [_shop, _buy, chipName, qtyStr, fromPage] = id.split(':');
+          const qty = Math.max(1, parseInt(qtyStr || '1', 10) || 1);
+          const row = getChip.get(chipName);
+          if (!row) return ix.reply({ content: '❌ That item no longer exists.', ephemeral: true });
+
+          const total = row.is_upgrade ? dynamicUpgradeTotalFor(ix.user.id, row, qty) : (row.zenny_cost || 0) * qty;
+          const you = ensureNavi(ix.user.id);
+          if ((you.zenny | 0) < total) {
+            await ix.reply({ content: `❌ Not enough ${zennyIcon()}. You need **${total}**.`, ephemeral: true });
             return;
           }
 
-          const act = support ? actionSupport(supportRow.name, chipRow.name) : actionChip(chipRow.name);
-          if (isP1) {
-            updFightRound.run(
-              f.p1_hp, f.p2_hp,
-              f.p1_def, f.p2_def,
-              f.p1_counts_json, f.p2_counts_json,
-              f.p1_special_used, f.p2_special_used,
-              act, f.p2_action_json,
-              f.round_deadline,
-              f.p1_stunned|0, f.p2_stunned|0,
-              f.p1_poison_json, f.p2_poison_json,
-              f.p1_holy_json, f.p2_holy_json,
-              ix.channel.id
-            );
+          // Deduct & grant
+          addZenny.run(ix.user.id, -total);
+          if (row.is_upgrade) {
+            applyUpgrade(ix.user.id, row, qty);
+            bumpUpgCountBy.run(ix.user.id, row.name, qty);
           } else {
-            updFightRound.run(
-              f.p1_hp, f.p2_hp,
-              f.p1_def, f.p2_def,
-              f.p1_counts_json, f.p2_counts_json,
-              f.p1_special_used, f.p2_special_used,
-              f.p1_action_json, act,
-              f.round_deadline,
-              f.p1_stunned|0, f.p2_stunned|0,
-              f.p1_poison_json, f.p2_poison_json,
-              f.p1_holy_json, f.p2_holy_json,
-              ix.channel.id
-            );
+            invAdd(ix.user.id, row.name, qty);
           }
-          await ix.reply(`✅ Action queued.`);
-          const f2 = getFight.get(ix.channel.id);
-          if (f2.p1_action_json && f2.p2_action_json) {
-            clearRoundTimer(ix.channel.id);
+
+          await ix.reply({ content: `✅ Purchased **${qty}× ${row.name}** for **${total}** ${zennyIcon()}.`, ephemeral: true });
+
+          // Return to the same page
+          const { embed, components } = buildShopPage(rows, parseInt(fromPage || '0', 10) || 0);
+          try {
+            await ix.message.edit({ embeds: [embed], components });
+          } catch {}
+          return;
+        }
+
+        if (action === 'prev' || action === 'next' || action === 'back') {
+          const at = action === 'prev' ? Math.max(0, page - 1) : (action === 'next' ? page + 1 : page);
+          const { embed, components } = buildShopPage(rows, at);
+          await ix.update({ embeds: [embed], components });
+          return;
+        }
+        if (action === 'close') {
+         try { await ix.message.delete(); }
+catch { await ix.deferUpdate(); }
+          return;
+        }
+      }
+
+      // --- Catalog (admin browse) ---
+      if (id.startsWith('catalog:') && isAdmin(ix)) {
+        const rows = listAllChipNames.all().map(({ name }) => getChip.get(name)).filter(Boolean);
+        const [prefix, action, pageStr] = id.split(':');
+        const page = parseInt(pageStr || '0', 10) || 0;
+
+        if (ix.isStringSelectMenu() && action === 'select') {
+          const name = (ix.values && ix.values[0]) || null;
+          const r = name ? getChip.get(name) : null;
+          if (!r) return ix.deferUpdate();
+          const eff = readEffect(r);
+          const embed = new EmbedBuilder()
+            .setTitle(`📚 ${r.is_upgrade ? 'Upgrade' : 'Chip'} — ${r.name}`)
+            .setDescription(summarizeEffect(eff))
+            .addFields(
+              { name: 'Price', value: `${r.zenny_cost} ${zennyIcon()}`, inline: true },
+              { name: 'In Shop', value: r.stock ? 'Yes' : 'No', inline: true }
+            );
+          const back = new ButtonBuilder().setCustomId(`catalog:back:${page}`).setLabel('Back').setStyle(ButtonStyle.Secondary);
+          const close= new ButtonBuilder().setCustomId(`catalog:close`).setLabel('Close').setStyle(ButtonStyle.Danger);
+          await ix.update({ embeds: [embed], components: [new ActionRowBuilder().addComponents(back, close)] });
+          return;
+        }
+
+        if (action === 'prev' || action === 'next' || action === 'back') {
+          const at = action === 'prev' ? Math.max(0, page - 1) : (action === 'next' ? page + 1 : page);
+          const { embed, components } = buildCatalogPage(rows, at, 'catalog');
+          await ix.update({ embeds: [embed], components });
+          return;
+        }
+        if (action === 'close') {
+          try { await ix.message.delete(); }
+catch { await ix.deferUpdate(); }
+          return;
+        }
+      }
+
+      // --- Grant (admin interactive grant) ---
+      if (id.startsWith('grant:') && isAdmin(ix)) {
+        const rows = listAllChipNames.all().map(({ name }) => getChip.get(name)).filter(Boolean);
+        const [prefix, action, pageStr] = id.split(':');
+        const page = parseInt(pageStr || '0', 10) || 0;
+        const state = GrantState.get(ix.user.id) || { page: 0 };
+
+        // Select a chip from catalog
+        if (ix.isStringSelectMenu() && action === 'select') {
+          const name = (ix.values && ix.values[0]) || null;
+          if (!name) return ix.deferUpdate();
+          state.chipName = name;
+          GrantState.set(ix.user.id, state);
+
+          const pickUser = new UserSelectMenuBuilder().setCustomId(`grant:user:${page}`).setPlaceholder('Pick a recipient…').setMinValues(1).setMaxValues(1);
+          const rowUser = new ActionRowBuilder().addComponents(pickUser);
+          const qty1 = new ButtonBuilder().setCustomId(`grant:qty:${page}:1`).setLabel('+1').setStyle(ButtonStyle.Primary);
+          const qty5 = new ButtonBuilder().setCustomId(`grant:qty:${page}:5`).setLabel('+5').setStyle(ButtonStyle.Secondary);
+          const give = new ButtonBuilder().setCustomId(`grant:do:${page}`).setLabel('Grant').setStyle(ButtonStyle.Success).setDisabled(!state.targetUserId);
+          const back = new ButtonBuilder().setCustomId(`grant:back:${page}`).setLabel('Back').setStyle(ButtonStyle.Secondary);
+          const close= new ButtonBuilder().setCustomId(`grant:close`).setLabel('Close').setStyle(ButtonStyle.Danger);
+
+          state.qty = state.qty || 1;
+          GrantState.set(ix.user.id, state);
+
+          await ix.update({
+            content: `🎁 **Granting ${name}**\nQty: **${state.qty}**\nTarget: ${state.targetUserId ? `<@${state.targetUserId}>` : '*none*'}`,
+            embeds: [],
+            components: [rowUser, new ActionRowBuilder().addComponents(qty1, qty5, give, back, close)]
+          });
+          return;
+        }
+
+        // Pick user
+        if (ix.isUserSelectMenu() && action === 'user') {
+          const uid = (ix.values && ix.values[0]) || null;
+          state.targetUserId = uid;
+          GrantState.set(ix.user.id, state);
+          await ix.update({ content: `🎁 **Granting ${state.chipName || '(pick a chip)'}**\nQty: **${state.qty || 1}**\nTarget: ${uid ? `<@${uid}>` : '*none*'}` });
+          return;
+        }
+
+        if (action === 'qty') {
+          const amt = parseInt((id.split(':')[3]) || '1', 10) || 1;
+          state.qty = Math.max(1, (state.qty || 1) + amt);
+          GrantState.set(ix.user.id, state);
+          await ix.update({ content: `🎁 **Granting ${state.chipName || '(pick a chip)'}**\nQty: **${state.qty}**\nTarget: ${state.targetUserId ? `<@${state.targetUserId}>` : '*none*'}` });
+          return;
+        }
+
+        if (action === 'do') {
+          if (!state.chipName || !state.targetUserId) {
+            await ix.reply({ content: '❌ Pick a chip and a target user first.', ephemeral: true });
+            return;
+          }
+          invAdd(state.targetUserId, state.chipName, state.qty || 1);
+          await ix.reply({ content: `✅ Granted **${state.qty || 1}× ${state.chipName}** to <@${state.targetUserId}>.`, ephemeral: true });
+          return;
+        }
+
+        if (action === 'prev' || action === 'next' || action === 'back') {
+          const at = action === 'prev' ? Math.max(0, page - 1) : (action === 'next' ? page + 1 : page);
+          const { embed, components } = buildCatalogPage(rows, at, 'grant');
+          await ix.update({ content: '', embeds: [embed], components });
+          return;
+        }
+
+        if (action === 'close') {
+          GrantState.delete(ix.user.id);
+         try { await ix.message.delete(); } catch { await ix.deferUpdate(); }
+          return;
+        }
+      }
+
+      // Unknown component: ignore
+      return;
+    }
+
+    // -------- Slash Commands --------
+    if (!ix.isChatInputCommand()) return;
+
+    // Shared helpers
+    const requireNoCombat = async () => {
+      if (getFight.get(ix.channelId) || getPVE.get(ix.channelId)) {
+        await ix.reply({ content: '⛔ There is already an active duel/encounter in this channel.', ephemeral: true });
+        return false;
+      }
+      return true;
+    };
+
+    switch (ix.commandName) {
+      case 'navi_register': {
+        const exists = getNavi.get(ix.user.id);
+        if (exists) { await ix.reply({ content: '✅ You already have a Navi.', ephemeral: true }); }
+        else {
+          ensureNavi(ix.user.id);
+          grantStartersIfNeeded(ix.user.id);
+          await ix.reply({ content: '🆕 Navi registered! Use **/shop** and **/folder** to get started.', ephemeral: true });
+        }
+        break;
+      }
+
+      case 'navi_stats': {
+        const target = ix.options.getUser('user') || ix.user;
+        const n = ensureNavi(target.id);
+        await ix.reply({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle(`📊 Navi Stats — ${target.username}`)
+              .addFields(
+                { name: 'Max HP', value: String(n.max_hp), inline: true },
+                { name: 'Dodge', value: `${n.dodge}%`, inline: true },
+                { name: 'Crit', value: `${n.crit}%`, inline: true },
+                { name: 'Record', value: `${n.wins}-${n.losses}`, inline: true },
+                { name: 'Points', value: String(n.upgrade_pts), inline: true },
+                { name: 'Zenny', value: `${n.zenny} ${zennyIcon()}`, inline: true },
+              )
+          ],
+          ephemeral: false
+        });
+        break;
+      }
+
+      case 'navi_upgrade': {
+        const stat = ix.options.getString('stat', true);
+        const amount = ix.options.getInteger('amount') ?? 1;
+        const n = ensureNavi(ix.user.id);
+
+        if (MANUAL_UPGRADES_MODE === 'points') {
+          // Spend upgrade points
+          if (stat === 'hp') {
+            const steps = Math.max(1, amount | 0);
+            const cost = steps * HP_POINTS_PER_STEP;
+            if (n.upgrade_pts < cost) return ix.reply({ content: `❌ Need **${cost}** points. You have **${n.upgrade_pts}**.`, ephemeral: true });
+            const newHP = Math.min(MAX_HP_CAP, n.max_hp + (HP_STEP_SIZE * steps));
+            updHP.run(newHP, ix.user.id);
+            addPoints.run(-cost, ix.user.id);
+            return ix.reply({ content: `✅ +${HP_STEP_SIZE * steps} Max HP (now **${newHP}**). Spent **${cost}** pts.`, ephemeral: true });
+          }
+          // crit/dodge
+          const cost = CRIT_DODGE_COST * Math.max(1, amount | 0);
+          if (n.upgrade_pts < cost) return ix.reply({ content: `❌ Need **${cost}** points. You have **${n.upgrade_pts}**.`, ephemeral: true });
+          if (stat === 'dodge') {
+            const v = Math.min(MAX_DODGE_CAP, n.dodge + Math.max(1, amount | 0));
+            updDodge.run(v, ix.user.id);
+            addPoints.run(-cost, ix.user.id);
+            return ix.reply({ content: `✅ +${Math.max(1, amount | 0)} Dodge (now **${v}%**). Spent **${cost}** pts.`, ephemeral: true });
+          }
+          if (stat === 'crit') {
+            const v = Math.min(MAX_CRIT_CAP, n.crit + Math.max(1, amount | 0));
+            updCrit.run(v, ix.user.id);
+            addPoints.run(-cost, ix.user.id);
+            return ix.reply({ content: `✅ +${Math.max(1, amount | 0)} Crit (now **${v}%**). Spent **${cost}** pts.`, ephemeral: true });
+          }
+          return ix.reply({ content: '❌ Invalid stat.', ephemeral: true });
+        } else {
+          // Admin/manual mode only; points not used
+          return ix.reply({ content: 'ℹ️ Manual upgrade mode is not points-based. Use **/shop** upgrades or admin commands.', ephemeral: true });
+        }
+      }
+
+      case 'navi_leaderboard': {
+        const limit = Math.min(25, Math.max(5, ix.options.getInteger('limit') ?? 10));
+        const rows = db.prepare(`SELECT user_id, wins, losses FROM navis ORDER BY (wins - losses) DESC, wins DESC LIMIT ?`).all(limit);
+        if (!rows.length) return ix.reply('No players yet.');
+        const lines = rows.map((r, i) => `${i + 1}. <@${r.user_id}> — **${r.wins}-${r.losses}**`).join('\n');
+        await ix.reply({ embeds: [new EmbedBuilder().setTitle('🏆 Leaderboard').setDescription(lines)] });
+        break;
+      }
+
+      case 'zenny': {
+        const target = ix.options.getUser('user') || ix.user;
+        const n = ensureNavi(target.id);
+        await ix.reply(`${zennyIcon()} **${target.username}** has **${n.zenny}**.`);
+        break;
+      }
+
+      case 'give_zenny': {
+        const to = ix.options.getUser('to', true);
+        const amt = Math.max(1, ix.options.getInteger('amount', true));
+        if (to.id === ix.user.id) return ix.reply({ content: '❌ You cannot pay yourself.', ephemeral: true });
+        const me = ensureNavi(ix.user.id);
+        if ((me.zenny | 0) < amt) return ix.reply({ content: `❌ You need **${amt}** ${zennyIcon()}.`, ephemeral: true });
+        addZenny.run(ix.user.id, -amt);
+        addZenny.run(to.id, amt);
+        await ix.reply(`💸 <@${ix.user.id}> sent **${amt}** ${zennyIcon()} to <@${to.id}>.`);
+        break;
+      }
+
+      case 'shop': {
+        const rows = listShop.all();
+        if (!rows.length) return ix.reply('🛒 The shop is empty.');
+        const { embed, components } = buildShopPage(rows, 0);
+        await ix.reply({ embeds: [embed], components });
+        break;
+      }
+
+      case 'folder': {
+        const inv = listInv.all(ix.user.id);
+        if (!inv.length) return ix.reply('📂 Your folder is empty.');
+        const lines = inv.map(r => `• **${r.chip_name}** × ${r.qty}`).join('\n');
+        await ix.reply({ embeds: [new EmbedBuilder().setTitle('📂 Your Folder').setDescription(lines)] });
+        break;
+      }
+
+      case 'give_chip': {
+        const to = ix.options.getUser('to', true);
+        const name = ix.options.getString('name', true);
+        const qty = Math.max(1, ix.options.getInteger('qty') ?? 1);
+        if (to.id === ix.user.id) return ix.reply({ content: '❌ You cannot give chips to yourself.', ephemeral: true });
+        const row = getChip.get(name);
+        if (!row || row.is_upgrade) return ix.reply({ content: '❌ Invalid chip.', ephemeral: true });
+        const have = invGetQty(ix.user.id, name);
+        if (have < qty) return ix.reply({ content: `❌ You only have **${have}**.`, ephemeral: true });
+        invAdd(ix.user.id, name, -qty);
+        invAdd(to.id, name, qty);
+        await ix.reply(`🎁 <@${ix.user.id}> gave **${qty}× ${name}** to <@${to.id}>.`);
+        break;
+      }
+
+      case 'chips_reload': {
+        if (!isAdmin(ix)) return ix.reply({ content: '⛔ Admins only.', ephemeral: true });
+        await ix.deferReply({ ephemeral: true });
+        try {
+          await reloadChipsFromTSV();
+          await ix.editReply('✅ Chips reloaded from TSV.');
+        } catch (e) {
+          await ix.editReply(`❌ Reload failed: ${String(e.message || e)}`);
+        }
+        break;
+      }
+
+      case 'chips_catalog': {
+        if (!isAdmin(ix)) return ix.reply({ content: '⛔ Admins only.', ephemeral: true });
+        const rows = listAllChipNames.all().map(({ name }) => getChip.get(name)).filter(Boolean);
+        if (!rows.length) return ix.reply({ content: 'No chips loaded.', ephemeral: true });
+        const { embed, components } = buildCatalogPage(rows, 0, 'catalog');
+        await ix.reply({ embeds: [embed], components, ephemeral: true });
+        break;
+      }
+
+      case 'chip_grant': {
+        if (!isAdmin(ix)) return ix.reply({ content: '⛔ Admins only.', ephemeral: true });
+        const rows = listAllChipNames.all().map(({ name }) => getChip.get(name)).filter(Boolean);
+        if (!rows.length) return ix.reply({ content: 'No chips loaded.', ephemeral: true });
+        GrantState.set(ix.user.id, { page: 0, qty: 1 });
+        const { embed, components } = buildCatalogPage(rows, 0, 'grant');
+        await ix.reply({ embeds: [embed], components, ephemeral: true });
+        break;
+      }
+
+      case 'chip_remove': {
+        if (!isAdmin(ix)) return ix.reply({ content: '⛔ Admins only.', ephemeral: true });
+        const target = ix.options.getUser('user', true);
+        const name = ix.options.getString('name', true);
+        const qty = Math.max(1, ix.options.getInteger('qty', true));
+        const have = invGetQty(target.id, name);
+        if (!have) return ix.reply({ content: `❌ ${target.username} has none.`, ephemeral: true });
+        invAdd(target.id, name, -Math.min(qty, have));
+        await ix.reply({ content: `🗑️ Removed **${Math.min(qty, have)}× ${name}** from ${target}.`, ephemeral: true });
+        break;
+      }
+
+      case 'chip_grant' /* param grant */: // (kept for completeness)
+      case 'grant_chip': {
+        if (!isAdmin(ix)) return ix.reply({ content: '⛔ Admins only.', ephemeral: true });
+        // Already handled above; keeping the alias
+        await ix.reply({ content: 'Use the interactive grant UI.', ephemeral: true });
+        break;
+      }
+
+      case 'stat_override': {
+        if (!isAdmin(ix)) return ix.reply({ content: '⛔ Admins only.', ephemeral: true });
+        const target = ix.options.getUser('user', true);
+        const which = ix.options.getString('stat', true);
+        const value = ix.options.getInteger('value', true);
+        ensureNavi(target.id);
+        const map = { hp: updHP, dodge: updDodge, crit: updCrit, wins: updWins, losses: updLosses, points: updPts };
+        const fn = map[which];
+        if (!fn) return ix.reply({ content: '❌ Invalid stat.', ephemeral: true });
+        fn.run(value, target.id);
+        await ix.reply({ content: `✅ Set **${which}** to **${value}** for ${target}.`, ephemeral: true });
+        break;
+      }
+
+      case 'zenny_override': {
+        if (!isAdmin(ix)) return ix.reply({ content: '⛔ Admins only.', ephemeral: true });
+        const target = ix.options.getUser('user', true);
+        const amt = ix.options.getInteger('amount', true);
+        addZenny.run(target.id, amt);
+        await ix.reply({ content: `✅ Added **${amt}** ${zennyIcon()} to ${target}.`, ephemeral: true });
+        break;
+      }
+
+      case 'duel': {
+        const opp = ix.options.getUser('opponent', true);
+        if (opp.id === ix.user.id) return ix.reply({ content: '❌ You cannot duel yourself.', ephemeral: true });
+        if (!(await requireNoCombat())) return;
+        const p1 = ensureNavi(ix.user.id);
+        const p2 = ensureNavi(opp.id);
+        const deadline = now() + ROUND_SECONDS * 1000;
+        startFight.run(ix.channelId, ix.user.id, opp.id, p1.max_hp, p2.max_hp, 0, 0, '{}', '{}', '[]', '[]', null, null, deadline, now());
+        scheduleRoundTimer(ix.channelId, () => resolveDuelRound(ix.channel));
+        await ix.reply(`⚔️ **Duel started!**\n${hpLineDuel(getFight.get(ix.channelId))}\n⏳ Play with **/use** within **${ROUND_SECONDS}s**.`);
+        break;
+      }
+
+      case 'forfeit': {
+        const f = getFight.get(ix.channelId);
+        const pve = getPVE.get(ix.channelId);
+        if (!f && !pve) return ix.reply({ content: '❌ No active duel/encounter here.', ephemeral: true });
+        if (f) {
+          const loser = ix.user.id;
+          const winner = f.p1_id === loser ? f.p2_id : f.p1_id;
+          const p1IsBot = f.p1_id === client.user.id;
+          const p2IsBot = f.p2_id === client.user.id;
+          if (!p1IsBot && !p2IsBot) {
+            setRecord.run(f.p1_id === winner ? 1 : 0, f.p1_id === loser ? 1 : 0, f.p1_id);
+            setRecord.run(f.p2_id === winner ? 1 : 0, f.p2_id === loser ? 1 : 0, f.p2_id);
+          }
+          endFight.run(ix.channelId);
+          clearRoundTimer(ix.channelId);
+          await ix.reply(`🏳️ <@${loser}> forfeited. <@${winner}> wins!`);
+          return;
+        }
+        if (pve) {
+          endPVE.run(ix.channelId);
+          await ix.reply('🏳️ Encounter ended.');
+        }
+        break;
+      }
+
+      case 'duel_state': {
+        const f = getFight.get(ix.channelId);
+        const pve = getPVE.get(ix.channelId);
+        if (!f && !pve) return ix.reply('No active duel/encounter here.');
+        if (f) {
+          await ix.reply(`⚔️ Duel\n${hpLineDuel(f)}\n⏳ Deadline: ${f.round_deadline ? msToClock(f.round_deadline - now()) : '—'}`);
+        } else {
+          await ix.reply(`🦠 Encounter vs **${pve.virus_name}**\n${hpLinePVE(pve)}`);
+        }
+        break;
+      }
+
+      case 'use': {
+        const chipName = ix.options.getString('chip', true);
+        const supportName = ix.options.getString('support');
+
+        // Work out context: Duel or PVE
+        const f = getFight.get(ix.channelId);
+        const pve = getPVE.get(ix.channelId);
+        if (!f && !pve) return ix.reply({ content: '❌ No active duel/encounter in this channel.', ephemeral: true });
+
+        // Inventory check (own only; support must be support-type)
+        const chipRow = getChip.get(chipName);
+        if (!chipRow || chipRow.is_upgrade) return ix.reply({ content: '❌ Invalid attack chip.', ephemeral: true });
+        if (invGetQty(ix.user.id, chipName) <= 0) return ix.reply({ content: `❌ You do not own **${chipName}**.`, ephemeral: true });
+
+        let action = actionChip(chipName);
+
+        if (supportName) {
+          const supRow = getChip.get(supportName);
+          if (!supRow) return ix.reply({ content: '❌ Support chip not found.', ephemeral: true });
+          if (!isSupport(readEffect(supRow))) return ix.reply({ content: '❌ That chip is not a Support chip.', ephemeral: true });
+          if (invGetQty(ix.user.id, supportName) <= 0) return ix.reply({ content: `❌ You do not own **${supportName}**.`, ephemeral: true });
+          action = actionSupport(supportName, chipName);
+        }
+
+        // Enforce per-battle limits / specials
+        const countsRow = (name, counts) => (counts[name] || 0);
+        if (f) {
+          const isP1 = f.p1_id === ix.user.id;
+          if (!isP1 && f.p2_id !== ix.user.id) return ix.reply({ content: '❌ You are not part of this duel.', ephemeral: true });
+
+          const counts = parseMap(isP1 ? f.p1_counts_json : f.p2_counts_json);
+          const specials = new Set(parseList(isP1 ? f.p1_special_used : f.p2_special_used));
+
+          const usedNames = supportName ? [supportName, chipName] : [chipName];
+          for (const nm of usedNames) {
+            const row = getChip.get(nm); const eff = readEffect(row);
+            if ((countsRow(nm, counts) | 0) >= MAX_PER_CHIP) {
+              return ix.reply({ content: `❌ **${nm}** reached the per-battle limit (${MAX_PER_CHIP}).`, ephemeral: true });
+            }
+            if (isSpecial(eff) && specials.has(nm)) {
+              return ix.reply({ content: `❌ **${nm}** is Special and can be used only once per battle.`, ephemeral: true });
+            }
+          }
+
+          // Record action
+          if (isP1) {
+            updFightRound.run(f.p1_hp, f.p2_hp, f.p1_def, f.p2_def, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, action, f.p2_action_json, f.round_deadline, f.p1_stunned|0, f.p2_stunned|0, f.p1_poison_json, f.p2_poison_json, f.p1_holy_json, f.p2_holy_json, ix.channelId);
+          } else {
+            updFightRound.run(f.p1_hp, f.p2_hp, f.p1_def, f.p2_def, f.p1_counts_json, f.p2_counts_json, f.p1_special_used, f.p2_special_used, f.p1_action_json, action, f.round_deadline, f.p1_stunned|0, f.p2_stunned|0, f.p1_poison_json, f.p2_poison_json, f.p1_holy_json, f.p2_holy_json, ix.channelId);
+          }
+          await ix.reply({ content: `✅ Action locked in.`, ephemeral: true });
+
+          // If both ready or deadline passed, resolve
+          const nowRow = getFight.get(ix.channelId);
+          if (nowRow.p1_action_json && nowRow.p2_action_json) {
+            clearRoundTimer(ix.channelId);
             await resolveDuelRound(ix.channel);
           }
           return;
         }
 
-        if (s) {
-          if (ix.user.id !== s.player_id) { await ix.reply({ content:'❌ Only the participant may act.', ephemeral:true }); return; }
-          if ((s.p_stunned||0) > 0) { await ix.reply({ content:`⚡ You are stunned and cannot act this round.`, ephemeral:true }); return; }
+        if (pve) {
+          if (pve.player_id !== ix.user.id) return ix.reply({ content: '❌ This is not your encounter.', ephemeral: true });
+          if (pve.player_action_json) return ix.reply({ content: '❌ You have already acted. Wait for resolution.', ephemeral: true });
 
-          // per-encounter limits & specials
-          const counts = parseMap(s.p_counts_json);
-          const specials = new Set(parseList(s.p_special_used));
-          const useNames = [chipRow.name].concat(supportRow ? [supportRow.name] : []);
-          for (const n of useNames) {
-            if ((counts[n]||0) >= MAX_PER_CHIP) { await ix.reply({ content:`❌ Per-encounter limit reached for **${n}** (max ${MAX_PER_CHIP}).`, ephemeral:true }); return; }
-            if (isSpecial(readEffect(getChip.get(n))) && specials.has(n)) { await ix.reply({ content:`❌ **${n}** is Special and already used this encounter.`, ephemeral:true }); return; }
-          }
-
-          const act = support ? actionSupport(supportRow.name, chipRow.name) : actionChip(chipRow.name);
-          updPVE.run(
-            s.p_hp, s.v_hp,
-            s.p_def, s.v_def,
-            s.p_counts_json, s.p_special_used, s.v_special_used,
-            act, s.virus_action_json,
-            s.round_deadline, s.v_def_total, s.v_def_streak,
-            s.p_stunned|0, s.v_stunned|0,
-            s.p_poison_json, s.v_poison_json,
-            s.p_holy_json, s.v_holy_json,
-            ix.channel.id
-          );
-          await ix.reply(`✅ Action queued.`);
-          const s2 = getPVE.get(ix.channel.id);
-          if (s2.player_action_json && s2.virus_action_json) {
-            clearRoundTimer(ix.channel.id);
-            await resolvePveRound(ix.channel);
-          }
+          updPVE.run(pve.p_hp, pve.v_hp, pve.p_def, pve.v_def, pve.p_counts_json, pve.p_special_used, pve.v_special_used, action, pve.virus_action_json, 0, pve.v_def_total, pve.v_def_streak, pve.p_stunned|0, pve.v_stunned|0, pve.p_poison_json, pve.v_poison_json, pve.p_holy_json, pve.v_holy_json, ix.channelId);
+          await ix.reply({ content: `✅ Action locked.`, ephemeral: true });
+          await resolvePveRound(ix.channel);
           return;
         }
+        break;
       }
 
-      if (cmd === 'metroline') {
-        const region = ix.options.getString('region');
-        const zone = ix.options.getInteger('zone');
-        if (!REGIONS.includes(region) || ![1,2,3].includes(zone)) {
-          await ix.reply({ content:'❌ Invalid region/zone.', ephemeral:true }); return;
-        }
-        setLoc.run(ix.user.id, region, zone);
-        await ix.reply(`🚆 Moved to **${region} / Area ${zone}**.`);
-        return;
-      }
+      case 'virus_busting': {
+        if (!(await requireNoCombat())) return;
+        grantStartersIfNeeded(ix.user.id);
 
-      if (cmd === 'bbs_mission') {
-        // cooldown?
-        const lock = getCooldown.get(ix.user.id);
-        if (lock && (lock.until > Date.now())) {
-          await ix.reply({ content:`⏳ You're locked out for **${msToClock(lock.until - Date.now())}**.`, ephemeral:true });
-          return;
-        }
-
-        const loc = ensureLoc(ix.user.id);
-        const all = await loadMissions(false);
-        const pool = all.filter(m => normalize(m.region) === normalize(loc.region));
-        if (!pool.length) { await ix.reply('❌ No missions for your region right now.'); return; }
-        const pick = pool[Math.floor(Math.random() * pool.length)];
-        setActiveMission.run(ix.user.id, pick.mission_id, pick.region, pick.target_chip, pick.target_boss, pick.reward_zenny, pick.keep_chip, Date.now());
-
-        const lines = [
-          `🧾 **Mission ${pick.mission_id}** — Region **${pick.region}**`,
-          pick.target_chip ? `• Play chip **${pick.target_chip}** during a successful bust` : '',
-          pick.target_boss ? `• Defeat boss **${pick.target_boss}**` : '',
-          `• Reward: **${pick.reward_zenny}** ${zennyIcon()}`,
-          `Use **/bbs_mission_quit** to abandon (5m lockout).`
-        ].filter(Boolean).join('\n');
-        await ix.reply(lines);
-        return;
-      }
-
-      if (cmd === 'bbs_mission_quit') {
-        const am = getActiveMission.get(ix.user.id);
-        if (!am) { await ix.reply({ content:'❌ No active mission.', ephemeral:true }); return; }
-        abandonMission.run(ix.user.id, am.mission_id);
-        scheduleMissionCooldown(ix.user.id, 5 * 60 * 1000, ix.channel.id);
-        await ix.reply('🛑 Mission abandoned. ⏰ 5-minute lockout started.');
-        return;
-      }
-
-      // Fallback
-      await ix.reply({ content:'❌ Unknown command.', ephemeral:true });
-    }
-
-    // -------- Component handlers --------
-
-    // Shop selection
-    if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
-      const page = parseInt(ix.customId.split(':')[2], 10) || 0;
-      const name = ix.values[0];
-      const row = getChip.get(name);
-      if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
-      const eff = readEffect(row);
-      const desc = summarizeEffect(eff);
-      const dynCost = dynamicUpgradeCostFor(ix.user.id, row);
-      const embed = new EmbedBuilder()
-        .setTitle(`${row.is_upgrade ? '🧬 Upgrade' : '💾 Chip'} — ${row.name}`)
-        .setDescription([
-          row.image_url ? `[image](${row.image_url})` : '',
-          desc,
-          '',
-          `${zennyIcon()} Cost: **${row.is_upgrade ? `${dynCost} (dynamic)` : row.zenny_cost}**`
-        ].filter(Boolean).join('\n'));
-
-      const rowBtns = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`shop:buy:${name}:1`).setLabel('Buy 1').setStyle(ButtonStyle.Primary)
-      );
-      if (!row.is_upgrade) {
-        rowBtns.addComponents(
-          new ButtonBuilder().setCustomId(`shop:buy:${name}:5`).setLabel('Buy 5').setStyle(ButtonStyle.Secondary)
+        const v = await pickVirusForUser(ix.user.id);
+        if (!v) return ix.reply('❌ No viruses configured.');
+        const me = ensureNavi(ix.user.id);
+        const s = {
+          channel_id: ix.channelId,
+          player_id: ix.user.id,
+          virus_name: v.name,
+          virus_image: v.image_url || null,
+          virus_max_hp: Math.max(1, v.hp | 0),
+          virus_dodge: Math.max(0, v.dodge | 0),
+          virus_crit: Math.max(0, v.crit | 0),
+          virus_is_boss: v.boss ? 1 : 0,
+          virus_moves_json: JSON.stringify(v.moves || []),
+          virus_zmin: v.zmin | 0,
+          virus_zmax: v.zmax | 0,
+          p_hp: me.max_hp | 0,
+          v_hp: Math.max(1, v.hp | 0),
+          p_def: 0, v_def: 0,
+          p_counts_json: '{}',
+          p_special_used: '[]',
+          v_special_used: '[]',
+        };
+        startPVE.run(
+          s.channel_id, s.player_id, s.virus_name, s.virus_image, s.virus_max_hp, s.virus_dodge, s.virus_crit, s.virus_is_boss,
+          s.virus_moves_json, s.virus_zmin, s.virus_zmax,
+          s.p_hp, s.v_hp, s.p_def, s.v_def, s.p_counts_json, s.p_special_used, s.v_special_used,
+          null, null, 0, 0, 0, now()
         );
+        await ix.reply(`🦠 **Encounter!** A wild **${v.name}** appeared.\n${hpLinePVE(getPVE.get(ix.channelId))}\n▶️ Your turn. Play with **/use**.`);
+        break;
       }
-      rowBtns.addComponents(new ButtonBuilder().setCustomId('shop:close').setLabel('Close').setStyle(ButtonStyle.Danger));
 
-      await ix.reply({ embeds:[embed], components:[rowBtns], ephemeral:true });
-      return;
-    }
-
-    // Catalog selection (admin)
-    if (ix.isStringSelectMenu() && ix.customId.startsWith('catalog:select:')) {
-      if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-      const name = ix.values[0];
-      const row = getChip.get(name);
-      if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
-      const eff = readEffect(row);
-      const embed = new EmbedBuilder()
-        .setTitle(`${row.is_upgrade ? '🧬 Upgrade' : '💾 Chip'} — ${row.name}`)
-        .setDescription([
-          row.image_url ? `[image](${row.image_url})` : '',
-          summarizeEffect(eff),
-          '',
-          `${zennyIcon()} Cost: **${row.zenny_cost}**`,
-          `Stock status: **${row.stock ? 'shop' : 'hidden'}**`
-        ].filter(Boolean).join('\n'));
-      await ix.reply({ embeds:[embed], ephemeral:true });
-      return;
-    }
-
-    if (ix.isButton()) {
-      // Shop nav
-      if (ix.customId === 'shop:close') {
-        try {
-          if (!ix.message?.flags?.has?.(4096)) {
-            await ix.message.delete();
-          }
-        } catch {}
-        await ix.reply({ content:'🛑 Closed.', ephemeral:true });
-        return;
+      case 'virus_search': {
+        const name = ix.options.getString('name', true);
+        const list = await loadViruses(false);
+        const v = list.find(x => normalize(x.name) === normalize(name)) || list.find(x => x.name.toLowerCase().includes(name.toLowerCase()));
+        if (!v) return ix.reply({ content: '❌ Not found.', ephemeral: true });
+        const effLines = (v.moves || []).map(m => `• **${m.name || m.label || 'Move'}** — ${summarizeEffect(m)}`).join('\n') || '—';
+        const embed = new EmbedBuilder()
+          .setTitle(`${v.boss ? '👑 Boss' : '🦠 Virus'} — ${v.name}`)
+          .setDescription(effLines)
+          .addFields(
+            { name: 'HP', value: String(v.hp | 0), inline: true },
+            { name: 'Dodge', value: `${v.dodge | 0}%`, inline: true },
+            { name: 'Crit', value: `${v.crit | 0}%`, inline: true },
+            { name: 'Region', value: v.region || 'Any', inline: true },
+            { name: 'Zone', value: v.zone ? String(v.zone) : 'Any', inline: true },
+            { name: 'Zenny', value: v.zmin === v.zmax ? `${v.zmin}` : `${v.zmin}-${v.zmax}`, inline: true },
+          );
+        if (v.image_url) embed.setThumbnail(v.image_url);
+        await ix.reply({ embeds: [embed], ephemeral: false });
+        break;
       }
-      if (ix.customId.startsWith('shop:prev:') || ix.customId.startsWith('shop:next:')) {
-        const parts = ix.customId.split(':');
-        const dir = parts[1];
-        const page = parseInt(parts[2], 10) || 0;
-        const rows = listShop.all();
-        const nextPage = dir === 'prev' ? Math.max(0, page-1) : Math.min(Math.ceil(rows.length/25)-1, page+1);
-        const { embed, components } = buildShopPage(rows, nextPage);
-        await ix.update({ embeds:[embed], components });
-        return;
+
+      case 'metroline': {
+        const region = ix.options.getString('region', true);
+        const zone = ix.options.getInteger('zone', true);
+        setLoc.run(ix.user.id, region, zone);
+        await ix.reply(`🚇 Traveled to **${region}** (Zone ${zone}).`);
+        break;
       }
-      if (ix.customId.startsWith('shop:buy:')) {
-        const [, , name, qtyStr] = ix.customId.split(':');
-        let qty = Math.max(1, parseInt(qtyStr, 10) || 1);
-        const row = getChip.get(name);
-        if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
 
-        if (row.is_upgrade) qty = 1; // enforce upgrades one-at-a-time
-
-        const n = ensureNavi(ix.user.id);
-        const cost = row.is_upgrade
-          ? Math.floor(dynamicUpgradeTotalFor(ix.user.id, row, qty))
-          : (row.zenny_cost * qty);
-
-        if ((n.zenny|0) < cost) { await ix.reply({ content:`❌ Need **${cost}** ${zennyIcon()}. You have **${n.zenny}**.`, ephemeral:true }); return; }
-
-        setZenny.run(n.zenny - cost, ix.user.id);
-
-        if (row.is_upgrade) {
-          applyUpgrade(ix.user.id, row, 1);
-          bumpUpgCountBy.run(ix.user.id, row.name, 1);
-          await ix.reply(`✅ Purchased **1× ${row.name}**. Stats updated. (-${cost} ${zennyIcon()})`);
-        } else {
-          invAdd(ix.user.id, row.name, qty);
-          await ix.reply(`✅ Purchased **${qty}× ${row.name}** to your folder. (-${cost} ${zennyIcon()})`);
+      case 'bbs_mission': {
+        // Cooldown check
+        const cd = getCooldown.get(ix.user.id);
+        if (cd && (cd.until > Date.now())) {
+          return ix.reply({ content: `⏳ You are on cooldown for **${msToClock(cd.until - Date.now())}**.`, ephemeral: true });
         }
-        return;
+
+        // Already have one?
+        const existing = getActiveMission.get(ix.user.id);
+        if (existing) {
+          return ix.reply({ content: `📌 You already have mission **${existing.mission_id}** in **${existing.region}**.`, ephemeral: true });
+        }
+
+        // Assign
+        const loc = ensureLoc(ix.user.id);
+        const missions = await loadMissions(false);
+        const pool = missions.filter(m => normalize(m.region) === normalize(loc.region));
+        if (!pool.length) return ix.reply({ content: '❌ No missions available for your region.', ephemeral: true });
+        const m = pool[Math.floor(Math.random() * pool.length)];
+
+        setActiveMission.run(ix.user.id, m.mission_id, m.region, m.target_chip, m.target_boss, m.reward_zenny, m.keep_chip ? 1 : 0, Date.now());
+        await ix.reply(`📝 New mission **${m.mission_id}** for **${m.region}**.\nGoal: ${m.target_chip ? `Use **${m.target_chip}**` : ''}${m.target_boss ? `${m.target_chip ? ' or ' : ''}Defeat **${m.target_boss}**` : ''}\nReward: **${m.reward_zenny}** ${zennyIcon()}`);
+        break;
       }
 
-      // Catalog nav (admin)
-      if (ix.customId === 'catalog:close') {
-        await ix.reply({ content:'🛑 Closed.', ephemeral:true });
-        return;
+      case 'bbs_mission_quit': {
+        const am = getActiveMission.get(ix.user.id);
+        if (!am) return ix.reply({ content: '❌ You have no active mission.', ephemeral: true });
+        abandonMission.run(ix.user.id, am.mission_id);
+        const LOCK_MS = 5 * 60 * 1000; // 5 minutes
+        scheduleMissionCooldown(ix.user.id, LOCK_MS, ix.channelId);
+        await ix.reply(`🗑️ Mission **${am.mission_id}** abandoned. Cooldown **5:00** started.`);
+        break;
       }
-      if (ix.customId.startsWith('catalog:prev:') || ix.customId.startsWith('catalog:next:')) {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-        const parts = ix.customId.split(':');
-        const dir = parts[1];
-        const page = parseInt(parts[2], 10) || 0;
-        const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
-        const totalPages = Math.max(1, Math.ceil(rows.length / 25));
-        const nextPage = dir === 'prev' ? Math.max(0, page-1) : Math.min(totalPages-1, page+1);
-        const { embed, components } = buildCatalogPage(rows, nextPage);
-        await ix.update({ embeds:[embed], components });
-        return;
-      }
+
+      default:
+        await ix.reply({ content: '🤖 Unknown command.', ephemeral: true });
+        break;
     }
-  } catch (e) {
-    console.error('interaction error', e);
+  } catch (err) {
+    console.error('[interaction] error:', err);
     try {
-      if (ix.replied || ix.deferred) {
-        await ix.followUp({ content:'❌ Error.', ephemeral:true });
-      } else {
-        await ix.reply({ content:'❌ Error. Check logs.', ephemeral:true });
-      }
+      if (typeof ix.reply === 'function') await ix.reply({ content: '⚠️ An error occurred.', ephemeral: true });
     } catch {}
   }
 });
 
-// Optional: clean timers on channel delete to avoid leaks
-client.on('channelDelete', (ch) => {
-  clearRoundTimer(ch.id);
-});
-
-// ---------- Login & ready ----------
+// ---------- Ready / Login ----------
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
-  try { await registerCommands(); } catch (e) { console.warn('Register failed:', e?.message); }
+  try { await registerCommands(); } catch (e) { console.warn('Command register failed:', e.message || e); }
+
+  // Re-arm any active mission cooldowns on startup
+  try {
+    const rows = db.prepare(`SELECT user_id, until, notify_channel_id FROM mission_cooldowns`).all();
+    const nowT = Date.now();
+    for (const r of rows) {
+      const ms = Math.max(0, (r.until | 0) - nowT);
+      if (ms > 0) scheduleMissionCooldown(r.user_id, ms, r.notify_channel_id);
+      else clearCooldown.run(r.user_id);
+    }
+  } catch {}
 });
 
 client.login(process.env.DISCORD_TOKEN);
