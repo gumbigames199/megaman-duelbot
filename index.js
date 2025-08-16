@@ -13,6 +13,7 @@ import {
   SlashCommandBuilder,
   EmbedBuilder,
   StringSelectMenuBuilder,
+  UserSelectMenuBuilder, // ← add this
 } from 'discord.js';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -71,7 +72,7 @@ function starterEntries() {
   }).filter(x => x.name);
 }
 
-// ---------- Thing 3 Config ----------
+// ---------- Regions----------
 const REGIONS = ['ACDC','SciLab','Yoka','Beach','Sharo','YumLand','UnderNet'];
 
 // Dynamic upgrade price steps (per purchase)
@@ -652,6 +653,8 @@ function msToClock(ms) {
   return `${m}:${String(r).padStart(2,'0')}`;
 }
 
+const PendingDuels = new Map(); // key: channelId -> { p1, p2, timeout }
+
 // ---------- Virus TSV Loader ----------
 const VirusCache = { ts: 0, rows: [] };
 const HEADER_MAP = (h) => (h || '').toLowerCase().trim().replace(/[^\w]+/g, '_');
@@ -1074,6 +1077,9 @@ function buildCatalogPage(rows, page=0) {
   return { embed, components:[rowSel, rowNav], page, totalPages };
 }
 
+// ---------- Admin catalog grant (state) ----------
+const CatalogGrantState = new Map(); // userId -> { chip, qty, recipientId }
+
 // Thing 3: Dynamic upgrade pricing
 const DYN_UPGRADES = new Map([
   ['HP Memory', HP_MEMORY_COST_STEP],
@@ -1414,19 +1420,34 @@ nextPois2 = nextPois2Local;
 
   scheduleRoundTimer(channel.id, () => resolveDuelRound(channel));
 
-  const critLine = (c1,c2)=>`Crits: P1→${c1?'✅':'❌'} | P2→${c2?'✅':'❌'}`; // fixed order
-  await channel.send([
-    `🎲 **Round resolved!**`,
-    `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-    `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-    `• Damage dealt: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
-    `• Absorbed by DEF: P1→**${absorbed2}** | P2→**${absorbed1}**`,
-    `• ${critLine(crit1,crit2)}`,
-    `• Ticks: Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`,
-    '',
-    hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
-    `⏳ Next round: **${ROUND_SECONDS}s** — play with **/use**`
-  ].join('\n'));
+  const critLine = (c1,c2)=>`Crits: P1→${c1?'✅':'❌'} | P2→${c2?'✅':'❌'}`;
+ await channel.send([
+ `🎲 **Round resolved!**`,
+ `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
+ `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
+ `• Damage dealt: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
+ `• Absorbed by DEF: P1→**${absorbed2}** | P2→**${absorbed1}**`,
+ `• ${critLine(crit1,crit2)}`,
+ `• Ticks: Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`,
+ '',
+ hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
+ `⏳ Next round: **${ROUND_SECONDS}s** — play with **/use**`
+ ].join('\n'));
+ const lines = [
+ `🎲 **Round resolved!**`,
+ `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
+ `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
+ `• Damage: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
+ (absorbed1 || absorbed2) ? `• Absorbed by DEF: P1→**${absorbed2}** | P2→**${absorbed1}**` : null,
+ (crit1 || crit2) ? `• Crits: P1→${crit1?'✅':'—'} | P2→${crit2?'✅':'—'}` : null,
+ (tickPoisonP1 || tickPoisonP2 || tickHolyP1 || tickHolyP2)
+ ? `• Ticks: Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`
+ : null,
+ '',
+ hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
+ `⏳ Next round: **${ROUND_SECONDS}s** — play with **/use**`
+ ].filter(Boolean);
+ await channel.send(lines.join('\n'));
 }
 
 // ---------- Round resolution (PVE) ----------
@@ -1461,22 +1482,22 @@ async function resolvePveRound(channel) {
   const AVirus  = decodeAction(s.virus_action_json);
 
   if (!APlayer && !AVirus) {
-    const nextDeadline = now() + ROUND_SECONDS * 1000;
-    updPVE.run(
-      s.p_hp, s.v_hp,
-      0, 0,
-      s.p_counts_json, s.p_special_used, s.v_special_used,
-      null, null,
-      nextDeadline, s.v_def_total, s.v_def_streak,
-      s.p_stunned|0, s.v_stunned|0,
-      s.p_poison_json, s.v_poison_json,
-      s.p_holy_json, s.v_holy_json,
-      channel.id
-    );
-    scheduleRoundTimer(channel.id, () => resolvePveRound(channel));
-    await channel.send(`⏳ New round started. Submit your chip with **/use** in **${ROUND_SECONDS}s**.\n${hpLinePVE(getPVE.get(channel.id))}`);
-    return;
-  }
+  const nextDeadline = now() + ROUND_SECONDS * 1000; // harmless to keep stored
+  updPVE.run(
+    s.p_hp, s.v_hp,
+    s.p_def, s.v_def,
+    s.p_counts_json, s.p_special_used, s.v_special_used,
+    s.player_action_json, s.virus_action_json,
+    nextDeadline, s.v_def_total, s.v_def_streak,
+    s.p_stunned|0, s.v_stunned|0,
+    s.p_poison_json, s.v_poison_json,
+    s.p_holy_json, s.v_holy_json,
+    channel.id
+  );
+  // No timer for PvE; just prompt the player
+  await channel.send(`⏳ New round started. Submit your chip with **/use**.\n${hpLinePVE(getPVE.get(channel.id))}`);
+  return;
+}
 
   const rowAndEff = (name) => {
     const r = getChip.get(name);
@@ -1776,16 +1797,16 @@ async function resolvePveRound(channel) {
   scheduleRoundTimer(channel.id, () => resolvePveRound(channel));
 
   await channel.send([
-    `🎲 **Round resolved!**`,
-    `• You used: ${P.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-    `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
-    `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
-    `• Absorbed by DEF: You→**${absorbedV}** | Virus→**${absorbedP}**`,
-    `• Ticks (you/virus): Poison **-${tPoisP}**/**-${tPoisV}**, Holy **+${tHolyP}**/**+${tHolyV}**`,
-    '',
-    hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
-    `⏳ Next round: **${ROUND_SECONDS}s** — play with **/use**`
-  ].join('\n'));
+  `🎲 **Round resolved!**`,
+  `• You used: ${P.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
+  `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
+  `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
+  `• Absorbed by DEF: You→**${absorbedV}** | Virus→**${absorbedP}**`,
+  `• Ticks (you/virus): Poison **-${tPoisP}**/**-${tPoisV}**, Holy **+${tHolyP}**/**+${tHolyV}**`,
+  '',
+  hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
+  `⏳ Next round — play with **/use**`
+].join('\n'));
 }
 
 // ---------- Virus selection ----------
@@ -1918,26 +1939,30 @@ client.on('interactionCreate', async (ix) => {
       }
 
       if (cmd === 'duel') {
-        const opp = ix.options.getUser('opponent');
-        if (!opp || opp.id === ix.user.id) { await ix.reply({ content:'❌ Pick another user.', ephemeral:true }); return; }
-        if (getFight.get(ix.channel.id) || getPVE.get(ix.channel.id)) { await ix.reply({ content:'❌ A fight/encounter is already running in this channel.', ephemeral:true }); return; }
-        const p1 = ensureNavi(ix.user.id);
-        const p2 = ensureNavi(opp.id);
-        startFight.run(
-          ix.channel.id, ix.user.id, opp.id,
-          p1.max_hp, p2.max_hp,
-          0, 0, '{}', '{}', '[]', '[]',
-          null, null, now() + ROUND_SECONDS*1000, now()
-        );
-        scheduleRoundTimer(ix.channel.id, () => resolveDuelRound(ix.channel));
-        await ix.reply([
-          `⚔️ **Duel started!** <@${ix.user.id}> vs <@${opp.id}>`,
-          `⏳ Play your chips with **/use** (you may chain a Support).`,
-          `Timer: **${ROUND_SECONDS}s**`,
-          hpLineDuel(getFight.get(ix.channel.id))
-        ].join('\n'));
-        return;
-      }
+  const opp = ix.options.getUser('opponent');
+  if (!opp || opp.id === ix.user.id) { await ix.reply({ content:'❌ Pick another user.', ephemeral:true }); return; }
+  if (getFight.get(ix.channel.id) || getPVE.get(ix.channel.id)) { await ix.reply({ content:'❌ A fight/encounter is already running in this channel.', ephemeral:true }); return; }
+
+  // Ask for acceptance
+  const accept = new ButtonBuilder().setCustomId(`duel:accept:${ix.user.id}:${opp.id}`).setLabel('Accept').setStyle(ButtonStyle.Success);
+  const decline = new ButtonBuilder().setCustomId(`duel:decline:${ix.user.id}:${opp.id}`).setLabel('Decline').setStyle(ButtonStyle.Danger);
+  const row = new ActionRowBuilder().addComponents(accept, decline);
+  const emb = new EmbedBuilder()
+    .setTitle('⚔️ Duel Challenge')
+    .setDescription(`<@${opp.id}>, you have been challenged by <@${ix.user.id}>.\nClick **Accept** to begin.`)
+    .setThumbnail(opp.displayAvatarURL())
+    .setAuthor({ name: ix.user.username, iconURL: ix.user.displayAvatarURL() });
+  await ix.reply({ content: `<@${opp.id}>`, embeds:[emb], components:[row] });
+  const t = setTimeout(async () => {
+    const cur = PendingDuels.get(ix.channel.id);
+    if (cur) {
+      PendingDuels.delete(ix.channel.id);
+      try { await ix.followUp(`⌛ Duel request expired.`); } catch {}
+    }
+  }, 30_000);
+  PendingDuels.set(ix.channel.id, { p1: ix.user.id, p2: opp.id, timeout: t });
+  return;
+}
 
       if (cmd === 'forfeit') {
         const f = getFight.get(ix.channel.id);
@@ -2040,16 +2065,15 @@ client.on('interactionCreate', async (ix) => {
         return;
       }
 
-      if (cmd === 'chip_grant') {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-        const user = ix.options.getUser('user');
-        const name = ix.options.getString('name');
-        const qty = ix.options.getInteger('qty') || 1;
-        if (!getChip.get(name)) { await ix.reply({ content:'❌ Unknown chip.', ephemeral:true }); return; }
-        invAdd(user.id, name, qty);
-        await ix.reply(`✅ Granted **${qty}× ${name}** to <@${user.id}>.`);
-        return;
-      }
+     if (cmd === 'chip_grant') {
+  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+  CatalogGrantState.delete(ix.user.id); // fresh start
+  const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
+  const { embed, components } = buildCatalogPage(rows, 0);
+  await ix.reply({ embeds:[embed], components, ephemeral:true });
+  await ix.followUp({ content:'Select a chip, then pick a recipient and quantity to grant.', ephemeral:true });
+  return;
+}
 
       if (cmd === 'chip_remove') {
         if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
@@ -2132,130 +2156,159 @@ client.on('interactionCreate', async (ix) => {
           now()+ROUND_SECONDS*1000, 0, 0, now()
           // DO NOT pass p_stunned..v_holy_json here — they are literals in the SQL
         );
-        scheduleRoundTimer(ix.channel.id, () => resolvePveRound(ix.channel));
         const here = ensureLoc(ix.user.id);
         await ix.reply([
-          `🦠 **Encounter!** ${v.boss?'💀 **Boss** — ':''}**${v.name}** appears!`,
-          `Region filter: ${here.region} / Zone ${here.zone}`,
-          `⏳ Play with **/use** (you may chain a Support). Timer **${ROUND_SECONDS}s**`,
-          hpLinePVE(getPVE.get(ix.channel.id))
-        ].join('\n'));
+   `🦠 **Encounter!** ${v.boss?'💀 **Boss** — ':''}**${v.name}** appears!`,
+   `Region filter: ${here.region} / Zone ${here.zone}`,
+   `⏳ Play with **/use** (you may chain a Support). Timer **${ROUND_SECONDS}s**`,
+   hpLinePVE(getPVE.get(ix.channel.id))
+ ].join('\n'));
+ const startEmb = new EmbedBuilder()
+  .setTitle(`🦠 Encounter: ${v.boss ? '💀 ' : ''}${v.name}`)
+  .setDescription([
+    `Region **${here.region}** / Zone **${here.zone}**`,
+    `⏳ Play with **/use** (you may chain a Support). Timer **${ROUND_SECONDS}s**`,
+    '',
+    hpLinePVE(getPVE.get(ix.channel.id))
+  ].join('\n'));
+if (v.image_url) startEmb.setImage(v.image_url);
+await ix.reply({ embeds: [startEmb] });
         return;
       }
 
       if (cmd === 'use') {
-        const chip = ix.options.getString('chip');
-        const support = ix.options.getString('support');
-        const f = getFight.get(ix.channel.id);
-        const s = getPVE.get(ix.channel.id);
-        if (!f && !s) { await ix.reply({ content:'❌ No active duel/encounter here.', ephemeral:true }); return; }
+  const chip = ix.options.getString('chip');
+  const support = ix.options.getString('support');
+  const f = getFight.get(ix.channel.id);
+  const s = getPVE.get(ix.channel.id);
+  if (!f && !s) { await ix.reply({ content:'❌ No active duel/encounter here.', ephemeral:true }); return; }
 
-        // Validate chips exist
-        const chipRow = getChip.get(chip);
-        if (!chipRow || chipRow.is_upgrade) { await ix.reply({ content:'❌ Invalid chip.', ephemeral:true }); return; }
+  // Validate chips exist
+  const chipRow = getChip.get(chip);
+  if (!chipRow || chipRow.is_upgrade) { await ix.reply({ content:'❌ Invalid chip.', ephemeral:true }); return; }
 
-        let supportRow = null;
-        if (support) {
-          supportRow = getChip.get(support);
-          if (!supportRow || supportRow.is_upgrade) { await ix.reply({ content:'❌ Invalid Support chip.', ephemeral:true }); return; }
-          if (!isSupport(readEffect(supportRow))) { await ix.reply({ content:'❌ The support chip must have kind "support".', ephemeral:true }); return; }
-        }
+  let supportRow = null;
+  if (support) {
+    supportRow = getChip.get(support);
+    if (!supportRow || supportRow.is_upgrade) { await ix.reply({ content:'❌ Invalid Support chip.', ephemeral:true }); return; }
+    if (!isSupport(readEffect(supportRow))) { await ix.reply({ content:'❌ The support chip must have kind "support".', ephemeral:true }); return; }
+  }
 
-        // Folder ownership check
-        if (invGetQty(ix.user.id, chip) <= 0) { await ix.reply({ content:`❌ You do not own **${chip}**.`, ephemeral:true }); return; }
-        if (support && invGetQty(ix.user.id, support) <= 0) { await ix.reply({ content:`❌ You do not own **${support}**.`, ephemeral:true }); return; }
+  // Folder ownership check
+  if (invGetQty(ix.user.id, chip) <= 0) { await ix.reply({ content:`❌ You do not own **${chip}**.`, ephemeral:true }); return; }
+  if (support && invGetQty(ix.user.id, support) <= 0) { await ix.reply({ content:`❌ You do not own **${support}**.`, ephemeral:true }); return; }
 
-        if (f) {
-          if (ix.user.id !== f.p1_id && ix.user.id !== f.p2_id) { await ix.reply({ content:'❌ Only participants may act.', ephemeral:true }); return; }
-          const isP1 = ix.user.id === f.p1_id;
+  if (f) {
+    if (ix.user.id !== f.p1_id && ix.user.id !== f.p2_id) { await ix.reply({ content:'❌ Only participants may act.', ephemeral:true }); return; }
+    const isP1 = ix.user.id === f.p1_id;
 
-          // per-battle limits & specials
-          const counts = parseMap(isP1 ? f.p1_counts_json : f.p2_counts_json);
-          const specials = new Set(parseList(isP1 ? f.p1_special_used : f.p2_special_used));
-          const useNames = [chipRow.name].concat(supportRow ? [supportRow.name] : []);
-          for (const n of useNames) {
-            const r = getChip.get(n);
-            if ((counts[n]||0) >= MAX_PER_CHIP) { await ix.reply({ content:`❌ Per-battle limit reached for **${n}** (max ${MAX_PER_CHIP}).`, ephemeral:true }); return; }
-            if (isSpecial(readEffect(r)) && specials.has(n)) { await ix.reply({ content:`❌ **${n}** is Special and already used this battle.`, ephemeral:true }); return; }
-          }
+    // Already queued this round? (prevents double-consume)
+    if ((isP1 && f.p1_action_json) || (!isP1 && f.p2_action_json)) {
+      await ix.reply({ content:'⏳ You already queued an action this round.', ephemeral:true });
+      return;
+    }
 
-          // Stun check
-          if ((isP1 && (f.p1_stunned||0)>0) || (!isP1 && (f.p2_stunned||0)>0)) {
-            await ix.reply({ content:`⚡ You are stunned and cannot act this round.`, ephemeral:true });
-            return;
-          }
+    // per-battle limits & specials
+    const counts = parseMap(isP1 ? f.p1_counts_json : f.p2_counts_json);
+    const specials = new Set(parseList(isP1 ? f.p1_special_used : f.p2_special_used));
+    const useNames = [chipRow.name].concat(supportRow ? [supportRow.name] : []);
+    for (const n of useNames) {
+      const r = getChip.get(n);
+      if ((counts[n]||0) >= MAX_PER_CHIP) { await ix.reply({ content:`❌ Per-battle limit reached for **${n}** (max ${MAX_PER_CHIP}).`, ephemeral:true }); return; }
+      if (isSpecial(readEffect(r)) && specials.has(n)) { await ix.reply({ content:`❌ **${n}** is Special and already used this battle.`, ephemeral:true }); return; }
+    }
 
-          const act = support ? actionSupport(supportRow.name, chipRow.name) : actionChip(chipRow.name);
-          if (isP1) {
-            updFightRound.run(
-              f.p1_hp, f.p2_hp,
-              f.p1_def, f.p2_def,
-              f.p1_counts_json, f.p2_counts_json,
-              f.p1_special_used, f.p2_special_used,
-              act, f.p2_action_json,
-              f.round_deadline,
-              f.p1_stunned|0, f.p2_stunned|0,
-              f.p1_poison_json, f.p2_poison_json,
-              f.p1_holy_json, f.p2_holy_json,
-              ix.channel.id
-            );
-          } else {
-            updFightRound.run(
-              f.p1_hp, f.p2_hp,
-              f.p1_def, f.p2_def,
-              f.p1_counts_json, f.p2_counts_json,
-              f.p1_special_used, f.p2_special_used,
-              f.p1_action_json, act,
-              f.round_deadline,
-              f.p1_stunned|0, f.p2_stunned|0,
-              f.p1_poison_json, f.p2_poison_json,
-              f.p1_holy_json, f.p2_holy_json,
-              ix.channel.id
-            );
-          }
-          await ix.reply(`✅ Action queued.`);
-          const f2 = getFight.get(ix.channel.id);
-          if (f2.p1_action_json && f2.p2_action_json) {
-            clearRoundTimer(ix.channel.id);
-            await resolveDuelRound(ix.channel);
-          }
-          return;
-        }
+    // Stun check
+    if ((isP1 && (f.p1_stunned||0)>0) || (!isP1 && (f.p2_stunned||0)>0)) {
+      await ix.reply({ content:`⚡ You are stunned and cannot act this round.`, ephemeral:true });
+      return;
+    }
 
-        if (s) {
-          if (ix.user.id !== s.player_id) { await ix.reply({ content:'❌ Only the participant may act.', ephemeral:true }); return; }
-          if ((s.p_stunned||0) > 0) { await ix.reply({ content:`⚡ You are stunned and cannot act this round.`, ephemeral:true }); return; }
+    // 🔻 CONSUME the chip(s) now (after all validation, before queueing)
+    invAdd(ix.user.id, chipRow.name, -1);
+    if (supportRow) invAdd(ix.user.id, supportRow.name, -1);
 
-          // per-encounter limits & specials
-          const counts = parseMap(s.p_counts_json);
-          const specials = new Set(parseList(s.p_special_used));
-          const useNames = [chipRow.name].concat(supportRow ? [supportRow.name] : []);
-          for (const n of useNames) {
-            if ((counts[n]||0) >= MAX_PER_CHIP) { await ix.reply({ content:`❌ Per-encounter limit reached for **${n}** (max ${MAX_PER_CHIP}).`, ephemeral:true }); return; }
-            if (isSpecial(readEffect(getChip.get(n))) && specials.has(n)) { await ix.reply({ content:`❌ **${n}** is Special and already used this encounter.`, ephemeral:true }); return; }
-          }
+    const act = support ? actionSupport(supportRow.name, chipRow.name) : actionChip(chipRow.name);
+    if (isP1) {
+      updFightRound.run(
+        f.p1_hp, f.p2_hp,
+        f.p1_def, f.p2_def,
+        f.p1_counts_json, f.p2_counts_json,
+        f.p1_special_used, f.p2_special_used,
+        act, f.p2_action_json,
+        f.round_deadline,
+        f.p1_stunned|0, f.p2_stunned|0,
+        f.p1_poison_json, f.p2_poison_json,
+        f.p1_holy_json, f.p2_holy_json,
+        ix.channel.id
+      );
+    } else {
+      updFightRound.run(
+        f.p1_hp, f.p2_hp,
+        f.p1_def, f.p2_def,
+        f.p1_counts_json, f.p2_counts_json,
+        f.p1_special_used, f.p2_special_used,
+        f.p1_action_json, act,
+        f.round_deadline,
+        f.p1_stunned|0, f.p2_stunned|0,
+        f.p1_poison_json, f.p2_poison_json,
+        f.p1_holy_json, f.p2_holy_json,
+        ix.channel.id
+      );
+    }
 
-          const act = support ? actionSupport(supportRow.name, chipRow.name) : actionChip(chipRow.name);
-          updPVE.run(
-            s.p_hp, s.v_hp,
-            s.p_def, s.v_def,
-            s.p_counts_json, s.p_special_used, s.v_special_used,
-            act, s.virus_action_json,
-            s.round_deadline, s.v_def_total, s.v_def_streak,
-            s.p_stunned|0, s.v_stunned|0,
-            s.p_poison_json, s.v_poison_json,
-            s.p_holy_json, s.v_holy_json,
-            ix.channel.id
-          );
-          await ix.reply(`✅ Action queued.`);
-          const s2 = getPVE.get(ix.channel.id);
-          if (s2.player_action_json && s2.virus_action_json) {
-            clearRoundTimer(ix.channel.id);
-            await resolvePveRound(ix.channel);
-          }
-          return;
-        }
-      }
+    await ix.reply(`✅ Action queued. Consumed **${chipRow.name}**${supportRow ? ` + **${supportRow.name}**` : ''}.`);
+    const f2 = getFight.get(ix.channel.id);
+    if (f2.p1_action_json && f2.p2_action_json) {
+      clearRoundTimer(ix.channel.id);
+      await resolveDuelRound(ix.channel);
+    }
+    return;
+  }
+
+  if (s) {
+    if (ix.user.id !== s.player_id) { await ix.reply({ content:'❌ Only the participant may act.', ephemeral:true }); return; }
+    if ((s.p_stunned||0) > 0) { await ix.reply({ content:`⚡ You are stunned and cannot act this round.`, ephemeral:true }); return; }
+
+    // Already queued this round? (prevents double-consume)
+    if (s.player_action_json) {
+      await ix.reply({ content:'⏳ You already queued an action this round.', ephemeral:true });
+      return;
+    }
+
+    // per-encounter limits & specials
+    const counts = parseMap(s.p_counts_json);
+    const specials = new Set(parseList(s.p_special_used));
+    const useNames = [chipRow.name].concat(supportRow ? [supportRow.name] : []);
+    for (const n of useNames) {
+      if ((counts[n]||0) >= MAX_PER_CHIP) { await ix.reply({ content:`❌ Per-encounter limit reached for **${n}** (max ${MAX_PER_CHIP}).`, ephemeral:true }); return; }
+      if (isSpecial(readEffect(getChip.get(n))) && specials.has(n)) { await ix.reply({ content:`❌ **${n}** is Special and already used this encounter.`, ephemeral:true }); return; }
+    }
+
+    // 🔻 CONSUME the chip(s) now (after all validation, before queueing)
+    invAdd(ix.user.id, chipRow.name, -1);
+    if (supportRow) invAdd(ix.user.id, supportRow.name, -1);
+
+    const act = support ? actionSupport(supportRow.name, chipRow.name) : actionChip(chipRow.name);
+    updPVE.run(
+      s.p_hp, s.v_hp,
+      s.p_def, s.v_def,
+      s.p_counts_json, s.p_special_used, s.v_special_used,
+      act, s.virus_action_json,
+      s.round_deadline, s.v_def_total, s.v_def_streak,
+      s.p_stunned|0, s.v_stunned|0,
+      s.p_poison_json, s.v_poison_json,
+      s.p_holy_json, s.v_holy_json,
+      ix.channel.id
+    );
+
+    await ix.reply(`✅ Action queued.`);
+// PvE: resolve immediately — virus is AI, resolvePveRound will pick a move if none set
+clearRoundTimer(ix.channel.id);
+await resolvePveRound(ix.channel);
+return;
+  }
+}
 
       if (cmd === 'metroline') {
         const region = ix.options.getString('region');
@@ -2309,57 +2362,140 @@ client.on('interactionCreate', async (ix) => {
 
     // -------- Component handlers --------
 
-    // Shop selection
-    if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
-      const page = parseInt(ix.customId.split(':')[2], 10) || 0;
-      const name = ix.values[0];
-      const row = getChip.get(name);
-      if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
-      const eff = readEffect(row);
-      const desc = summarizeEffect(eff);
-      const dynCost = dynamicUpgradeCostFor(ix.user.id, row);
-      const embed = new EmbedBuilder()
-        .setTitle(`${row.is_upgrade ? '🧬 Upgrade' : '💾 Chip'} — ${row.name}`)
-        .setDescription([
-          row.image_url ? `[image](${row.image_url})` : '',
-          desc,
-          '',
-          `${zennyIcon()} Cost: **${row.is_upgrade ? `${dynCost} (dynamic)` : row.zenny_cost}**`
-        ].filter(Boolean).join('\n'));
+   // Shop selection
+if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
+  const name = ix.values[0];
+  const row = getChip.get(name);
+  if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
 
-      const rowBtns = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`shop:buy:${name}:1`).setLabel('Buy 1').setStyle(ButtonStyle.Primary)
-      );
-      if (!row.is_upgrade) {
-        rowBtns.addComponents(
-          new ButtonBuilder().setCustomId(`shop:buy:${name}:5`).setLabel('Buy 5').setStyle(ButtonStyle.Secondary)
-        );
-      }
-      rowBtns.addComponents(new ButtonBuilder().setCustomId('shop:close').setLabel('Close').setStyle(ButtonStyle.Danger));
+  const eff = readEffect(row);
+  const desc = summarizeEffect(eff);
+  const dynCost = row.is_upgrade ? dynamicUpgradeCostFor(ix.user.id, row) : row.zenny_cost;
 
-      await ix.reply({ embeds:[embed], components:[rowBtns], ephemeral:true });
-      return;
-    }
+  const embed = new EmbedBuilder()
+    .setTitle(`${row.is_upgrade ? '🧬 Upgrade' : '💾 Chip'} — ${row.name}`)
+    .setDescription([
+      row.image_url ? `[image](${row.image_url})` : '',
+      desc,
+      '',
+      `${zennyIcon()} Cost: **${row.is_upgrade ? `${dynCost} (dynamic)` : row.zenny_cost}**`
+    ].filter(Boolean).join('\n'));
 
-    // Catalog selection (admin)
-    if (ix.isStringSelectMenu() && ix.customId.startsWith('catalog:select:')) {
-      if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-      const name = ix.values[0];
-      const row = getChip.get(name);
-      if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
-      const eff = readEffect(row);
-      const embed = new EmbedBuilder()
-        .setTitle(`${row.is_upgrade ? '🧬 Upgrade' : '💾 Chip'} — ${row.name}`)
-        .setDescription([
-          row.image_url ? `[image](${row.image_url})` : '',
-          summarizeEffect(eff),
-          '',
-          `${zennyIcon()} Cost: **${row.zenny_cost}**`,
-          `Stock status: **${row.stock ? 'shop' : 'hidden'}**`
-        ].filter(Boolean).join('\n'));
-      await ix.reply({ embeds:[embed], ephemeral:true });
-      return;
-    }
+  const rowBtns = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`shop:buy:${name}:1`).setLabel('Buy 1').setStyle(ButtonStyle.Primary)
+  );
+  if (!row.is_upgrade) {
+    rowBtns.addComponents(
+      new ButtonBuilder().setCustomId(`shop:buy:${name}:5`).setLabel('Buy 5').setStyle(ButtonStyle.Secondary)
+    );
+  }
+  rowBtns.addComponents(
+    new ButtonBuilder().setCustomId('shop:close').setLabel('Close').setStyle(ButtonStyle.Danger)
+  );
+
+  await ix.reply({ embeds:[embed], components:[rowBtns], ephemeral:true });
+  return;
+}
+
+   // Catalog selection (admin) — starts the grant wizard
+if (ix.isStringSelectMenu() && ix.customId.startsWith('catalog:select:')) {
+  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+  const name = ix.values[0];
+  const row = getChip.get(name);
+  if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
+
+  // init state
+  CatalogGrantState.set(ix.user.id, { chip: row.name, qty: 1, recipientId: null });
+
+  const { embed, components } = buildGrantUI(CatalogGrantState.get(ix.user.id));
+  await ix.reply({ embeds: [embed], components, ephemeral: true });
+  return;
+}
+// Helper to render the grant wizard UI (ephemeral)
+function buildGrantUI(st) {
+  const row = getChip.get(st.chip);
+  const eff = readEffect(row);
+
+  const embed = new EmbedBuilder()
+    .setTitle(`${row.is_upgrade ? '🧬 Upgrade' : '💾 Chip'} — ${row.name}`)
+    .setDescription([
+      row.image_url ? `[image](${row.image_url})` : '',
+      summarizeEffect(eff),
+      '',
+      `Use the controls below to pick a recipient and quantity, then press **Grant**.`
+    ].filter(Boolean).join('\n'))
+    .addFields(
+      { name: 'Quantity', value: String(st.qty), inline: true },
+      { name: 'Recipient', value: st.recipientId ? `<@${st.recipientId}>` : '—', inline: true }
+    );
+
+  const pickUserRow = new ActionRowBuilder().addComponents(
+    new UserSelectMenuBuilder()
+      .setCustomId('grant:recipient')
+      .setPlaceholder('Pick recipient')
+      .setMinValues(1)
+      .setMaxValues(1)
+  );
+
+  const qtyRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('grant:qty:-').setLabel('−').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('grant:qty:+').setLabel('+').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('grant:confirm').setLabel('Grant').setStyle(ButtonStyle.Primary).setDisabled(!st.recipientId),
+    new ButtonBuilder().setCustomId('grant:cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger),
+  );
+
+  return { embed, components: [pickUserRow, qtyRow] };
+}
+
+// Recipient picked
+if (ix.isUserSelectMenu && ix.isUserSelectMenu() && ix.customId === 'grant:recipient') {
+  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+  const st = CatalogGrantState.get(ix.user.id);
+  if (!st) { await ix.reply({ content:'❌ Start with **/chip_grant** and select a chip first.', ephemeral:true }); return; }
+  const pickedId = (ix.values && ix.values[0]) || null;
+  if (!pickedId) { await ix.reply({ content:'❌ No user selected.', ephemeral:true }); return; }
+  st.recipientId = pickedId;
+  CatalogGrantState.set(ix.user.id, st);
+  const { embed, components } = buildGrantUI(st);
+  await ix.update({ embeds:[embed], components });
+  return;
+}
+
+// Qty adjust
+if (ix.isButton() && ix.customId.startsWith('grant:qty:')) {
+  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+  const st = CatalogGrantState.get(ix.user.id);
+  if (!st) { await ix.reply({ content:'❌ Start with **/chip_grant** and select a chip first.', ephemeral:true }); return; }
+
+  const dir = ix.customId.endsWith(':+') ? +1 : -1;
+  st.qty = Math.max(1, Math.min(99, (st.qty|0) + dir));
+  CatalogGrantState.set(ix.user.id, st);
+
+  const { embed, components } = buildGrantUI(st);
+  await ix.update({ embeds:[embed], components });
+  return;
+}
+
+// Confirm grant
+if (ix.isButton() && ix.customId === 'grant:confirm') {
+  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+  const st = CatalogGrantState.get(ix.user.id);
+  if (!st || !st.recipientId) {
+    await ix.reply({ content:'❌ Pick a recipient first.', ephemeral:true });
+    return;
+  }
+  invAdd(st.recipientId, st.chip, st.qty);
+  CatalogGrantState.delete(ix.user.id);
+  await ix.update({ content:`✅ Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>.`, embeds:[], components:[] });
+  return;
+}
+
+// Cancel grant
+if (ix.isButton() && ix.customId === 'grant:cancel') {
+  CatalogGrantState.delete(ix.user.id);
+  await ix.update({ content:'🛑 Grant cancelled.', embeds:[], components:[] });
+  return;
+}
 
     if (ix.isButton()) {
       // Shop nav
