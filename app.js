@@ -2566,6 +2566,12 @@ if (ix.isButton() && ix.customId === 'grant:confirm') {
       embeds: [],
       components: []
     });
+  } catch (err) {
+    console.error('[grant:confirm] error:', err);
+    try { await ix.followUp({ content: '❌ Error while granting.', ephemeral: true }); } catch {}
+  }
+  return;
+}
 
 // Cancel grant
 if (ix.isButton() && ix.customId === 'grant:cancel') {
@@ -2573,6 +2579,7 @@ if (ix.isButton() && ix.customId === 'grant:cancel') {
   await ix.update({ content:'🛑 Grant cancelled.', embeds:[], components:[] });
   return;
 }
+
 
     if (ix.isButton()) {
       // Shop nav
