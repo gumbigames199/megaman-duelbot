@@ -1756,7 +1756,7 @@ try {
 
     await channel.send([
       `🎲 **Round resolved!**`,
-      • Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
+      `• Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
       `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
       '',
       `🏆 **Victory!** You defeated **${s.virus_name}**.`,
