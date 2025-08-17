@@ -2449,9 +2449,10 @@ if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
   return;
 }
 
-   // Catalog selection (admin) — starts the grant wizard
+// Catalog selection (admin) — starts the grant wizard
 if (ix.isStringSelectMenu() && ix.customId.startsWith('catalog:select:')) {
   if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+
   const name = ix.values[0];
   const row = getChip.get(name);
   if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
@@ -2463,6 +2464,7 @@ if (ix.isStringSelectMenu() && ix.customId.startsWith('catalog:select:')) {
   await ix.reply({ embeds: [embed], components, ephemeral: true });
   return;
 }
+
 // Helper to render the grant wizard UI (ephemeral)
 function buildGrantUI(st) {
   const row = getChip.get(st.chip);
@@ -2501,88 +2503,52 @@ function buildGrantUI(st) {
 
 // Recipient picked (User Select)
 if (ix.isUserSelectMenu() && ix.customId === 'grant:recipient') {
-  try {
-    await ix.deferUpdate(); // ack immediately
+  if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', ephemeral: true }); return; }
 
-    if (!isAdmin(ix)) {
-      await ix.followUp({ content: '❌ Admin only.', ephemeral: true });
-      return;
-    }
+  const st = CatalogGrantState.get(ix.user.id);
+  if (!st) { await ix.reply({ content: '❌ Start from **/chips_catalog** and choose a chip first.', ephemeral: true }); return; }
 
-    const st = CatalogGrantState.get(ix.user.id);
-    if (!st) {
-      await ix.followUp({ content: '❌ Start from **/chips_catalog** and choose a chip first.', ephemeral: true });
-      return;
-    }
+  const pickedId = (ix.values && ix.values[0]) || null;
+  if (!pickedId) { await ix.reply({ content: '❌ No user selected.', ephemeral: true }); return; }
 
-    const pickedId = (ix.values && ix.values[0]) || null;
-    if (!pickedId) {
-      await ix.followUp({ content: '❌ No user selected.', ephemeral: true });
-      return;
-    }
+  st.recipientId = pickedId;
+  CatalogGrantState.set(ix.user.id, st);
 
-    st.recipientId = pickedId;
-    CatalogGrantState.set(ix.user.id, st);
-
-    const { embed, components } = buildGrantUI(st);
-    await ix.message.edit({ embeds: [embed], components });
-  } catch (err) {
-    console.error('[grant:recipient] error:', err);
-    try { await ix.followUp({ content: '❌ Error while updating recipient.', ephemeral: true }); } catch {}
-  }
+  const { embed, components } = buildGrantUI(st);
+  await ix.update({ embeds: [embed], components });
   return;
 }
 
 // qty +/- buttons
 if (ix.isButton() && ix.customId.startsWith('grant:qty:')) {
-  await ix.deferUpdate(); // ACK immediately
-
-  if (!isAdmin(ix)) {
-    await ix.followUp({ content: '❌ Admin only.', ephemeral: true });
-    return;
-  }
+  if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', ephemeral: true }); return; }
 
   const st = CatalogGrantState.get(ix.user.id);
-  if (!st) {
-    await ix.followUp({ content: '❌ Start from **/chips_catalog** and choose a chip first.', ephemeral: true });
-    return;
-  }
+  if (!st) { await ix.reply({ content: '❌ Start from **/chips_catalog** and choose a chip first.', ephemeral: true }); return; }
 
   const dir = ix.customId.split(':')[2]; // '+' or '-'
   st.qty = Math.max(1, st.qty + (dir === '+' ? 1 : -1));
   CatalogGrantState.set(ix.user.id, st);
 
   const { embed, components } = buildGrantUI(st);
-  await ix.message.edit({ embeds: [embed], components });
+  await ix.update({ embeds: [embed], components });
   return;
 }
 
 // confirm grant
 if (ix.isButton() && ix.customId === 'grant:confirm') {
-  await ix.deferUpdate(); // ACK immediately
-
-  if (!isAdmin(ix)) {
-    await ix.followUp({ content: '❌ Admin only.', ephemeral: true });
-    return;
-  }
+  if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', ephemeral: true }); return; }
 
   const st = CatalogGrantState.get(ix.user.id);
-  if (!st || !st.recipientId) {
-    await ix.followUp({ content: '❌ Pick a recipient first.', ephemeral: true });
-    return;
-  }
+  if (!st || !st.recipientId) { await ix.reply({ content: '❌ Pick a recipient first.', ephemeral: true }); return; }
 
   const chipRow = getChip.get(st.chip);
-  if (!chipRow) {
-    await ix.followUp({ content: `❌ Chip **${st.chip}** no longer exists.`, ephemeral: true });
-    return;
-  }
+  if (!chipRow) { await ix.reply({ content: `❌ Chip **${st.chip}** no longer exists.`, ephemeral: true }); return; }
 
   invAdd(st.recipientId, st.chip, st.qty);
   CatalogGrantState.delete(ix.user.id);
 
-  // Edit the wizard message instead of replying again
-  await ix.message.edit({
+  await ix.update({
     content: `✅ Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>.`,
     embeds: [],
     components: []
@@ -2592,9 +2558,8 @@ if (ix.isButton() && ix.customId === 'grant:confirm') {
 
 // cancel grant
 if (ix.isButton() && ix.customId === 'grant:cancel') {
-  await ix.deferUpdate(); // ACK immediately
   CatalogGrantState.delete(ix.user.id);
-  await ix.message.edit({ content: '🛑 Grant cancelled.', embeds: [], components: [] });
+  await ix.update({ content: '🛑 Grant cancelled.', embeds: [], components: [] });
   return;
 }
 
