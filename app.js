@@ -2516,46 +2516,76 @@ function buildGrantUI(st) {
   return { embed, components: [pickUserRow, qtyRow] };
 }
 
-// Recipient picked
+// Recipient picked (User Select)
 if (ix.isUserSelectMenu() && ix.customId === 'grant:recipient') {
-  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-  const st = CatalogGrantState.get(ix.user.id);
-  if (!st) { await ix.reply({ content:'❌ Start with **/chip_grant** and select a chip first.', ephemeral:true }); return; }
-  const pickedId = (ix.values && ix.values[0]) || null;
-  if (!pickedId) { await ix.reply({ content:'❌ No user selected.', ephemeral:true }); return; }
-  st.recipientId = pickedId;
-  CatalogGrantState.set(ix.user.id, st);
-  const { embed, components } = buildGrantUI(st);
-  await ix.update({ embeds:[embed], components });
-  return;
-}
+  try {
+    await ix.deferUpdate(); // ack immediately
 
-// Qty adjust
-if (ix.isButton() && ix.customId.startsWith('grant:qty:')) {
-  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-  const st = CatalogGrantState.get(ix.user.id);
-  if (!st) { await ix.reply({ content:'❌ Start with **/chip_grant** and select a chip first.', ephemeral:true }); return; }
+    if (!isAdmin(ix)) {
+      await ix.followUp({ content: '❌ Admin only.', ephemeral: true });
+      return;
+    }
 
-  const dir = ix.customId.endsWith(':+') ? +1 : -1;
-  st.qty = Math.max(1, Math.min(99, (st.qty|0) + dir));
-  CatalogGrantState.set(ix.user.id, st);
+    const st = CatalogGrantState.get(ix.user.id);
+    if (!st) {
+      await ix.followUp({ content: '❌ Start from **/chips_catalog** and choose a chip first.', ephemeral: true });
+      return;
+    }
 
-  const { embed, components } = buildGrantUI(st);
-  await ix.update({ embeds:[embed], components });
+    const pickedId = (ix.values && ix.values[0]) || null;
+    if (!pickedId) {
+      await ix.followUp({ content: '❌ No user selected.', ephemeral: true });
+      return;
+    }
+
+    st.recipientId = pickedId;
+    CatalogGrantState.set(ix.user.id, st);
+
+    const { embed, components } = buildGrantUI(st);
+    await ix.message.edit({ embeds: [embed], components });
+  } catch (err) {
+    console.error('[grant:recipient] error:', err);
+    try { await ix.followUp({ content: '❌ Error while updating recipient.', ephemeral: true }); } catch {}
+  }
   return;
 }
 
 // Confirm grant
 if (ix.isButton() && ix.customId === 'grant:confirm') {
-  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-  const st = CatalogGrantState.get(ix.user.id);
-  if (!st || !st.recipientId) {
-    await ix.reply({ content:'❌ Pick a recipient first.', ephemeral:true });
-    return;
+  try {
+    await ix.deferUpdate(); // ack instantly
+
+    if (!isAdmin(ix)) {
+      await ix.followUp({ content: '❌ Admin only.', ephemeral: true });
+      return;
+    }
+
+    const st = CatalogGrantState.get(ix.user.id);
+    if (!st || !st.recipientId) {
+      await ix.followUp({ content: '❌ Pick a recipient first.', ephemeral: true });
+      return;
+    }
+
+    const chipRow = getChip.get(st.chip);
+    if (!chipRow) {
+      await ix.followUp({ content: `❌ Chip **${st.chip}** no longer exists.`, ephemeral: true });
+      return;
+    }
+
+    const before = invGetQty(st.recipientId, st.chip);
+    invAdd(st.recipientId, st.chip, st.qty);
+    const after = invGetQty(st.recipientId, st.chip);
+
+    CatalogGrantState.delete(ix.user.id);
+
+    await ix.message.edit({ content: `✅ Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>.`, embeds: [], components: [] });
+
+    // Public confirmation for visibility
+    await ix.channel.send(`📦 Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>. They now have **${after}** (was ${before}).`);
+  } catch (err) {
+    console.error('[grant:confirm] error:', err);
+    try { await ix.followUp({ content: '❌ Error while granting chip.', ephemeral: true }); } catch {}
   }
-  invAdd(st.recipientId, st.chip, st.qty);
-  CatalogGrantState.delete(ix.user.id);
-  await ix.update({ content:`✅ Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>.`, embeds:[], components:[] });
   return;
 }
 
