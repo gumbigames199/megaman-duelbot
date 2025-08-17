@@ -1050,14 +1050,15 @@ function buildCatalogPage(rows, page = 0) {
       description: `${r.is_upgrade ? 'Upgrade' : 'Chip'} • ${r.zenny_cost} ${zennyIcon()}${r.stock ? '' : ' • hidden'}`.slice(0, 100)
     })));
 
-  const prev = new ButtonBuilder().setCustomId(`catalog:prev:${page}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(page === 0);
-  const next = new ButtonBuilder().setCustomId(`catalog:next:${page}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1);
+  const prev  = new ButtonBuilder().setCustomId(`catalog:prev:${page}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(page === 0);
+  const next  = new ButtonBuilder().setCustomId(`catalog:next:${page}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1);
   const close = new ButtonBuilder().setCustomId('catalog:close').setLabel('Close').setStyle(ButtonStyle.Danger);
 
   const rowSel = new ActionRowBuilder().addComponents(select);
   const rowNav = new ActionRowBuilder().addComponents(prev, next, close);
 
   const list = slice.map(r => `• **${r.name}** — ${r.is_upgrade ? 'Upgrade' : 'Chip'} — ${r.zenny_cost} ${zennyIcon()}${r.stock ? '' : ' (hidden)'}`).join('\n');
+
   const embed = new EmbedBuilder()
     .setTitle('📚 Chips Catalog (admin)')
     .setDescription(list || '—')
@@ -2532,54 +2533,70 @@ if (ix.isUserSelectMenu() && ix.customId === 'grant:recipient') {
   return;
 }
 
-// Confirm grant
-if (ix.isButton() && ix.customId === 'grant:confirm') {
-  try {
-    await ix.deferUpdate(); // ack instantly
+// qty +/- buttons
+if (ix.isButton() && ix.customId.startsWith('grant:qty:')) {
+  await ix.deferUpdate(); // ACK immediately
 
-    if (!isAdmin(ix)) {
-      await ix.followUp({ content: '❌ Admin only.', ephemeral: true });
-      return;
-    }
-
-    const st = CatalogGrantState.get(ix.user.id);
-    if (!st || !st.recipientId) {
-      await ix.followUp({ content: '❌ Pick a recipient first.', ephemeral: true });
-      return;
-    }
-
-    const chipRow = getChip.get(st.chip);
-    if (!chipRow) {
-      await ix.followUp({ content: `❌ Chip **${st.chip}** no longer exists.`, ephemeral: true });
-      return;
-    }
-
-    const before = invGetQty(st.recipientId, st.chip);
-    invAdd(st.recipientId, st.chip, st.qty);
-    const after = invGetQty(st.recipientId, st.chip);
-
-    CatalogGrantState.delete(ix.user.id);
-
-    // Close the wizard UI for the admin
-    await ix.message.edit({
-      content: `✅ Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>.`,
-      embeds: [],
-      components: []
-    });
-  } catch (err) {
-    console.error('[grant:confirm] error:', err);
-    try { await ix.followUp({ content: '❌ Error while granting.', ephemeral: true }); } catch {}
+  if (!isAdmin(ix)) {
+    await ix.followUp({ content: '❌ Admin only.', ephemeral: true });
+    return;
   }
+
+  const st = CatalogGrantState.get(ix.user.id);
+  if (!st) {
+    await ix.followUp({ content: '❌ Start from **/chips_catalog** and choose a chip first.', ephemeral: true });
+    return;
+  }
+
+  const dir = ix.customId.split(':')[2]; // '+' or '-'
+  st.qty = Math.max(1, st.qty + (dir === '+' ? 1 : -1));
+  CatalogGrantState.set(ix.user.id, st);
+
+  const { embed, components } = buildGrantUI(st);
+  await ix.message.edit({ embeds: [embed], components });
   return;
 }
 
-// Cancel grant
-if (ix.isButton() && ix.customId === 'grant:cancel') {
+// confirm grant
+if (ix.isButton() && ix.customId === 'grant:confirm') {
+  await ix.deferUpdate(); // ACK immediately
+
+  if (!isAdmin(ix)) {
+    await ix.followUp({ content: '❌ Admin only.', ephemeral: true });
+    return;
+  }
+
+  const st = CatalogGrantState.get(ix.user.id);
+  if (!st || !st.recipientId) {
+    await ix.followUp({ content: '❌ Pick a recipient first.', ephemeral: true });
+    return;
+  }
+
+  const chipRow = getChip.get(st.chip);
+  if (!chipRow) {
+    await ix.followUp({ content: `❌ Chip **${st.chip}** no longer exists.`, ephemeral: true });
+    return;
+  }
+
+  invAdd(st.recipientId, st.chip, st.qty);
   CatalogGrantState.delete(ix.user.id);
-  await ix.update({ content:'🛑 Grant cancelled.', embeds:[], components:[] });
+
+  // Edit the wizard message instead of replying again
+  await ix.message.edit({
+    content: `✅ Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>.`,
+    embeds: [],
+    components: []
+  });
   return;
 }
 
+// cancel grant
+if (ix.isButton() && ix.customId === 'grant:cancel') {
+  await ix.deferUpdate(); // ACK immediately
+  CatalogGrantState.delete(ix.user.id);
+  await ix.message.edit({ content: '🛑 Grant cancelled.', embeds: [], components: [] });
+  return;
+}
 
     if (ix.isButton()) {
       // Shop nav
