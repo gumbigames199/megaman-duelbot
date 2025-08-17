@@ -2035,13 +2035,36 @@ client.on('interactionCreate', async (ix) => {
         return;
       }
 
-      if (cmd === 'chips_catalog') {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-        const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
-        const { embed, components } = buildCatalogPage(rows, 0);
-        await ix.reply({ embeds:[embed], components, ephemeral: true });
-        return;
-      }
+if (cmd === 'chips_catalog') {
+  // Admin gate
+  if (!isAdmin(ix)) {
+    await ix.reply({ content: '❌ Admin only.', ephemeral: true });
+    return;
+  }
+
+  try {
+    // Ack fast to avoid "This Interaction Failed" under DB/UI lag
+    await ix.deferReply({ ephemeral: true });
+
+    // Pull all chips and build page 1
+    const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
+    const { embed, components } = buildCatalogPage(rows, 0);
+
+    // Render the catalog pager
+    await ix.editReply({ embeds: [embed], components });
+  } catch (err) {
+    console.error('[chips_catalog] error:', err);
+    // Make sure we respond even if something throws after deferReply
+    try {
+      await ix.editReply({ content: '❌ Failed to open catalog. Check logs.' });
+    } catch {
+      // Fallback if editReply also fails (rare)
+      await ix.followUp({ content: '❌ Failed to open catalog. Check logs.', ephemeral: true });
+    }
+  }
+
+  return;
+}
 
       if (cmd === 'folder') {
         // Ensure starters if they somehow haven't been granted yet
