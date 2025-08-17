@@ -2375,7 +2375,7 @@ if (ix.isButton() && ix.customId.startsWith('duel:')) {
   const [, action, p1, p2] = ix.customId.split(':');
   const pending = PendingDuels.get(ix.channel.id);
   if (!pending || pending.p1 !== p1 || pending.p2 !== p2) {
-    await ix.reply({ content: '❌ This challenge has expired.', ephemeral: true }); 
+    await ix.reply({ content: '❌ This challenge has expired.', ephemeral: true });
     return;
   }
 
@@ -2411,7 +2411,7 @@ if (ix.isButton() && ix.customId.startsWith('duel:')) {
   return;
 }
 
-   // Shop selection
+// Shop selection -> show item details (ephemeral)
 if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
   const name = ix.values[0];
   const row = getChip.get(name);
@@ -2446,7 +2446,25 @@ if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
   return;
 }
 
-// ---------- Admin catalog grant (state) ----------
+// Shop "Close" button — works for both main shop and ephemeral item details
+if (ix.isButton() && ix.customId === 'shop:close') {
+  // Try to delete the message if possible (non-ephemeral). Otherwise just ack.
+  try {
+    // Ephemeral messages can't be deleted; this will throw if it's ephemeral.
+    await ix.message.delete();
+  } catch {
+    // Fallback: clear the ephemeral UI
+    try {
+      await ix.update({ content: '🛑 Closed.', embeds: [], components: [] });
+      return;
+    } catch {}
+    await ix.reply({ content: '🛑 Closed.', ephemeral: true });
+  }
+  return;
+}
+
+/* ==================== Admin: Chips catalog grant wizard ==================== */
+
 const CatalogGrantState = new Map(); // userId -> { chip, qty, recipientId }
 
 // Helper to render the grant wizard UI
@@ -2496,14 +2514,14 @@ function buildGrantUI(st) {
 /* -------------------- Catalog selection -> open wizard -------------------- */
 if (ix.isStringSelectMenu() && ix.customId.startsWith('catalog:select:')) {
   if (!isAdmin(ix)) {
-    await ix.reply({ content: '❌ Admin only.', flags: MessageFlags.Ephemeral });
+    await ix.reply({ content: '❌ Admin only.', ephemeral: true });
     return;
   }
 
   const name = ix.values[0];
   const row = getChip.get(name);
   if (!row) {
-    await ix.reply({ content: '❌ Not found.', flags: MessageFlags.Ephemeral });
+    await ix.reply({ content: '❌ Not found.', ephemeral: true });
     return;
   }
 
@@ -2512,15 +2530,14 @@ if (ix.isStringSelectMenu() && ix.customId.startsWith('catalog:select:')) {
 
   // Respond with a **new** ephemeral message (don’t update the catalog pager)
   const { embed, components } = buildGrantUI(CatalogGrantState.get(ix.user.id));
-  await ix.reply({ embeds: [embed], components, flags: MessageFlags.Ephemeral });
+  await ix.reply({ embeds: [embed], components, ephemeral: true });
   return;
 }
 
 /* -------------------- Recipient picked (User Select) -------------------- */
 if (ix.isUserSelectMenu() && ix.customId === 'grant:recipient') {
   if (!isAdmin(ix)) {
-    // must ACK within 3s
-    await ix.reply({ content: '❌ Admin only.', flags: MessageFlags.Ephemeral });
+    await ix.reply({ content: '❌ Admin only.', ephemeral: true });
     return;
   }
 
@@ -2528,14 +2545,14 @@ if (ix.isUserSelectMenu() && ix.customId === 'grant:recipient') {
   if (!st) {
     await ix.reply({
       content: '❌ Start from **/chips_catalog** and choose a chip first.',
-      flags: MessageFlags.Ephemeral,
+      ephemeral: true,
     });
     return;
   }
 
   const pickedId = (ix.values && ix.values[0]) || null;
   if (!pickedId) {
-    await ix.reply({ content: '❌ No user selected.', flags: MessageFlags.Ephemeral });
+    await ix.reply({ content: '❌ No user selected.', ephemeral: true });
     return;
   }
 
@@ -2551,7 +2568,7 @@ if (ix.isUserSelectMenu() && ix.customId === 'grant:recipient') {
 /* -------------------- Qty +/- buttons -------------------- */
 if (ix.isButton() && ix.customId.startsWith('grant:qty:')) {
   if (!isAdmin(ix)) {
-    await ix.reply({ content: '❌ Admin only.', flags: MessageFlags.Ephemeral });
+    await ix.reply({ content: '❌ Admin only.', ephemeral: true });
     return;
   }
 
@@ -2559,7 +2576,7 @@ if (ix.isButton() && ix.customId.startsWith('grant:qty:')) {
   if (!st) {
     await ix.reply({
       content: '❌ Start from **/chips_catalog** and choose a chip first.',
-      flags: MessageFlags.Ephemeral,
+      ephemeral: true,
     });
     return;
   }
@@ -2576,19 +2593,19 @@ if (ix.isButton() && ix.customId.startsWith('grant:qty:')) {
 /* -------------------- Confirm grant -------------------- */
 if (ix.isButton() && ix.customId === 'grant:confirm') {
   if (!isAdmin(ix)) {
-    await ix.reply({ content: '❌ Admin only.', flags: MessageFlags.Ephemeral });
+    await ix.reply({ content: '❌ Admin only.', ephemeral: true });
     return;
   }
 
   const st = CatalogGrantState.get(ix.user.id);
   if (!st || !st.recipientId) {
-    await ix.reply({ content: '❌ Pick a recipient first.', flags: MessageFlags.Ephemeral });
+    await ix.reply({ content: '❌ Pick a recipient first.', ephemeral: true });
     return;
   }
 
   const chipRow = getChip.get(st.chip);
   if (!chipRow) {
-    await ix.reply({ content: `❌ Chip **${st.chip}** no longer exists.`, flags: MessageFlags.Ephemeral });
+    await ix.reply({ content: `❌ Chip **${st.chip}** no longer exists.`, ephemeral: true });
     return;
   }
 
@@ -2611,32 +2628,32 @@ if (ix.isButton() && ix.customId === 'grant:cancel') {
   return;
 }
 
-         // Catalog nav (admin)
-      if (ix.customId === 'catalog:close') {
-        await ix.reply({ content: '🛑 Closed.', ephemeral: true });
-        return;
-      }
+// Catalog nav (admin)
+if (ix.isButton() && ix.customId === 'catalog:close') {
+  await ix.reply({ content: '🛑 Closed.', ephemeral: true });
+  return;
+}
 
-      if (ix.customId.startsWith('catalog:prev:') || ix.customId.startsWith('catalog:next:')) {
-        if (!isAdmin(ix)) {
-          await ix.reply({ content: '❌ Admin only.', ephemeral: true });
-          return;
-        }
-        const parts = ix.customId.split(':');
-        const dir = parts[1];
-        const page = parseInt(parts[2], 10) || 0;
+if (ix.isButton() && (ix.customId.startsWith('catalog:prev:') || ix.customId.startsWith('catalog:next:'))) {
+  if (!isAdmin(ix)) {
+    await ix.reply({ content: '❌ Admin only.', ephemeral: true });
+    return;
+  }
+  const parts = ix.customId.split(':');
+  const dir = parts[1];
+  const page = parseInt(parts[2], 10) || 0;
 
-        const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
-        const totalPages = Math.max(1, Math.ceil(rows.length / 25));
-        const nextPage =
-          dir === 'prev'
-            ? Math.max(0, page - 1)
-            : Math.min(totalPages - 1, page + 1);
+  const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
+  const totalPages = Math.max(1, Math.ceil(rows.length / 25));
+  const nextPage =
+    dir === 'prev'
+      ? Math.max(0, page - 1)
+      : Math.min(totalPages - 1, page + 1);
 
-        const { embed, components } = buildCatalogPage(rows, nextPage);
-        await ix.update({ embeds: [embed], components });
-        return;
-      }
+  const { embed, components } = buildCatalogPage(rows, nextPage);
+  await ix.update({ embeds: [embed], components });
+  return;
+}
     }
   } catch (e) {
     console.error('interaction error', e);
