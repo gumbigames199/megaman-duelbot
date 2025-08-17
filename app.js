@@ -88,9 +88,6 @@ const HP_STEP_SIZE       = parseInt(process.env.HP_STEP_SIZE       || '10', 10);
 // 33% virus chip drop (ENV override-able 0..1)
 const VIRUS_CHIP_DROP_PCT = Number(process.env.VIRUS_CHIP_DROP_PCT ?? 0.33);
 
-// Ensure data dir exists
-if (!fs.existsSync('./data')) fs.mkdirSync('./data');
-
 // Discord client
 const client = new Client({
   intents: [
@@ -194,14 +191,6 @@ async function registerCommands() {
       .setName('chips_reload')
       .setDescription('Admin: reload chip list from TSV')
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-
-    new SlashCommandBuilder()
-      .setName('chip_grant')
-      .setDescription('Admin: grant chips to a user')
-      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-      .addUserOption((o) => o.setName('user').setDescription('Target user').setRequired(true))
-      .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
-      .addIntegerOption((o) => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
 
     new SlashCommandBuilder()
       .setName('chip_remove')
@@ -1886,14 +1875,17 @@ client.on('interactionCreate', async (ix) => {
         return;
       }
 
-      // Admin chip_grant/remove autocomplete (global names, 25 max due to Discord)
-      if ((name === 'chip_grant' || name === 'chip_remove') && focused.name === 'name') {
-        const q = (focused.value || '').toLowerCase();
-        const names = listAllChipNames.all().map(r => r.name);
-        const opts = names.filter(n => n.toLowerCase().includes(q)).slice(0,25).map(n => ({ name:n, value:n }));
-        await ix.respond(opts);
-        return;
-      }
+// Admin chip_remove autocomplete (global names, 25 max due to Discord)
+if (name === 'chip_remove' && focused.name === 'name') {
+  const q = (focused.value || '').toLowerCase();
+  const names = listAllChipNames.all().map(r => r.name);
+  const opts = names
+    .filter(n => n.toLowerCase().includes(q))
+    .slice(0, 25)
+    .map(n => ({ name: n, value: n }));
+  await ix.respond(opts);
+  return;
+}
 
       // Default: global names (kept for backwards compat)
       const q = (focused.value || '').toLowerCase();
@@ -2098,16 +2090,6 @@ if (cmd === 'chips_catalog') {
         }
         return;
       }
-
-     if (cmd === 'chip_grant') {
-  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-  CatalogGrantState.delete(ix.user.id); // fresh start
-  const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
-  const { embed, components } = buildCatalogPage(rows, 0);
-  await ix.reply({ embeds:[embed], components, ephemeral:true });
-  await ix.followUp({ content:'Select a chip, then pick a recipient and quantity to grant.', ephemeral:true });
-  return;
-}
 
       if (cmd === 'chip_remove') {
         if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
@@ -2578,9 +2560,14 @@ if (ix.isButton() && ix.customId === 'grant:confirm') {
 
     CatalogGrantState.delete(ix.user.id);
 
-    await ix.message.edit({ content: `✅ Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>.`, embeds: [], components: [] });
+    // Close the wizard UI for the admin
+    await ix.message.edit({
+      content: `✅ Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>.`,
+      embeds: [],
+      components: []
+    });
 
-    // Public confirmation for visibility
+    // Public confirmation so you can verify the new total
     await ix.channel.send(`📦 Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>. They now have **${after}** (was ${before}).`);
   } catch (err) {
     console.error('[grant:confirm] error:', err);
