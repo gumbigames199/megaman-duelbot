@@ -1067,9 +1067,6 @@ function buildCatalogPage(rows, page = 0) {
   return { embed, components: [rowSel, rowNav], page, totalPages };
 }
 
-// ---------- Admin catalog grant (state) ----------
-const CatalogGrantState = new Map(); // userId -> { chip, qty, recipientId }
-
 // Thing 3: Dynamic upgrade pricing
 const DYN_UPGRADES = new Map([
   ['HP Memory', HP_MEMORY_COST_STEP],
@@ -2496,34 +2493,6 @@ function buildGrantUI(st) {
   return { embed, components: [pickUserRow, qtyRow] };
 }
 
-/* -------------------- /chips_catalog (admin) -------------------- */
-if (cmd === 'chips_catalog') {
-  if (!isAdmin(ix)) {
-    await ix.reply({ content: '❌ Admin only.', flags: MessageFlags.Ephemeral });
-    return;
-  }
-
-  try {
-    // Acknowledge quickly; flags instead of ephemeral
-    await ix.deferReply({ flags: MessageFlags.Ephemeral });
-
-    // Load all chips and show page 1
-    const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
-    const { embed, components } = buildCatalogPage(rows, 0);
-
-    await ix.editReply({ embeds: [embed], components });
-  } catch (err) {
-    console.error('[chips_catalog] error:', err);
-    try {
-      await ix.editReply({ content: '❌ Failed to open catalog. Check logs.' });
-    } catch {
-      await ix.followUp({ content: '❌ Failed to open catalog. Check logs.', flags: MessageFlags.Ephemeral });
-    }
-  }
-
-  return;
-}
-
 /* -------------------- Catalog selection -> open wizard -------------------- */
 if (ix.isStringSelectMenu() && ix.customId.startsWith('catalog:select:')) {
   if (!isAdmin(ix)) {
@@ -2642,21 +2611,30 @@ if (ix.isButton() && ix.customId === 'grant:cancel') {
   return;
 }
 
-      // Catalog nav (admin)
+         // Catalog nav (admin)
       if (ix.customId === 'catalog:close') {
-        await ix.reply({ content:'🛑 Closed.', ephemeral:true });
+        await ix.reply({ content: '🛑 Closed.', ephemeral: true });
         return;
       }
+
       if (ix.customId.startsWith('catalog:prev:') || ix.customId.startsWith('catalog:next:')) {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+        if (!isAdmin(ix)) {
+          await ix.reply({ content: '❌ Admin only.', ephemeral: true });
+          return;
+        }
         const parts = ix.customId.split(':');
         const dir = parts[1];
         const page = parseInt(parts[2], 10) || 0;
+
         const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
         const totalPages = Math.max(1, Math.ceil(rows.length / 25));
-        const nextPage = dir === 'prev' ? Math.max(0, page-1) : Math.min(totalPages-1, page+1);
+        const nextPage =
+          dir === 'prev'
+            ? Math.max(0, page - 1)
+            : Math.min(totalPages - 1, page + 1);
+
         const { embed, components } = buildCatalogPage(rows, nextPage);
-        await ix.update({ embeds:[embed], components });
+        await ix.update({ embeds: [embed], components });
         return;
       }
     }
@@ -2664,13 +2642,13 @@ if (ix.isButton() && ix.customId === 'grant:cancel') {
     console.error('interaction error', e);
     try {
       if (ix.replied || ix.deferred) {
-        await ix.followUp({ content:'❌ Error.', ephemeral:true });
+        await ix.followUp({ content: '❌ Error.', ephemeral: true });
       } else {
-        await ix.reply({ content:'❌ Error. Check logs.', ephemeral:true });
+        await ix.reply({ content: '❌ Error. Check logs.', ephemeral: true });
       }
     } catch {}
   }
-});
+}); // closes client.on('interactionCreate')
 
 // Optional: clean timers on channel delete to avoid leaks
 client.on('channelDelete', (ch) => {
