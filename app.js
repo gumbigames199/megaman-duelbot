@@ -1041,29 +1041,48 @@ function buildCatalogPage(rows, page=0) {
   const start = page * PER;
   const slice = rows.slice(start, start + PER);
 
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(`catalog:select:${page}`)
-    .setPlaceholder(`Select a chip (${page+1}/${totalPages})`)
-    .addOptions(slice.map(r => ({
-      label: r.name.slice(0,100),
-      value: r.name,
-      description: `${r.is_upgrade ? 'Upgrade' : 'Chip'} • ${r.zenny_cost} ${zennyIcon()}${r.stock?'' : ' • hidden'}`
-        .slice(0,100)
-    })));
-
   const prev = new ButtonBuilder().setCustomId(`catalog:prev:${page}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(page===0);
   const next = new ButtonBuilder().setCustomId(`catalog:next:${page}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page>=totalPages-1);
   const close= new ButtonBuilder().setCustomId('catalog:close').setLabel('Close').setStyle(ButtonStyle.Danger);
 
-  const rowSel = new ActionRowBuilder().addComponents(select);
+function buildCatalogPage(rows, page = 0) {
+  const PER = 25;
+  const totalPages = Math.max(1, Math.ceil(rows.length / PER));
+  page = Math.min(totalPages - 1, Math.max(0, page));
+  const start = page * PER;
+  const slice = rows.slice(start, start + PER);
+
+  const prev  = new ButtonBuilder()
+    .setCustomId(`catalog:prev:${page}`)
+    .setLabel('Prev')
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(page === 0);
+
+  const next  = new ButtonBuilder()
+    .setCustomId(`catalog:next:${page}`)
+    .setLabel('Next')
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(page >= totalPages - 1);
+
+  const close = new ButtonBuilder()
+    .setCustomId('catalog:close')
+    .setLabel('Close')
+    .setStyle(ButtonStyle.Danger);
+
   const rowNav = new ActionRowBuilder().addComponents(prev, next, close);
 
-  const list = slice.map(r => `• **${r.name}** — ${r.is_upgrade?'Upgrade':'Chip'} — ${r.zenny_cost} ${zennyIcon()}${r.stock?'':' (hidden)'}`).join('\n');
+  const list = slice
+    .map(r => `• **${r.name}** — ${r.is_upgrade ? 'Upgrade' : 'Chip'} — ${r.zenny_cost} ${zennyIcon()}${r.stock ? '' : ' (hidden)'}`)
+    .join('\n');
+
   const embed = new EmbedBuilder()
     .setTitle('📚 Chips Catalog (admin)')
     .setDescription(list || '—')
-    .setFooter({ text: `Items ${start+1}-${Math.min(rows.length,start+PER)} of ${rows.length} • Page ${page+1}/${totalPages}`});
-  return { embed, components:[rowSel, rowNav], page, totalPages };
+    .setFooter({
+      text: `Items ${start + 1}-${Math.min(rows.length, start + PER)} of ${rows.length} • Page ${page + 1}/${totalPages}`
+    });
+
+  return { embed, components: [rowNav], page, totalPages };
 }
 
 // ---------- Admin catalog grant (state) ----------
@@ -2566,15 +2585,6 @@ if (ix.isButton() && ix.customId === 'grant:confirm') {
       embeds: [],
       components: []
     });
-
-    // Public confirmation so you can verify the new total
-    await ix.channel.send(`📦 Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>. They now have **${after}** (was ${before}).`);
-  } catch (err) {
-    console.error('[grant:confirm] error:', err);
-    try { await ix.followUp({ content: '❌ Error while granting chip.', ephemeral: true }); } catch {}
-  }
-  return;
-}
 
 // Cancel grant
 if (ix.isButton() && ix.customId === 'grant:cancel') {
