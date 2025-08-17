@@ -1709,8 +1709,8 @@ async function resolvePveRound(channel) {
       `• Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
       `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
       '',
-      hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
-      '🤝 **Double KO!**'
+      hpLinePVE({ player_id: s.player_id, virus_name: s.virus_name, p_hp: php, v_hp: vhp }),
+      '🤝 **Draw!**'
     ].join('\n'));
     return;
   }
@@ -1776,7 +1776,7 @@ try {
       `• Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
       `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
       '',
-      hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
+      hpLinePVE({ player_id: s.player_id, virus_name: s.virus_name, p_hp: php, v_hp: vhp }),
       `💀 **Defeat...** Try again with **/virus_busting**.`
     ].join('\n'));
     return;
@@ -1815,7 +1815,7 @@ try {
   `• Absorbed by DEF: You→**${absorbedV}** | Virus→**${absorbedP}**`,
   `• Ticks (you/virus): Poison **-${tPoisP}**/**-${tPoisV}**, Holy **+${tHolyP}**/**+${tHolyV}**`,
   '',
-  hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
+  hpLinePVE({ player_id: s.player_id, virus_name: s.virus_name, p_hp: php, v_hp: vhp }),
   `⏳ Next round — play with **/use**`
 ].join('\n'));
 }
