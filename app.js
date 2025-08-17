@@ -1146,6 +1146,29 @@ function tickHoly(list) {
   return { total, next: left > 0 ? [{ heal: h.heal|0, ticks: left }] : [] };
 }
 
+// ---- Emoji helpers (kinds → icon) ----
+function emojiForKinds(kinds) {
+  if (!Array.isArray(kinds)) kinds = [];
+  if (kinds.includes('break'))     return '🪓';
+  if (kinds.includes('attack'))    return '⚔️';
+  if (kinds.includes('defense'))   return '🧱';
+  if (kinds.includes('barrier'))   return '🛡️';
+  if (kinds.includes('support'))   return '✨';     // Buff
+  if (kinds.includes('recovery'))  return '❤️‍🩹';  // Heal
+  if (kinds.includes('paralyze'))  return '⚡😵';
+  if (kinds.includes('poison'))    return '☠️🧪';
+  if (kinds.includes('holy'))      return '🙏';     // HoT
+  if (kinds.includes('repair'))    return '🔧⚙️';   // Cleanse
+  return '🔹';
+}
+
+function emojiLabelForChipName(name) {
+  const row = getChip.get(name);
+  const eff = readEffect(row);
+  const icon = emojiForKinds(extractKinds(eff));
+  return `${icon} ${name}`;
+}
+
 // ---------- Round resolution (Duels) ----------
 async function resolveDuelRound(channel) {
   const f0 = getFight.get(channel.id);
@@ -1361,7 +1384,7 @@ nextPois2 = nextPois2Local;
   const p2IsBot = f.p2_id === client.user.id;
 
   if (p1hp === 0 && p2hp === 0) {
-    outcome = '🤝 **Double KO!** No W/L changes.';
+    outcome = '🤝 **Draw!** No W/L changes.';
   } else if (p1hp === 0) {
     outcome = `🏆 **<@${f.p2_id}> wins**!`;
     if (!p1IsBot && !p2IsBot) { setRecord.run(0, 1, f.p1_id); setRecord.run(1, 0, f.p2_id); }
@@ -1380,11 +1403,11 @@ nextPois2 = nextPois2Local;
     clearRoundTimer(channel.id);
     await channel.send([
       `🎲 **Round resolved!**`,
-      `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-      `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
+      `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
+      `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
       `• Damage dealt: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
-      `• Ticks: Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`,
-      `• Attack cancelled by barrier: P1→${cancelledByBarrier1?'✅':'❌'} | P2→${cancelledByBarrier2?'✅':'❌'}`,
+      `• Ticks: ☠️🧪 Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), 🙏 Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`,
+      `• Attack cancelled by 🛡️ barrier: P1→${cancelledByBarrier1?'✅':'❌'} | P2→${cancelledByBarrier2?'✅':'❌'}`,
       `• Dodges: P1→${dodged2?'✅':'❌'} | P2→${dodged1?'✅':'❌'}`,
       '',
       hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
@@ -1422,13 +1445,13 @@ nextPois2 = nextPois2Local;
 
  const lines = [
  `🎲 **Round resolved!**`,
- `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
- `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
+ `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
+ `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
  `• Damage: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
  (absorbed1 || absorbed2) ? `• Absorbed by DEF: P1→**${absorbed2}** | P2→**${absorbed1}**` : null,
  (crit1 || crit2) ? `• Crits: P1→${crit1?'✅':'—'} | P2→${crit2?'✅':'—'}` : null,
  (tickPoisonP1 || tickPoisonP2 || tickHolyP1 || tickHolyP2)
- ? `• Ticks: Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`
+ ? `• Ticks: ☠️🧪 Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), 🙏 Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`
  : null,
  '',
  hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
@@ -1682,8 +1705,8 @@ async function resolvePveRound(channel) {
     clearRoundTimer(channel.id);
     await channel.send([
       `🎲 **Round resolved!**`,
-      `• You used: ${P.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-      `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
+      `• You used: ${P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
+      `• Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
       `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
       '',
       hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
@@ -1733,7 +1756,7 @@ try {
 
     await channel.send([
       `🎲 **Round resolved!**`,
-      `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
+      • Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
       `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
       '',
       `🏆 **Victory!** You defeated **${s.virus_name}**.`,
@@ -1749,8 +1772,8 @@ try {
     clearRoundTimer(channel.id);
     await channel.send([
       `🎲 **Round resolved!**`,
-      `• You used: ${P.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-      `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
+      `• You used: ${P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
+      `• Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
       `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
       '',
       hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
@@ -1786,8 +1809,8 @@ try {
 
   await channel.send([
   `🎲 **Round resolved!**`,
-  `• You used: ${P.used?.map(n=>`**${n}**`).join(' + ') || '—'}`,
-  `• Virus used: ${V.used?.map(n=>`**${n}**`).join(' + ') || (AVirus?.name || '—')}`,
+  `• You used: ${P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
+  `• Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
   `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
   `• Absorbed by DEF: You→**${absorbedV}** | Virus→**${absorbedP}**`,
   `• Ticks (you/virus): Poison **-${tPoisP}**/**-${tPoisV}**, Holy **+${tHolyP}**/**+${tHolyV}**`,
