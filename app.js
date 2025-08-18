@@ -960,7 +960,7 @@ function pickVirusMove(pveRow) {
   // Filter out spent specials
   const notSpent = moves.filter((m) => !(m.special && usedSpecials.has((m.name || m.label || 'special'))));
 
-  // If consecutive defense >= cap → try to force attack
+   // If consecutive defense >= cap → try to force attack
   if (defStreak >= VIRUS_DEFENSE_CAP_STREAK) {
     const attacks = notSpent.filter((m) => !isDefLikeMove(m));
     if (attacks.length) return attacks[Math.floor(Math.random() * attacks.length)];
@@ -977,7 +977,6 @@ function pickVirusMove(pveRow) {
   // Otherwise free choice
   return notSpent[Math.floor(Math.random() * notSpent.length)];
 }
-
 
 // ---------- UI helpers for Shop ----------
 function summarizeEffect(e) {

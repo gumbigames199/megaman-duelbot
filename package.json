@@ -3,15 +3,16 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "main": "index.js",
-  "engines": { "node": ">=18.17" },
+  "main": "app.js",
+  "engines": { "node": ">=18.17 <23" },
   "scripts": {
-    "start": "node index.js",
-    "dev": "NODE_ENV=development node --watch index.js"
+    "start": "node app.js",
+    "dev": "NODE_ENV=development node --watch app.js",
+    "postinstall": "npm rebuild better-sqlite3 || true"
   },
   "dependencies": {
-    "discord.js": "^14.0.0",
+    "discord.js": "^14.15.0",
     "better-sqlite3": "^9.0.0",
-    "dotenv": "^16.0.0"
+    "dotenv": "^16.4.0"
   }
 }
