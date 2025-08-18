@@ -1,7 +1,5 @@
 # MegaMan DuelBot (MEE6-integrated)
 
-This bot watches for **MEE6** `/use` messages and resolves combat between two players in any channel with an active duel. It also applies **HP Memory / Code Refinement / Lucky Data** upgrades whenever MEE6 posts them.
-
 ## Prereqs
 - Node.js 18+
 - Toggle **MESSAGE CONTENT INTENT** for your bot in the Discord Developer Portal.
@@ -27,7 +25,6 @@ This bot watches for **MEE6** `/use` messages and resolves combat between two pl
 ## Use
 - `/navi_register` once per user.
 - `/duel @opponent` in a channel to start a duel in that channel.
-- Players then use MEE6 `/use` items (Spreader1, Vulcan1, Cannon1, Sword, Widesword, ElecSword, Longsword, ElecMan1, TorchMan1, Barrier).
 - `/forfeit` to end a duel early.
 - `/navi_stats` to view stats.
 
