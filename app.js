@@ -239,14 +239,6 @@ async function registerCommands() {
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
     new SlashCommandBuilder()
-      .setName('chip_grant')
-      .setDescription('Admin: grant chips to a user')
-      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-      .addUserOption((o) => o.setName('user').setDescription('Target user').setRequired(true))
-      .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
-      .addIntegerOption((o) => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
-
-    new SlashCommandBuilder()
       .setName('chip_remove')
       .setDescription('Admin: remove chips from a user')
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -2110,16 +2102,6 @@ client.on('interactionCreate', async (ix) => {
         }
         return;
       }
-
-     if (cmd === 'chip_grant') {
-  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-  CatalogGrantState.delete(ix.user.id); // fresh start
-  const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
-  const { embed, components } = buildCatalogPage(rows, 0);
-  await ix.reply({ embeds:[embed], components, ephemeral:true });
-  await ix.followUp({ content:'Select a chip, then pick a recipient and quantity to grant.', ephemeral:true });
-  return;
-}
 
       if (cmd === 'chip_remove') {
         if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
