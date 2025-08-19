@@ -1933,7 +1933,12 @@ client.on('interactionCreate', async (ix) => {
       return;
     }
 
-    if (!ix.isChatInputCommand() && !ix.isButton() && !ix.isStringSelectMenu()) return;
+   if (
+  !ix.isChatInputCommand() &&
+  !ix.isButton() &&
+  !ix.isStringSelectMenu() &&
+  !ix.isUserSelectMenu()
+) return;
 
     // -------- Commands --------
     if (ix.isChatInputCommand()) {
