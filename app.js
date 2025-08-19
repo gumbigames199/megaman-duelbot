@@ -2633,7 +2633,11 @@ if (ix.isButton() && ix.customId === 'grant:cancel') {
 // ---------- Login & ready ----------
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
-  try { await registerCommands(); } catch (e) { console.warn('Register failed:', e?.message); }
+  try {
+    await registerCommands();
+  } catch (e) {
+    console.warn('Register failed:', e?.message);
+  }
 });
 
 // Make sure the login call is the *caught* version:
