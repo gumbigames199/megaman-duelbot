@@ -2619,6 +2619,7 @@ if (ix.isButton() && ix.customId === 'grant:cancel') {
         await ix.update({ embeds: [embed], components });
         return;
       }
+}
 
     } catch (e) {
       console.error('interaction error', e);
