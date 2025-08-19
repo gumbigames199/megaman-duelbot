@@ -1717,7 +1717,7 @@ async function resolvePveRound(channel) {
   if (vhp === 0) {
     // Rewards
     const z = Math.max(0, Math.floor(Math.random() * (s.virus_zmax - s.virus_zmin + 1)) + s.virus_zmin);
-    if (z) addZenny.run(s.player_id, z);
+    if (z) addZenny.run(z, s.player_id);
 
    // Chip drop chance
 let dropLine = '';
@@ -1745,7 +1745,7 @@ try {
     const bossMatch = am.target_boss && normalize(s.virus_name) === normalize(am.target_boss);
     if (chipMatch || bossMatch) {
       completeMission.run(s.player_id, am.mission_id);
-      if (am.reward_zenny) addZenny.run(s.player_id, am.reward_zenny);
+      if (am.reward_zenny) addZenny.run(am.reward_zenny, s.player_id);
       missionLine = `\n🧾 Mission **${am.mission_id}** completed! +${am.reward_zenny} ${zennyIcon()}`;
     }
   }
