@@ -61,6 +61,36 @@ const ZENNY_EMOJI_NAME = process.env.ZENNY_EMOJI_NAME || 'zenny';
 const zennyIcon = () =>
   (/^\d{17,20}$/.test(ZENNY_EMOJI_ID) ? `<:${ZENNY_EMOJI_NAME}:${ZENNY_EMOJI_ID}>` : '💰');
 
+// ---------- Starter config (reads from Railway env) ----------
+const STARTER_ZENNY = parseInt(String(process.env.STARTER_ZENNY ?? '0'), 10);
+
+// Accept either var name from Railway: STARTER_FOLDER or STARTER_CHIPS
+const STARTER_FOLDER_RAW = process.env.STARTER_FOLDER ?? process.env.STARTER_CHIPS ?? '';
+
+function parseStarterFolder(raw) {
+  if (!raw) return [];
+  // Prefer JSON array if provided
+  try {
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) {
+      return arr
+        .map(x => ({ name: String(x?.name || '').trim(), qty: Math.max(1, x?.qty|0 || 1) }))
+        .filter(x => x.name);
+    }
+  } catch {}
+  // Fallback: CSV like "Cannon x2, Sword:3"
+  return String(raw).split(/[,\n]+/g).map(tok => {
+    const m = tok.trim().match(/^(.+?)(?:\s*[x:*]\s*(\d+))?$/i);
+    if (!m) return null;
+    return { name: m[1].trim(), qty: Math.max(1, parseInt(m[2] || '1', 10)) };
+  }).filter(Boolean);
+}
+
+const STARTER_CHIPS = parseStarterFolder(STARTER_FOLDER_RAW);
+
+// helper used by starter-grant code
+function starterEntries() { return STARTER_CHIPS; }
+
 // ---------- Starters ----------
 // Give starters (zenny + chips) once, when the account is brand new
 function grantStartersIfNeeded(userId) {
