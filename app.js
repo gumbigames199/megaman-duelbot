@@ -1847,22 +1847,6 @@ async function pickVirusForUser(userId) {
   return weightedPick(pool);
 }
 
-// Give starters (zenny + chips) if the user looks fresh
-function grantStartersIfNeeded(userId) {
-  const n = ensureNavi(userId);
-  // Top up zenny only up to STARTER_ZENNY (do not overwrite higher balances)
-  if (STARTER_ZENNY > 0 && (n.zenny|0) < STARTER_ZENNY) {
-    setZenny.run(STARTER_ZENNY, userId);
-  }
-  // If they own nothing, seed their folder
-  const owned = listInv.all(userId).reduce((s,r)=>s + (r.qty||0), 0);
-  if (owned === 0 && STARTER_CHIPS.length) {
-     for (const ent of starterEntries()) {
-   if (getChip.get(ent.name)) invAdd(userId, ent.name, ent.qty);
- }
-  }
-}
-
 client.on('interactionCreate', async (ix) => {
   try {
 
@@ -2039,7 +2023,7 @@ client.on('interactionCreate', async (ix) => {
         const me = ensureNavi(ix.user.id);
         if ((me.zenny|0) < amount) { await ix.reply({ content:`❌ Not enough ${zennyIcon()}.`, ephemeral:true }); return; }
         setZenny.run(me.zenny - amount, ix.user.id);
-        addZenny.run(to.id, amount);
+        addZenny.run(amount, to.id);
         await ix.reply(`✅ Sent **${amount}** ${zennyIcon()} to <@${to.id}>.`);
         return;
       }
