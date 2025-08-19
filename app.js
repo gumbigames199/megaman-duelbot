@@ -14,6 +14,7 @@ import {
   EmbedBuilder,
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
+  MessageFlags,            // ⬅️ add this
 } from 'discord.js';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -2443,20 +2444,21 @@ if (ix.isStringSelectMenu() && ix.customId.startsWith('shop:select:')) {
   return;
 }
 
-   // Catalog selection (admin) — starts the grant wizard
+  // Catalog selection (admin) — starts the grant wizard
 if (ix.isStringSelectMenu() && ix.customId.startsWith('catalog:select:')) {
-  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+  if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', flags: MessageFlags.Ephemeral }); return; }
   const name = ix.values[0];
   const row = getChip.get(name);
-  if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
+  if (!row) { await ix.reply({ content: '❌ Not found.', flags: MessageFlags.Ephemeral }); return; }
 
   // init state
   CatalogGrantState.set(ix.user.id, { chip: row.name, qty: 1, recipientId: null });
 
   const { embed, components } = buildGrantUI(CatalogGrantState.get(ix.user.id));
-  await ix.reply({ embeds: [embed], components, ephemeral: true });
+  await ix.reply({ embeds: [embed], components, flags: MessageFlags.Ephemeral });
   return;
 }
+
 // Helper to render the grant wizard UI (ephemeral)
 function buildGrantUI(st) {
   const row = getChip.get(st.chip);
@@ -2495,102 +2497,104 @@ function buildGrantUI(st) {
 
 // Recipient picked
 if (ix.isUserSelectMenu() && ix.customId === 'grant:recipient') {
-  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+  if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', flags: MessageFlags.Ephemeral }); return; }
   const st = CatalogGrantState.get(ix.user.id);
-  if (!st) { await ix.reply({ content:'❌ Start with **/chip_grant** and select a chip first.', ephemeral:true }); return; }
+  if (!st) { await ix.reply({ content: '❌ Start with **/chip_grant** and select a chip first.', flags: MessageFlags.Ephemeral }); return; }
   const pickedId = (ix.values && ix.values[0]) || null;
-  if (!pickedId) { await ix.reply({ content:'❌ No user selected.', ephemeral:true }); return; }
+  if (!pickedId) { await ix.reply({ content: '❌ No user selected.', flags: MessageFlags.Ephemeral }); return; }
   st.recipientId = pickedId;
   CatalogGrantState.set(ix.user.id, st);
   const { embed, components } = buildGrantUI(st);
-  await ix.update({ embeds:[embed], components });
+  await ix.update({ embeds: [embed], components }); // stays ephemeral because it updates the ephemeral message
   return;
 }
 
 // Qty adjust
 if (ix.isButton() && ix.customId.startsWith('grant:qty:')) {
-  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+  if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', flags: MessageFlags.Ephemeral }); return; }
   const st = CatalogGrantState.get(ix.user.id);
-  if (!st) { await ix.reply({ content:'❌ Start with **/chip_grant** and select a chip first.', ephemeral:true }); return; }
+  if (!st) { await ix.reply({ content: '❌ Start with **/chip_grant** and select a chip first.', flags: MessageFlags.Ephemeral }); return; }
 
   const dir = ix.customId.endsWith(':+') ? +1 : -1;
-  st.qty = Math.max(1, Math.min(99, (st.qty|0) + dir));
+  st.qty = Math.max(1, Math.min(99, (st.qty | 0) + dir));
   CatalogGrantState.set(ix.user.id, st);
 
   const { embed, components } = buildGrantUI(st);
-  await ix.update({ embeds:[embed], components });
+  await ix.update({ embeds: [embed], components }); // update ephemeral
   return;
 }
 
 // Confirm grant
 if (ix.isButton() && ix.customId === 'grant:confirm') {
-  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+  if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', flags: MessageFlags.Ephemeral }); return; }
   const st = CatalogGrantState.get(ix.user.id);
   if (!st || !st.recipientId) {
-    await ix.reply({ content:'❌ Pick a recipient first.', ephemeral:true });
+    await ix.reply({ content: '❌ Pick a recipient first.', flags: MessageFlags.Ephemeral });
     return;
   }
   invAdd(st.recipientId, st.chip, st.qty);
   CatalogGrantState.delete(ix.user.id);
-  await ix.update({ content:`✅ Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>.`, embeds:[], components:[] });
+  // still ephemeral—just replace the wizard with a final private confirmation
+  await ix.update({ content: `✅ Granted **${st.qty}× ${st.chip}** to <@${st.recipientId}>.`, embeds: [], components: [] });
   return;
 }
 
 // Cancel grant
 if (ix.isButton() && ix.customId === 'grant:cancel') {
   CatalogGrantState.delete(ix.user.id);
-  await ix.update({ content:'🛑 Grant cancelled.', embeds:[], components:[] });
+  await ix.update({ content: '🛑 Grant cancelled.', embeds: [], components: [] }); // still ephemeral
   return;
 }
 
-    if (ix.isButton()) {
-      // Shop nav
-      if (ix.customId === 'shop:close') {
-        try {
-          if (!ix.message?.flags?.has?.(4096)) {
-            await ix.message.delete();
-          }
-        } catch {}
-        await ix.reply({ content:'🛑 Closed.', ephemeral:true });
-        return;
+if (ix.isButton()) {
+  // Shop nav
+  if (ix.customId === 'shop:close') {
+    try {
+      if (!ix.message?.flags?.has?.(4096)) {
+        await ix.message.delete();
       }
-     if (ix.customId.startsWith('shop:prev:') || ix.customId.startsWith('shop:next:')) {
-  const parts = ix.customId.split(':');
-  const dir = parts[1];
-  const page = parseInt(parts[2], 10) || 0;
-  const rows = listShop.all();
-  const nextPage = dir === 'prev' ? Math.max(0, page - 1) : Math.min(Math.ceil(rows.length / 25) - 1, page + 1);
-  const { embed, components } = buildShopPage(rows, nextPage);
-  await ix.update({ embeds:[embed], components });
-  return;
+    } catch {}
+    await ix.reply({ content: '🛑 Closed.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (ix.customId.startsWith('shop:prev:') || ix.customId.startsWith('shop:next:')) {
+    const parts = ix.customId.split(':');
+    const dir = parts[1];
+    const page = parseInt(parts[2], 10) || 0;
+    const rows = listShop.all();
+    const nextPage = dir === 'prev' ? Math.max(0, page - 1) : Math.min(Math.ceil(rows.length / 25) - 1, page + 1);
+    const { embed, components } = buildShopPage(rows, nextPage);
+    await ix.update({ embeds: [embed], components });
+    return;
+  }
+  if (ix.customId.startsWith('shop:buy:')) {
+    const [, , name, qtyStr] = ix.customId.split(':');
+    let qty = Math.max(1, parseInt(qtyStr, 10) || 1);
+    const row = getChip.get(name);
+    if (!row) { await ix.reply({ content: '❌ Not found.', flags: MessageFlags.Ephemeral }); return; }
+
+    if (row.is_upgrade) qty = 1; // enforce upgrades one-at-a-time
+
+    const n = ensureNavi(ix.user.id);
+    const cost = row.is_upgrade
+      ? Math.floor(dynamicUpgradeTotalFor(ix.user.id, row, qty))
+      : (row.zenny_cost * qty);
+
+    if ((n.zenny | 0) < cost) { await ix.reply({ content: `❌ Need **${cost}** ${zennyIcon()}. You have **${n.zenny}**.`, flags: MessageFlags.Ephemeral }); return; }
+
+    setZenny.run(n.zenny - cost, ix.user.id);
+
+    if (row.is_upgrade) {
+      applyUpgrade(ix.user.id, row, 1);
+      bumpUpgCountBy.run(ix.user.id, row.name, 1);
+      await ix.reply({ content: `✅ Purchased **1× ${row.name}**. Stats updated. (-${cost} ${zennyIcon()})`, flags: MessageFlags.Ephemeral });
+    } else {
+      invAdd(ix.user.id, row.name, qty);
+      await ix.reply({ content: `✅ Purchased **${qty}× ${row.name}** to your folder. (-${cost} ${zennyIcon()})`, flags: MessageFlags.Ephemeral });
+    }
+    return;
+  }
 }
-      if (ix.customId.startsWith('shop:buy:')) {
-        const [, , name, qtyStr] = ix.customId.split(':');
-        let qty = Math.max(1, parseInt(qtyStr, 10) || 1);
-        const row = getChip.get(name);
-        if (!row) { await ix.reply({ content:'❌ Not found.', ephemeral:true }); return; }
-
-        if (row.is_upgrade) qty = 1; // enforce upgrades one-at-a-time
-
-        const n = ensureNavi(ix.user.id);
-        const cost = row.is_upgrade
-          ? Math.floor(dynamicUpgradeTotalFor(ix.user.id, row, qty))
-          : (row.zenny_cost * qty);
-
-        if ((n.zenny|0) < cost) { await ix.reply({ content:`❌ Need **${cost}** ${zennyIcon()}. You have **${n.zenny}**.`, ephemeral:true }); return; }
-
-        setZenny.run(n.zenny - cost, ix.user.id);
-
-        if (row.is_upgrade) {
-          applyUpgrade(ix.user.id, row, 1);
-          bumpUpgCountBy.run(ix.user.id, row.name, 1);
-          await ix.reply(`✅ Purchased **1× ${row.name}**. Stats updated. (-${cost} ${zennyIcon()})`);
-        } else {
-          invAdd(ix.user.id, row.name, qty);
-          await ix.reply(`✅ Purchased **${qty}× ${row.name}** to your folder. (-${cost} ${zennyIcon()})`);
-        }
-        return;
-      }
 
     // Catalog nav (admin)
       if (ix.isButton() && ix.customId === 'catalog:close') {
