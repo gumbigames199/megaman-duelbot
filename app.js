@@ -62,14 +62,27 @@ const zennyIcon = () =>
   (/^\d{17,20}$/.test(ZENNY_EMOJI_ID) ? `<:${ZENNY_EMOJI_NAME}:${ZENNY_EMOJI_ID}>` : '💰');
 
 // ---------- Starters ----------
-const STARTER_ZENNY  = parseInt(process.env.STARTER_ZENNY || '0', 10);
-const STARTER_CHIPS  = (process.env.STARTER_CHIPS || '').split(/[;,]/).map(s => s.trim()).filter(Boolean);
-// supports "Cannon x3" or "Cannon"
-function starterEntries() {
-  return STARTER_CHIPS.map(s => {
-    const m = s.match(/^(.*?)(?:\s*[xX]\s*(\d+))?\s*$/);
-    return { name: (m?.[1] || '').trim(), qty: Math.max(1, parseInt(m?.[2] || '1', 10) || 1) };
-  }).filter(x => x.name);
+// Give starters (zenny + chips) once, when the account is brand new
+function grantStartersIfNeeded(userId) {
+  const n = ensureNavi(userId); // includes existing zenny, etc.
+
+  // If we've already granted starters, do nothing
+  if ((n.starters_granted|0) === 1) return;
+
+  // 1) Starter Zenny: set once (no topping up later)
+  if ((STARTER_ZENNY|0) > 0) {
+    setZenny.run(STARTER_ZENNY, userId);
+  }
+
+  // 2) Starter folder: grant once (no repopulation later)
+  if (Array.isArray(STARTER_CHIPS) && STARTER_CHIPS.length) {
+    for (const ent of starterEntries()) {
+      if (getChip.get(ent.name)) invAdd(userId, ent.name, ent.qty);
+    }
+  }
+
+  // Mark as granted so it never repeats
+  db.prepare(`UPDATE navis SET starters_granted=1 WHERE user_id=?`).run(userId);
 }
 
 // ---------- Regions----------
@@ -434,6 +447,9 @@ try { db.exec(`ALTER TABLE pve_state  ADD COLUMN v_holy_json  TEXT NOT NULL DEFA
 
 // 1) Cooldowns table safe migration
 try { db.exec(`CREATE TABLE mission_cooldowns (user_id TEXT PRIMARY KEY, until INTEGER NOT NULL, notify_channel_id TEXT)`); } catch {}
+
+// Starter grant limit
+try { db.exec(`ALTER TABLE navis ADD COLUMN starters_granted INTEGER NOT NULL DEFAULT 0;`); } catch {}
 
 // Prepared statements
 const getNavi = db.prepare(`SELECT * FROM navis WHERE user_id=?`);
@@ -1717,7 +1733,7 @@ async function resolvePveRound(channel) {
   if (vhp === 0) {
     // Rewards
     const z = Math.max(0, Math.floor(Math.random() * (s.virus_zmax - s.virus_zmin + 1)) + s.virus_zmin);
-    if (z) addZenny.run(z, s.player_id);
+    if (z) addZenny.run(s.player_id, z);
 
    // Chip drop chance
 let dropLine = '';
@@ -1745,7 +1761,7 @@ try {
     const bossMatch = am.target_boss && normalize(s.virus_name) === normalize(am.target_boss);
     if (chipMatch || bossMatch) {
       completeMission.run(s.player_id, am.mission_id);
-      if (am.reward_zenny) addZenny.run(am.reward_zenny, s.player_id);
+      if (am.reward_zenny) addZenny.run(s.player_id, am.reward_zenny);
       missionLine = `\n🧾 Mission **${am.mission_id}** completed! +${am.reward_zenny} ${zennyIcon()}`;
     }
   }
