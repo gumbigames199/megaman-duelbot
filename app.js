@@ -2112,14 +2112,20 @@ client.on('interactionCreate', async (ix) => {
         return;
       }
 
-      if (cmd === 'zenny_override') {
-        if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-        const user = ix.options.getUser('user');
-        const amt = ix.options.getInteger('amount') || 0;
-        addZenny.run(user.id, amt);
-        await ix.reply(`✅ Added **${amt}** ${zennyIcon()} to <@${user.id}>.`);
-        return;
-      }
+   if (cmd === 'zenny_override') {
+  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
+
+  const user = ix.options.getUser('user');
+  const amt = ix.options.getInteger('amount') || 0;
+
+  // Ensure the target has a row, then apply and show new balance
+  ensureNavi(user.id);
+  addZenny.run(amt, user.id); // (amount, user_id) ← correct order
+  const updated = ensureNavi(user.id);
+
+  await ix.reply(`✅ Added **${amt}** ${zennyIcon()} to <@${user.id}>. New balance: **${updated.zenny}**`);
+  return;
+}
 
       if (cmd === 'virus_search') {
         const name = ix.options.getString('name');
@@ -2366,32 +2372,6 @@ return;
     }
 
     // -------- Component handlers --------
-
-//Zenny Override
-client.on('interactionCreate', async (ix) => {
-  if (!ix.isChatInputCommand()) return;
-
-  if (ix.commandName === 'zenny_override') {
-    if (!isAdmin(ix)) {
-      await ix.reply({ content: '🚫 You don’t have permission to use this.', ephemeral: true });
-      return;
-    }
-
-    const user = ix.options.getUser('user');
-    const amount = ix.options.getInteger('amount');
-    ensureNavi(user.id); // make sure they exist
-
-    addZenny.run(amount, user.id);
-    const updated = ensureNavi(user.id);
-
-    await ix.reply({
-      content: `✅ Added ${amount} ${zennyIcon()} to ${user.username}. New balance: ${updated.zenny}`,
-      ephemeral: false,
-    });
-  }
-
-  // …leave existing command handlers here …
-});
 
 // Accept / Decline duel
 if (ix.isButton() && ix.customId.startsWith('duel:')) {
