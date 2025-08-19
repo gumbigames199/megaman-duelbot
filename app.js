@@ -1847,6 +1847,9 @@ function grantStartersIfNeeded(userId) {
   }
 }
 
+client.on('interactionCreate', async (ix) => {
+  try {
+
     // -------- Autocomplete --------
     if (ix.isAutocomplete()) {
       const focused = ix.options.getFocused(true);
