@@ -1847,9 +1847,6 @@ function grantStartersIfNeeded(userId) {
   }
 }
 
-// ---------- Interaction handlers ----------
-client.on('interactionCreate', async (ix) => {
-  try {
     // -------- Autocomplete --------
     if (ix.isAutocomplete()) {
       const focused = ix.options.getFocused(true);
@@ -2592,43 +2589,46 @@ if (ix.isButton() && ix.customId === 'grant:cancel') {
         return;
       }
 
-client.on('interactionCreate', async (ix) => {
-  try {
     // Catalog nav (admin)
-  if (ix.isButton() && ix.customId === 'catalog:close') {
-    await ix.reply({ content: '🛑 Closed.', ephemeral: true });
-    return;
-  }
+      if (ix.isButton() && ix.customId === 'catalog:close') {
+        await ix.reply({ content: '🛑 Closed.', ephemeral: true });
+        return;
+      }
 
-  if (ix.isButton() && (ix.customId.startsWith('catalog:prev:') || ix.customId.startsWith('catalog:next:'))) {
-    if (!isAdmin(ix)) {
-      await ix.reply({ content: '❌ Admin only.', ephemeral: true });
-      return;
+      if (
+        ix.isButton() &&
+        (ix.customId.startsWith('catalog:prev:') || ix.customId.startsWith('catalog:next:'))
+      ) {
+        if (!isAdmin(ix)) {
+          await ix.reply({ content: '❌ Admin only.', ephemeral: true });
+          return;
+        }
+        const parts = ix.customId.split(':');
+        const dir = parts[1];
+        const page = parseInt(parts[2], 10) || 0;
+
+        const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
+        const totalPages = Math.max(1, Math.ceil(rows.length / 25));
+        const nextPage =
+          dir === 'prev' ? Math.max(0, page - 1) : Math.min(totalPages - 1, page + 1);
+
+        const { embed, components } = buildCatalogPage(rows, nextPage);
+        await ix.update({ embeds: [embed], components });
+        return;
+      }
+
+    } catch (e) {
+      console.error('interaction error', e);
+      try {
+        if (ix.replied || ix.deferred) {
+          await ix.followUp({ content: '❌ Error.', ephemeral: true });
+        } else {
+          await ix.reply({ content: '❌ Error. Check logs.', ephemeral: true });
+        }
+      } catch {}
     }
-    const parts = ix.customId.split(':');
-    const dir = parts[1];
-    const page = parseInt(parts[2], 10) || 0;
-
-    const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
-    const totalPages = Math.max(1, Math.ceil(rows.length / 25));
-    const nextPage = dir === 'prev' ? Math.max(0, page - 1) : Math.min(totalPages - 1, page + 1);
-
-    const { embed, components } = buildCatalogPage(rows, nextPage);
-    await ix.update({ embeds: [embed], components });
-    return;
-  }
-
-} catch (e) {
-  console.error('interaction error', e);
-  try {
-    if (ix.replied || ix.deferred) {
-      await ix.followUp({ content: '❌ Error.', ephemeral: true });
-    } else {
-      await ix.reply({ content: '❌ Error. Check logs.', ephemeral: true });
-    }
-  } catch {}
-}
-}); // closes client.on('interactionCreate')
+});
+// closes client.on('interactionCreate')
 
 // ---------- Login & ready ----------
 client.once('ready', async () => {
