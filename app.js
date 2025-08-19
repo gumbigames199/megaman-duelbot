@@ -2592,6 +2592,8 @@ if (ix.isButton() && ix.customId === 'grant:cancel') {
         return;
       }
 
+client.on('interactionCreate', async (ix) => {
+  try {
     // Catalog nav (admin)
   if (ix.isButton() && ix.customId === 'catalog:close') {
     await ix.reply({ content: '🛑 Closed.', ephemeral: true });
