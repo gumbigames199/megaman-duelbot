@@ -2367,6 +2367,32 @@ return;
 
     // -------- Component handlers --------
 
+//Zenny Override
+client.on('interactionCreate', async (ix) => {
+  if (!ix.isChatInputCommand()) return;
+
+  if (ix.commandName === 'zenny_override') {
+    if (!isAdmin(ix)) {
+      await ix.reply({ content: '🚫 You don’t have permission to use this.', ephemeral: true });
+      return;
+    }
+
+    const user = ix.options.getUser('user');
+    const amount = ix.options.getInteger('amount');
+    ensureNavi(user.id); // make sure they exist
+
+    addZenny.run(amount, user.id);
+    const updated = ensureNavi(user.id);
+
+    await ix.reply({
+      content: `✅ Added ${amount} ${zennyIcon()} to ${user.username}. New balance: ${updated.zenny}`,
+      ephemeral: false,
+    });
+  }
+
+  // …leave existing command handlers here …
+});
+
 // Accept / Decline duel
 if (ix.isButton() && ix.customId.startsWith('duel:')) {
   const [, action, p1, p2] = ix.customId.split(':');
