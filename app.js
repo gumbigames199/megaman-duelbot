@@ -2556,7 +2556,7 @@ if (ix.isButton() && ix.customId === 'grant:cancel') {
   await ix.update({ content: '🛑 Grant cancelled.', embeds: [], components: [] });
   return;
 }
-
+}
     // Catalog nav (admin)
       if (ix.isButton() && ix.customId === 'catalog:close') {
         await ix.reply({ content: '🛑 Closed.', ephemeral: true });
