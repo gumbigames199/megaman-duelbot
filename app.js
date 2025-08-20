@@ -119,9 +119,9 @@ function grantStartersIfNeeded(userId) {
 const REGIONS = ['ACDC','SciLab','Yoka','Beach','Sharo','YumLand','UnderNet'];
 
 // Dynamic upgrade price steps (per purchase)
-const HP_MEMORY_COST_STEP      = parseInt(process.env.HP_MEMORY_COST_STEP      || '500', 10);
-const DATA_RECONFIG_COST_STEP  = parseInt(process.env.DATA_RECONFIG_COST_STEP  || '500', 10);
-const LUCKY_DATA_COST_STEP     = parseInt(process.env.LUCKY_DATA_COST_STEP     || '500', 10);
+const HP_MEMORY_COST_STEP      = parseInt(process.env.HP_MEMORY_COST_STEP      || '5000', 10);
+const DATA_RECONFIG_COST_STEP  = parseInt(process.env.DATA_RECONFIG_COST_STEP  || '5000', 10);
+const LUCKY_DATA_COST_STEP     = parseInt(process.env.LUCKY_DATA_COST_STEP     || '5000', 10);
 
 // Stat upgrade point costs (manual /navi_upgrade)
 const CRIT_DODGE_COST    = parseInt(process.env.CRIT_DODGE_COST   || '5', 10);   // points for +1% crit/dodge
@@ -237,14 +237,6 @@ async function registerCommands() {
       .setName('chips_reload')
       .setDescription('Admin: reload chip list from TSV')
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-
-    new SlashCommandBuilder()
-      .setName('chip_grant')
-      .setDescription('Admin: grant chips to a user')
-      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-      .addUserOption((o) => o.setName('user').setDescription('Target user').setRequired(true))
-      .addStringOption((o) => o.setName('name').setDescription('Chip name').setRequired(true).setAutocomplete(true))
-      .addIntegerOption((o) => o.setName('qty').setDescription('Qty').setRequired(true).setMinValue(1)),
 
     new SlashCommandBuilder()
       .setName('chip_remove')
@@ -1933,7 +1925,12 @@ client.on('interactionCreate', async (ix) => {
       return;
     }
 
-    if (!ix.isChatInputCommand() && !ix.isButton() && !ix.isStringSelectMenu()) return;
+   if (
+  !ix.isChatInputCommand() &&
+  !ix.isButton() &&
+  !ix.isStringSelectMenu() &&
+  !ix.isUserSelectMenu()
+) return;
 
     // -------- Commands --------
     if (ix.isChatInputCommand()) {
@@ -1956,16 +1953,16 @@ client.on('interactionCreate', async (ix) => {
         const chipsOwned = inv.reduce((a,c)=>a+c.qty,0);
 
         const embed = new EmbedBuilder()
-   .setTitle(`📊 ${user.username}'s Navi`)
-   .setDescription([
-     `HP **${n.max_hp}** • Dodge **${n.dodge}%** • Crit **${n.crit}%**`,
-     `Record **${n.wins}-${n.losses}**`,
-     `${zennyIcon()} **${n.zenny}**`,
-     `🟣 Stat Points **${n.upgrade_pts}**`,
-     `📍 Region **${loc.region}** / Zone **${loc.zone}**`,
-     `🧾 Chips: **${chipsOwned}**`
-   ].join('\n'))
-   .setThumbnail(user.displayAvatarURL());
+          .setTitle(`📊 ${user.username}'s Navi`)
+          .setDescription([
+            `HP **${n.max_hp}** • Dodge **${n.dodge}%** • Crit **${n.crit}%**`,
+            `Record **${n.wins}-${n.losses}**`,
+            `${zennyIcon()} **${n.zenny}** • Points **${n.upgrade_pts}**`,
+            `📍 Region **${loc.region}** / Zone **${loc.zone}**`,
+            `🧾 Chips: **${chipsOwned}**`
+          ].join('\n'))
+          .setThumbnail(user.displayAvatarURL());
+        await ix.reply({ embeds:[embed] });
         return;
       }
 
@@ -2105,16 +2102,6 @@ client.on('interactionCreate', async (ix) => {
         }
         return;
       }
-
-     if (cmd === 'chip_grant') {
-  if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
-  CatalogGrantState.delete(ix.user.id); // fresh start
-  const rows = db.prepare(`SELECT * FROM chips ORDER BY name COLLATE NOCASE ASC`).all();
-  const { embed, components } = buildCatalogPage(rows, 0);
-  await ix.reply({ embeds:[embed], components, ephemeral:true });
-  await ix.followUp({ content:'Select a chip, then pick a recipient and quantity to grant.', ephemeral:true });
-  return;
-}
 
       if (cmd === 'chip_remove') {
         if (!isAdmin(ix)) { await ix.reply({ content:'❌ Admin only.', ephemeral:true }); return; }
