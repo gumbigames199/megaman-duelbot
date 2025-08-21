@@ -1472,34 +1472,26 @@ nextPois2 = nextPois2Local;
   // If fight ended, clear and announce
   if (outcome) {
     endFight.run(channel.id);
-    clearRoundTimer(channel.id);await channel.send([
+    clearRoundTimer(channel.id);
+await channel.send([
   `🎲 **Round resolved!**`,
-  formatAttackBlock({
-    attackerId: f.p1_id,
-    usedNames: P1.used || [],
-    dmg: dmg1to2,
-    crit: !!crit1,
-    dodged: !!dodged2,              // Did P2 dodge P1’s attack?
-    cancelledByBarrier: !!cancelledByBarrier1,
-    absorbed: (absorbed2|0),        // Amount P2’s DEF absorbed from P1’s attack
-    rec: (rec1|0),
-  }),
-  formatAttackBlock({
-    attackerId: f.p2_id,
-    usedNames: P2.used || [],
-    dmg: dmg2to1,
-    crit: !!crit2,
-    dodged: !!dodged1,              // Did P1 dodge P2’s attack?
-    cancelledByBarrier: !!cancelledByBarrier2,
-    absorbed: (absorbed1|0),        // Amount P1’s DEF absorbed from P2’s attack
-    rec: (rec2|0),
-  }),
-  (tickPoisonP1 || tickPoisonP2 || tickHolyP1 || tickHolyP2)
-    ? `• Ticks: ☠️🧪 Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), 🙏 Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`
-    : null,
+  `• You: ${(P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ')) || '—'} ⇒ **${dmgPtoV}**`
+    + (critP ? ' 💥' : '')
+    + (dodgedP ? ' 💨 *dodged*' : '')
+    + (cancelledByBarrierP ? ' 🛡️ *cancelled*' : '')
+    + (absorbedP ? `  — 🧱 **${absorbedP}**` : '')
+    + (pRec ? `  — ❤️ +${pRec}` : ''),
+  `• Virus: ${(V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ')) || (AVirus?.name || '—')} ⇒ **${dmgVtoP}**`
+    + (critV ? ' 💥' : '')
+    + (dodgedV ? ' 💨 *dodged*' : '')
+    + (cancelledByBarrierV ? ' 🛡️ *cancelled*' : '')
+    + (absorbedV ? `  — 🧱 **${absorbedV}**` : '')
+    + (vRec ? `  — ❤️ +${vRec}` : ''),
   '',
-  hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
-  outcome
+  `🏆 **Victory!** You defeated **${s.virus_name}**.`,
+  z ? `+${z} ${zennyIcon()} awarded.` : '',
+  dropLine,
+  missionLine
 ].filter(Boolean).join('\n'));
 return;
 
@@ -1532,37 +1524,41 @@ return;
 
   scheduleRoundTimer(channel.id, () => resolveDuelRound(channel));
 
+// Build uniform message (PvP — normal round)
 const lines = [
-  `🎲 **Round resolved!**`,
+  `🎲 **Round Results**`,
+  // P1 attacking P2
   formatAttackBlock({
     attackerId: f.p1_id,
     usedNames: P1.used || [],
     dmg: dmg1to2,
     crit: !!crit1,
-    dodged: !!dodged2,              // P2 dodged P1?
-    cancelledByBarrier: !!cancelledByBarrier1,
-    absorbed: (absorbed2|0),
-    rec: (rec1|0),
+    dodged: !!dodged1,              // did P2 dodge P1’s attack?
+    cancelledByBarrier: !!cancelledByBarrier1, // was P1’s attack cancelled by P2’s barrier?
+    absorbed: (absorbed1 | 0),      // how much P2's DEF absorbed from P1’s attack
+    rec: (rec1 | 0),
   }),
+  '',
+  // P2 attacking P1
   formatAttackBlock({
     attackerId: f.p2_id,
     usedNames: P2.used || [],
     dmg: dmg2to1,
     crit: !!crit2,
-    dodged: !!dodged1,              // P1 dodged P2?
-    cancelledByBarrier: !!cancelledByBarrier2,
-    absorbed: (absorbed1|0),
-    rec: (rec2|0),
+    dodged: !!dodged2,              // did P1 dodge P2’s attack?
+    cancelledByBarrier: !!cancelledByBarrier2, // was P2’s attack cancelled by P1’s barrier?
+    absorbed: (absorbed2 | 0),      // how much P1's DEF absorbed from P2’s attack
+    rec: (rec2 | 0),
   }),
   (tickPoisonP1 || tickPoisonP2 || tickHolyP1 || tickHolyP2)
-    ? `• Ticks: ☠️🧪 Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), 🙏 Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`
+    ? `• Ticks: ☠️ Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**) · 🙏 Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`
     : null,
   '',
   hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
-  roundFooterLine()                 // ⏳ and **/use** reminder
+  roundFooterLine()                 // ⏳ **${ROUND_SECONDS}s** + **/use** reminder
 ].filter(Boolean);
 await channel.send(lines.join('\n'));
-}
+
 
 // ---------- Round resolution (PVE) ----------
 async function resolvePveRound(channel) {
@@ -2763,8 +2759,8 @@ if (ix.isButton() && ix.customId === 'grant:cancel') {
 // closes client.on('interactionCreate')
 
 // ---------- Login & ready ----------
-client.once('ready', async () => {
-  console.log(`Logged in as ${client.user.tag}`);
+client.once('clientReady', async (c) => {
+  console.log(`Logged in as ${c.user.tag}`);
   try {
     await registerCommands();
   } catch (e) {
