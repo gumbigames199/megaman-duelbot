@@ -2082,6 +2082,51 @@ client.on('interactionCreate', async (ix) => {
   if (!opp || opp.id === ix.user.id) { await ix.reply({ content:'❌ Pick another user.', ephemeral:true }); return; }
   if (getFight.get(ix.channel.id) || getPVE.get(ix.channel.id)) { await ix.reply({ content:'❌ A fight/encounter is already running in this channel.', ephemeral:true }); return; }
 
+// Scrimmage fast-path: if opponent is the bot, start immediately (no accept UI)
+if (opp.bot && opp.id === client.user.id) {
+  await ix.reply(
+    `🐸 **Scrimmage started!** ${ix.user} vs <@${client.user.id}> (simultaneous rounds).\n` +
+    `Submit with **/use** within **${ROUND_SECONDS}s** each round. *(Scrimmage — no W/L or points)*`
+  );
+
+  const n1 = ensureNavi(ix.user.id);
+  const n2 = ensureNavi(opp.id);
+  startFight.run(
+    ix.channel.id, ix.user.id, opp.id,
+    n1.max_hp|0, n2.max_hp|0,
+    0, 0,
+    '{}', '{}',
+    '[]', '[]',
+    null, null,
+    now() + ROUND_SECONDS * 1000, now()
+    // p1_stunned..p2_holy_json use the SQL defaults declared in startFight
+  );
+  scheduleRoundTimer(ix.channel.id, () => resolveDuelRound(ix.channel));
+
+  // Show opening HP line
+  await ix.followUp(hpLineDuel(getFight.get(ix.channel.id)));
+
+  // Immediately lock a bot move for Round 1
+  const f = getFight.get(ix.channel.id);
+  const botAct = pickBotChipFor(f, false /* bot is P2 in this start path */);
+  if (botAct) {
+    updFightRound.run(
+      f.p1_hp, f.p2_hp,
+      f.p1_def, f.p2_def,
+      f.p1_counts_json, f.p2_counts_json,
+      f.p1_special_used, f.p2_special_used,
+      f.p1_action_json, JSON.stringify(botAct),
+      f.round_deadline,
+      f.p1_stunned|0, f.p2_stunned|0,
+      f.p1_poison_json, f.p2_poison_json,
+      f.p1_holy_json, f.p2_holy_json,
+      ix.channel.id
+    );
+    await ix.followUp('🤖 Bot locked its move.');
+  }
+  return;
+}
+
   // Ask for acceptance
   const accept = new ButtonBuilder().setCustomId(`duel:accept:${ix.user.id}:${opp.id}`).setLabel('Accept').setStyle(ButtonStyle.Success);
   const decline = new ButtonBuilder().setCustomId(`duel:decline:${ix.user.id}:${opp.id}`).setLabel('Decline').setStyle(ButtonStyle.Danger);
