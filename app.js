@@ -64,6 +64,40 @@ const zennyIcon = () =>
 // ---------- Starter config (reads from Railway env) ----------
 const STARTER_ZENNY = parseInt(String(process.env.STARTER_ZENNY ?? '0'), 10);
 
+// ----- Uniform Round Summary Helpers -----
+function formatAttackBlock({
+  attackerId,
+  usedNames = [],
+  dmg = 0,
+  crit = false,
+  dodged = false,
+  cancelledByBarrier = false,
+  absorbed = 0,
+  rec = 0,
+  applied = { poisonTicks: 0, stun: false, holy: 0 },
+}) {
+  const first = `• <@${attackerId}> used: ${
+    usedNames.length ? usedNames.map(n => `**${emojiLabelForChipName(n)}**`).join(' + ') : '—'
+  } → **${dmg} DMG**`;
+
+  const lines = [first];
+  if (crit) lines.push('   • 💥 Critical Hit!');
+  if (dodged) lines.push('   • 💨 Dodged (no damage)');
+  if (cancelledByBarrier) lines.push('   • 🛡️ Blocked by Barrier');
+  if (!dodged && !cancelledByBarrier && absorbed > 0) lines.push(`   • 🧱 DEF absorbed ${absorbed}`);
+  if (rec > 0) lines.push(`   • ❤️ Healed ${rec} HP`);
+  if ((applied?.poisonTicks|0) > 0) lines.push(`   • ☠️ Poison applied (${applied.poisonTicks} ticks)`);
+  if (applied?.stun) lines.push('   • ⚡ Stun applied (1 turn)');
+  if ((applied?.holy|0) > 0) lines.push('   • 🙏 Holy Regen started (3 turns)');
+  return lines.join('\n');
+}
+
+function roundFooterLine() {
+  // Uses your ROUND_SECONDS constant and /use command
+  return `⏳ Next round: **${ROUND_SECONDS}s** — play with **/use**`;
+}
+
+
 // Accept either var name from Railway: STARTER_FOLDER or STARTER_CHIPS
 const STARTER_FOLDER_RAW = process.env.STARTER_FOLDER ?? process.env.STARTER_CHIPS ?? '';
 
@@ -119,9 +153,9 @@ function grantStartersIfNeeded(userId) {
 const REGIONS = ['ACDC','SciLab','Yoka','Beach','Sharo','YumLand','UnderNet'];
 
 // Dynamic upgrade price steps (per purchase)
-const HP_MEMORY_COST_STEP      = parseInt(process.env.HP_MEMORY_COST_STEP      || '5000', 10);
-const DATA_RECONFIG_COST_STEP  = parseInt(process.env.DATA_RECONFIG_COST_STEP  || '5000', 10);
-const LUCKY_DATA_COST_STEP     = parseInt(process.env.LUCKY_DATA_COST_STEP     || '5000', 10);
+const HP_MEMORY_COST_STEP      = parseInt(process.env.HP_MEMORY_COST_STEP      || '500', 10);
+const DATA_RECONFIG_COST_STEP  = parseInt(process.env.DATA_RECONFIG_COST_STEP  || '500', 10);
+const LUCKY_DATA_COST_STEP     = parseInt(process.env.LUCKY_DATA_COST_STEP     || '500', 10);
 
 // Stat upgrade point costs (manual /navi_upgrade)
 const CRIT_DODGE_COST    = parseInt(process.env.CRIT_DODGE_COST   || '5', 10);   // points for +1% crit/dodge
@@ -404,14 +438,14 @@ CREATE TABLE IF NOT EXISTS inventory (
   FOREIGN KEY (chip_name) REFERENCES chips(name) ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
--- Thing 3: Player location (region/zone)
+-- Player location (region/zone)
 CREATE TABLE IF NOT EXISTS locations (
   user_id TEXT PRIMARY KEY,
   region  TEXT NOT NULL DEFAULT 'ACDC',
   zone    INTEGER NOT NULL DEFAULT 1
 );
 
--- Thing 3: Per-player counts for dynamic upgrade pricing
+-- Per-player counts for dynamic upgrade pricing
 CREATE TABLE IF NOT EXISTS upgrade_purchases (
   user_id TEXT NOT NULL,
   upgrade_name TEXT NOT NULL,
@@ -419,7 +453,7 @@ CREATE TABLE IF NOT EXISTS upgrade_purchases (
   PRIMARY KEY (user_id, upgrade_name)
 );
 
--- Thing 3: Active missions (one per player)
+-- Active missions (one per player)
 CREATE TABLE IF NOT EXISTS missions_active (
   user_id TEXT PRIMARY KEY,
   mission_id TEXT NOT NULL,
@@ -432,7 +466,7 @@ CREATE TABLE IF NOT EXISTS missions_active (
   assigned_at INTEGER NOT NULL
 );
 
--- Thing 3: Mission cooldowns (lockouts after quitting)
+-- Mission cooldowns (lockouts after quitting)
 CREATE TABLE IF NOT EXISTS mission_cooldowns (
   user_id TEXT PRIMARY KEY,
   until INTEGER NOT NULL,
@@ -566,7 +600,7 @@ const setInv = db.prepare(`
 `);
 const listInv = db.prepare(`SELECT chip_name, qty FROM inventory WHERE user_id=? AND qty>0 ORDER BY chip_name COLLATE NOCASE ASC`);
 
-// Thing 3 prepared statements
+//Prepared statements
 // Locations
 const getLoc = db.prepare(`SELECT region, zone FROM locations WHERE user_id=?`);
 const setLoc = db.prepare(`
@@ -765,7 +799,7 @@ async function loadViruses(force = false) {
     const isBoss = ['1','true','yes','y'].includes(boss);
     const { min: zmin, max: zmax } = parseRange(obj.zenny || obj.zenny_range || '');
 
-    // Thing 3: region/zone/chip_drop (supports multiple)
+    // Region/zone/chip_drop (supports multiple)
     const region  = (obj.region || '').trim() || null;
     const zoneNum = parseInt(obj.zone || obj.area || '0', 10) || 0; // 1..3
     const rawDrop = (obj.chip_drop || obj.chipdrop || '').trim();
@@ -847,7 +881,7 @@ async function reloadChipsFromTSV() {
   ChipsCache.rows = rows;
 }
 
-// ---------- Missions TSV Loader (Thing 3) ----------
+// ---------- Missions TSV Loader  ----------
 const MissionsCache = { ts: 0, rows: [] };
 
 async function loadMissions(force=false) {
@@ -1118,7 +1152,7 @@ function buildCatalogPage(rows, page=0) {
 // ---------- Admin catalog grant (state) ----------
 const CatalogGrantState = new Map(); // userId -> { chip, qty, recipientId }
 
-// Thing 3: Dynamic upgrade pricing
+// Dynamic upgrade pricing
 const DYN_UPGRADES = new Map([
   ['HP Memory', HP_MEMORY_COST_STEP],
   ['Data Reconfig', DATA_RECONFIG_COST_STEP],
@@ -1438,20 +1472,37 @@ nextPois2 = nextPois2Local;
   // If fight ended, clear and announce
   if (outcome) {
     endFight.run(channel.id);
-    clearRoundTimer(channel.id);
-    await channel.send([
-      `🎲 **Round resolved!**`,
-      `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
-      `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
-      `• Damage dealt: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
-      `• Ticks: ☠️🧪 Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), 🙏 Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`,
-      `• Attack cancelled by 🛡️ barrier: P1→${cancelledByBarrier1?'✅':'❌'} | P2→${cancelledByBarrier2?'✅':'❌'}`,
-      `• Dodges: P1→${dodged2?'✅':'❌'} | P2→${dodged1?'✅':'❌'}`,
-      '',
-      hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
-      outcome
-    ].join('\n'));
-    return;
+    clearRoundTimer(channel.id);await channel.send([
+  `🎲 **Round resolved!**`,
+  formatAttackBlock({
+    attackerId: f.p1_id,
+    usedNames: P1.used || [],
+    dmg: dmg1to2,
+    crit: !!crit1,
+    dodged: !!dodged2,              // Did P2 dodge P1’s attack?
+    cancelledByBarrier: !!cancelledByBarrier1,
+    absorbed: (absorbed2|0),        // Amount P2’s DEF absorbed from P1’s attack
+    rec: (rec1|0),
+  }),
+  formatAttackBlock({
+    attackerId: f.p2_id,
+    usedNames: P2.used || [],
+    dmg: dmg2to1,
+    crit: !!crit2,
+    dodged: !!dodged1,              // Did P1 dodge P2’s attack?
+    cancelledByBarrier: !!cancelledByBarrier2,
+    absorbed: (absorbed1|0),        // Amount P1’s DEF absorbed from P2’s attack
+    rec: (rec2|0),
+  }),
+  (tickPoisonP1 || tickPoisonP2 || tickHolyP1 || tickHolyP2)
+    ? `• Ticks: ☠️🧪 Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), 🙏 Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`
+    : null,
+  '',
+  hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
+  outcome
+].filter(Boolean).join('\n'));
+return;
+
   }
 
   // Persist next state and schedule next round
@@ -1481,21 +1532,36 @@ nextPois2 = nextPois2Local;
 
   scheduleRoundTimer(channel.id, () => resolveDuelRound(channel));
 
- const lines = [
- `🎲 **Round resolved!**`,
- `• <@${f.p1_id}> used: ${P1.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
- `• <@${f.p2_id}> used: ${P2.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
- `• Damage: <@${f.p1_id}> → **${dmg1to2}** | <@${f.p2_id}> → **${dmg2to1}**`,
- (absorbed1 || absorbed2) ? `• Absorbed by DEF: P1→**${absorbed2}** | P2→**${absorbed1}**` : null,
- (crit1 || crit2) ? `• Crits: P1→${crit1?'✅':'—'} | P2→${crit2?'✅':'—'}` : null,
- (tickPoisonP1 || tickPoisonP2 || tickHolyP1 || tickHolyP2)
- ? `• Ticks: ☠️🧪 Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), 🙏 Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`
- : null,
- '',
- hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
- `⏳ Next round: **${ROUND_SECONDS}s** — play with **/use**`
- ].filter(Boolean);
- await channel.send(lines.join('\n'));
+const lines = [
+  `🎲 **Round resolved!**`,
+  formatAttackBlock({
+    attackerId: f.p1_id,
+    usedNames: P1.used || [],
+    dmg: dmg1to2,
+    crit: !!crit1,
+    dodged: !!dodged2,              // P2 dodged P1?
+    cancelledByBarrier: !!cancelledByBarrier1,
+    absorbed: (absorbed2|0),
+    rec: (rec1|0),
+  }),
+  formatAttackBlock({
+    attackerId: f.p2_id,
+    usedNames: P2.used || [],
+    dmg: dmg2to1,
+    crit: !!crit2,
+    dodged: !!dodged1,              // P1 dodged P2?
+    cancelledByBarrier: !!cancelledByBarrier2,
+    absorbed: (absorbed1|0),
+    rec: (rec2|0),
+  }),
+  (tickPoisonP1 || tickPoisonP2 || tickHolyP1 || tickHolyP2)
+    ? `• Ticks: ☠️🧪 Poison(<@${f.p1_id}> **-${tickPoisonP1}** / <@${f.p2_id}> **-${tickPoisonP2}**), 🙏 Holy(<@${f.p1_id}> **+${tickHolyP1}** / <@${f.p2_id}> **+${tickHolyP2}**)`
+    : null,
+  '',
+  hpLineDuel({ ...f, p1_hp: p1hp, p2_hp: p2hp }),
+  roundFooterLine()                 // ⏳ and **/use** reminder
+].filter(Boolean);
+await channel.send(lines.join('\n'));
 }
 
 // ---------- Round resolution (PVE) ----------
@@ -1742,15 +1808,27 @@ async function resolvePveRound(channel) {
     endPVE.run(channel.id);
     clearRoundTimer(channel.id);
     await channel.send([
-      `🎲 **Round resolved!**`,
-      `• You used: ${P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
-      `• Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
-      `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
-      '',
-      hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
-      '🤝 **Double KO!**'
-    ].join('\n'));
-    return;
+  `🎲 **Round resolved!**`,
+  // You (player) summary
+  `• You: ${(P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ')) || '—'} ⇒ **${dmgPtoV}**`
+    + (critP ? ' 💥' : '')
+    + (dodgedP ? ' 💨 *dodged*' : '')
+    + (cancelledByBarrierP ? ' 🛡️ *cancelled*' : '')
+    + (absorbedP ? `  — 🧱 **${absorbedP}**` : '')
+    + (pRec ? `  — ❤️ +${pRec}` : ''),
+  // Virus summary
+  `• Virus: ${(V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ')) || (AVirus?.name || '—')} ⇒ **${dmgVtoP}**`
+    + (critV ? ' 💥' : '')
+    + (dodgedV ? ' 💨 *dodged*' : '')
+    + (cancelledByBarrierV ? ' 🛡️ *cancelled*' : '')
+    + (absorbedV ? `  — 🧱 **${absorbedV}**` : '')
+    + (vRec ? `  — ❤️ +${vRec}` : ''),
+  `• Ticks: ☠️🧪 Poison(You **-${tPoisP}** / Virus **-${tPoisV}**), 🙏 Holy(You **+${tHolyP}** / Virus **+${tHolyV}**)`,
+  '',
+  hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
+  '🤝 **Double KO!**'
+].join('\n'));
+return;
   }
   if (vhp === 0) {
     // Rewards
@@ -1793,31 +1871,50 @@ try {
     clearRoundTimer(channel.id);
 
     await channel.send([
-      `🎲 **Round resolved!**`,
-      `• Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
-      `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
-      '',
-      `🏆 **Victory!** You defeated **${s.virus_name}**.`,
-      z ? `+${z} ${zennyIcon()} awarded.` : '',
-      dropLine,
-      missionLine
-    ].filter(Boolean).join('\n'));
-    return;
+  `🎲 **Round resolved!**`,
+  `• You: ${(P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ')) || '—'} ⇒ **${dmgPtoV}**`
+    + (critP ? ' 💥' : '')
+    + (dodgedP ? ' 💨 *dodged*' : '')
+    + (cancelledByBarrierP ? ' 🛡️ *cancelled*' : '')
+    + (absorbedP ? `  — 🧱 **${absorbedP}**` : '')
+    + (pRec ? `  — ❤️ +${pRec}` : ''),
+  `• Virus: ${(V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ')) || (AVirus?.name || '—')} ⇒ **${dmgVtoP}**`
+    + (critV ? ' 💥' : '')
+    + (dodgedV ? ' 💨 *dodged*' : '')
+    + (cancelledByBarrierV ? ' 🛡️ *cancelled*' : '')
+    + (absorbedV ? `  — 🧱 **${absorbedV}**` : '')
+    + (vRec ? `  — ❤️ +${vRec}` : ''),
+  '',
+  `🏆 **Victory!** You defeated **${s.virus_name}**.`,
+  z ? `+${z} ${zennyIcon()} awarded.` : '',
+  dropLine,
+  missionLine
+].filter(Boolean).join('\n'));
+return;
 
   }
   if (php === 0) {
     endPVE.run(channel.id);
     clearRoundTimer(channel.id);
     await channel.send([
-      `🎲 **Round resolved!**`,
-      `• You used: ${P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
-      `• Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
-      `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
-      '',
-      hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
-      `💀 **Defeat...** Try again with **/virus_busting**.`
-    ].join('\n'));
-    return;
+  `🎲 **Round resolved!**`,
+  `• You: ${(P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ')) || '—'} ⇒ **${dmgPtoV}**`
+    + (critP ? ' 💥' : '')
+    + (dodgedP ? ' 💨 *dodged*' : '')
+    + (cancelledByBarrierP ? ' 🛡️ *cancelled*' : '')
+    + (absorbedP ? `  — 🧱 **${absorbedP}**` : '')
+    + (pRec ? `  — ❤️ +${pRec}` : ''),
+  `• Virus: ${(V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ')) || (AVirus?.name || '—')} ⇒ **${dmgVtoP}**`
+    + (critV ? ' 💥' : '')
+    + (dodgedV ? ' 💨 *dodged*' : '')
+    + (cancelledByBarrierV ? ' 🛡️ *cancelled*' : '')
+    + (absorbedV ? `  — 🧱 **${absorbedV}**` : '')
+    + (vRec ? `  — ❤️ +${vRec}` : ''),
+  '',
+  hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
+  `💀 **Defeat.** Try again with **/virus_busting**.`
+].join('\n'));
+return;
   }
 
   // Persist next state
@@ -1847,14 +1944,22 @@ try {
 
   await channel.send([
   `🎲 **Round resolved!**`,
-  `• You used: ${P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || '—'}`,
-  `• Virus used: ${V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ') || (AVirus?.name || '—')}`,
-  `• Damage dealt: You → **${dmgPtoV}** | Virus → **${dmgVtoP}**`,
-  `• Absorbed by DEF: You→**${absorbedV}** | Virus→**${absorbedP}**`,
-  `• Ticks (you/virus): Poison **-${tPoisP}**/**-${tPoisV}**, Holy **+${tHolyP}**/**+${tHolyV}**`,
+  `• You: ${(P.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ')) || '—'} ⇒ **${dmgPtoV}**`
+    + (critP ? ' 💥' : '')
+    + (dodgedP ? ' 💨 *dodged*' : '')
+    + (cancelledByBarrierP ? ' 🛡️ *cancelled*' : '')
+    + (absorbedP ? `  — 🧱 **${absorbedP}**` : '')
+    + (pRec ? `  — ❤️ +${pRec}` : ''),
+  `• Virus: ${(V.used?.map(n=>`**${emojiLabelForChipName(n)}**`).join(' + ')) || (AVirus?.name || '—')} ⇒ **${dmgVtoP}**`
+    + (critV ? ' 💥' : '')
+    + (dodgedV ? ' 💨 *dodged*' : '')
+    + (cancelledByBarrierV ? ' 🛡️ *cancelled*' : '')
+    + (absorbedV ? `  — 🧱 **${absorbedV}**` : '')
+    + (vRec ? `  — ❤️ +${vRec}` : ''),
+  `• Ticks: ☠️🧪 Poison(You **-${tPoisP}** / Virus **-${tPoisV}**), 🙏 Holy(You **+${tHolyP}** / Virus **+${tHolyV}**)`,
   '',
   hpLinePVE({ ...s, p_hp: php, v_hp: vhp }),
-  `⏳ Next round — play with **/use**`
+  roundFooterLine() // ⏳ **60s** + **/use** reminder
 ].join('\n'));
 }
 
