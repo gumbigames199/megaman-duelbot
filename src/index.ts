@@ -5,6 +5,16 @@ import {
 } from 'discord.js';
 
 import loadTSVBundle from './lib/tsv';
+import { invalidateBundleCache, getBundle } from './lib/data';
+import { validateLetterRule } from './lib/rules';
+import { battleEmbed } from './lib/render';
+import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end } from './lib/battle';
+import { rollRewards, rollBossRewards } from './lib/rewards';
+import { progressDefeat } from './lib/missions';
+import { unlockNextFromRegion } from './lib/unlock';
+import { getRegion } from './lib/regions';
+import { wantDmg } from './lib/settings-util';
+
 import * as Start from './commands/start';
 import * as Profile from './commands/profile';
 import * as Folder from './commands/folder';
@@ -17,16 +27,7 @@ import * as Boss from './commands/boss';
 import * as Settings from './commands/settings';
 import * as Chip from './commands/chip';
 import * as VirusDex from './commands/virusdex';
-
-import { battleEmbed } from './lib/render';
-import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end } from './lib/battle';
-import { getBundle } from './lib/data';
-import { validateLetterRule } from './lib/rules';
-import { rollRewards, rollBossRewards } from './lib/rewards';
-import { progressDefeat } from './lib/missions';
-import { unlockNextFromRegion } from './lib/unlock';
-import { getRegion } from './lib/db';
-import { wantDmg } from './lib/settings-util';
+import * as JackIn from './commands/jack_in';
 
 // ---- Env checks ----
 const TOKEN    = process.env.DISCORD_TOKEN!;
@@ -45,11 +46,14 @@ const client = new Client({
 // ---- Slash commands (guild-scoped) ----
 const commands = [
   new SlashCommandBuilder().setName('health').setDescription('Bot status (ephemeral)'),
-  new SlashCommandBuilder().setName('reload_data').setDescription('Reload TSV bundle from /data (admin only)').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder()
+    .setName('reload_data')
+    .setDescription('Reload TSV bundle from /data (admin only)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   Start.data, Profile.data, Folder.data, Shop.data, Explore.data,
   Mission.data, Boss.data, Travel.data, Leaderboard.data,
-  Settings.data, Chip.data, VirusDex.data,
-].map((c:any)=>c.toJSON());
+  Settings.data, Chip.data, VirusDex.data, JackIn.data,
+].map((c: any) => c.toJSON());
 
 // ---- Register (guild) ----
 async function registerCommands() {
@@ -61,9 +65,11 @@ async function registerCommands() {
 
 // ---- Helpers ----
 function isAdmin(ix: Interaction): boolean {
-  // @ts-ignore
-  return !!(ix.memberPermissions?.has?.(PermissionFlagsBits.ManageGuild) ||
-            ix.member?.permissions?.has?.(PermissionFlagsBits.ManageGuild));
+  const anyIx = ix as any;
+  return Boolean(
+    anyIx.memberPermissions?.has?.(PermissionFlagsBits.ManageGuild) ||
+    anyIx.member?.permissions?.has?.(PermissionFlagsBits.ManageGuild)
+  );
 }
 
 // ---- Interaction handler (slash + components) ----
@@ -83,6 +89,10 @@ client.on('interactionCreate', async (ix) => {
         const counts = Object.entries(report.counts).map(([k, v]) => `${k}:${v}`).join(' • ') || 'none';
         const warnings = report.warnings.length ? `\n⚠️ Warnings:\n- ${report.warnings.join('\n- ')}` : '';
         const errors = report.errors.length ? `\n❌ Errors:\n- ${report.errors.join('\n- ')}` : '';
+
+        // refresh the cached in-memory bundle so gameplay uses the new data immediately
+        invalidateBundleCache();
+
         await ix.editReply(`📦 TSV load: **${report.ok ? 'OK' : 'ISSUES'}**\nCounts: ${counts}${warnings}${errors}`);
         return;
       }
@@ -97,8 +107,9 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'travel')       { await Travel.execute(ix); return; }
       if (ix.commandName === 'leaderboard')  { await Leaderboard.execute(ix); return; }
       if (ix.commandName === 'settings')     { await Settings.execute(ix); return; }
-      if (ix.commandName === 'chip') { await Chip.execute(ix); return; }
-      if (ix.commandName === 'virusdex') { await VirusDex.execute(ix); return; }
+      if (ix.commandName === 'chip')         { await Chip.execute(ix); return; }
+      if (ix.commandName === 'virusdex')     { await VirusDex.execute(ix); return; }
+      if (ix.commandName === 'jack_in')      { await JackIn.execute(ix); return; }
       return;
     }
 
@@ -144,12 +155,13 @@ client.on('interactionCreate', async (ix) => {
 
         if (res.outcome === 'victory') {
           let rewardText = '';
-          if ((s as any).enemy_kind === 'boss') {
+          if (s.enemy_kind === 'boss') {
             const br = rollBossRewards(s.user_id, s.enemy_id);
             const curRegion = getRegion(s.user_id) || process.env.START_REGION_ID || 'den_city';
             const unlocked = unlockNextFromRegion(s.user_id, curRegion);
-            rewardText = `**Boss Rewards:** ${br.zenny}z${br.drops.length ? ` • chips: ${br.drops.join(', ')}` : ''}` +
-                         (unlocked.length ? `\n🔓 Unlocked: ${unlocked.join(', ')}` : '');
+            rewardText =
+              `**Boss Rewards:** ${br.zenny}z${br.drops.length ? ` • chips: ${br.drops.join(', ')}` : ''}` +
+              (unlocked.length ? `\n🔓 Unlocked: ${unlocked.join(', ')}` : '');
           } else {
             const vr = rollRewards(s.user_id, s.enemy_id);
             progressDefeat(s.user_id, s.enemy_id);

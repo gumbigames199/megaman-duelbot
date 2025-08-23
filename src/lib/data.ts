@@ -7,9 +7,16 @@ const FRESH_MS = 5 * 60 * 1000;
 
 function emptyBundle(): DataBundle {
   return {
-    chips: {}, viruses: {}, bosses: {}, regions: {},
-    virusPools: {}, dropTables: {}, missions: {}, programAdvances: {}
-  } as DataBundle;
+    chips: {},
+    viruses: {},
+    bosses: {},
+    regions: {},
+    virusPools: {},
+    dropTables: {},
+    missions: {},
+    programAdvances: {},
+    shops: {},
+  };
 }
 
 export function invalidateBundleCache() {
@@ -22,8 +29,7 @@ export function getBundle(): DataBundle {
     try {
       const { data } = loadTSVBundle(process.env.DATA_DIR || './data');
       cache = { ts: now, bundle: data || emptyBundle() };
-    } catch (e) {
-      // Keep last good bundle if available; otherwise fallback to empty
+    } catch {
       cache = cache ? cache : { ts: now, bundle: emptyBundle() };
     }
   }

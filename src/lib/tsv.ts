@@ -1,9 +1,10 @@
+// src/lib/tsv.ts
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import {
-  ChipRow, VirusRow, RegionRow, VirusPoolRow, DropTableRow, MissionRow, ProgramAdvanceRow, ShopRow,
-  DataBundle, LoadReport
+  ChipRow, VirusRow, BossRow, RegionRow, VirusPoolRow, DropTableRow,
+  MissionRow, ProgramAdvanceRow, ShopRow, DataBundle, LoadReport
 } from './types';
 
 // ---- tiny TSV parser ----
@@ -13,7 +14,7 @@ function parseTSV(text: string): Array<Record<string, string>> {
   const headers = lines[0].split('\t').map(h => h.trim());
   return lines.slice(1).map(line => {
     const cols = line.split('\t');
-    const obj: Record<string,string> = {};
+    const obj: Record<string, string> = {};
     headers.forEach((h, i) => (obj[h] = (cols[i] ?? '').trim()));
     return obj;
   });
@@ -22,101 +23,129 @@ function readTSV(filePath: string) {
   const text = fs.readFileSync(filePath, 'utf8');
   return parseTSV(text);
 }
-function n(v: string, d=0) { const x = Number(v); return Number.isFinite(x) ? x : d; }
-function b01(v: string) { return ['1','true','yes','y'].includes((v||'').toLowerCase()) ? 1 : 0; }
+function n(v: string, d = 0) { const x = Number(v); return Number.isFinite(x) ? x : d; }
+function b01(v: string) { return ['1', 'true', 'yes', 'y'].includes(String(v || '').toLowerCase()) ? 1 : 0; }
 
 // ---- zod schemas (soft) ----
 const chipSchema = z.object({
-  id:z.string().min(1), name:z.string().min(1), element:z.string().min(1),
-  letters:z.string().min(1),
-  mb_cost:z.string(), power:z.string(), hits:z.string(), acc:z.string(),
-  category:z.string(), effects:z.string().optional().default(''),
-  description:z.string().optional().default(''),
-  image_url:z.string().optional().default(''),
-  rarity:z.string(),
-  zenny_cost:z.string().optional().default('0'),
-  stock:z.string().optional().default('1'),
-  is_upgrade:z.string().optional().default('0'),
+  id: z.string().min(1), name: z.string().min(1), element: z.string().min(1),
+  letters: z.string().min(1),
+  mb_cost: z.string(), power: z.string(), hits: z.string(), acc: z.string(),
+  category: z.string(), effects: z.string().optional().default(''),
+  description: z.string().optional().default(''),
+  image_url: z.string().optional().default(''),
+  rarity: z.string(),
+  zenny_cost: z.string().optional().default('0'),
+  stock: z.string().optional().default('1'),
+  is_upgrade: z.string().optional().default('0'),
 });
 const virusSchema = z.object({
-  id:z.string(), name:z.string(), element:z.string(),
-  hp:z.string(), atk:z.string(), def:z.string(), spd:z.string(), acc:z.string(),
-  cr:z.string(),
-  region:z.string(), zone:z.string().optional().default('1'),
-  drop_table_id:z.string().optional().default(''),
-  image_url:z.string().optional().default(''), anim_url:z.string().optional().default(''),
-  description:z.string().optional().default(''),
-  zenny_range:z.string().optional().default('0-0'),
-  move_1json:z.string().optional(), move_2json:z.string().optional(),
-  move_3json:z.string().optional(), move_4json:z.string().optional(),
-  boss:z.string().optional(), stat_points:z.string().optional(),
+  id: z.string(), name: z.string(), element: z.string(),
+  hp: z.string(), atk: z.string(), def: z.string(), spd: z.string(), acc: z.string(),
+  cr: z.string(),
+  region: z.string(), zone: z.string().optional().default('1'),
+  drop_table_id: z.string().optional().default(''),
+  image_url: z.string().optional().default(''), anim_url: z.string().optional().default(''),
+  description: z.string().optional().default(''),
+  zenny_range: z.string().optional().default('0-0'),
+  move_1json: z.string().optional(), move_2json: z.string().optional(),
+  move_3json: z.string().optional(), move_4json: z.string().optional(),
+  boss: z.string().optional(), stat_points: z.string().optional(),
+});
+const bossSchema = z.object({
+  id: z.string(), name: z.string(), element: z.string(),
+  hp: z.string(), atk: z.string(), def: z.string(), spd: z.string(), acc: z.string(),
+  cr: z.string(),
+  region_id: z.string().optional().default(''),
+  signature_chip_id: z.string().optional().default(''),
+  image_url: z.string().optional().default(''),
+  anim_url: z.string().optional().default(''),
+  background_url: z.string().optional().default(''),
+  phase_thresholds: z.string().optional().default(''),  // "0.7,0.4"
+  effects: z.string().optional().default(''),
 });
 const regionSchema = z.object({
-  id:z.string(), name:z.string(),
-  background_url:z.string().optional().default(''),
-  encounter_rate:z.string().optional().default('0.7'),
-  virus_pool_id:z.string().optional().default(''),
-  shop_id:z.string().optional().default(''),
-  boss_id:z.string().optional().default(''),
-  min_level:z.string().optional().default('1'),
-  description:z.string().optional().default(''),
-  field_effects:z.string().optional().default(''),
+  id: z.string(), name: z.string(),
+  background_url: z.string().optional().default(''),
+  encounter_rate: z.string().optional().default('0.7'),
+  virus_pool_id: z.string().optional().default(''),
+  shop_id: z.string().optional().default(''),
+  boss_id: z.string().optional().default(''),
+  min_level: z.string().optional().default('1'),
+  description: z.string().optional().default(''),
+  field_effects: z.string().optional().default(''),
+  next_region_ids: z.string().optional().default(''), // "yacobus,undernet_1"
 });
-const poolSchema = z.object({ id:z.string(), virus_ids:z.string() });
-const dropSchema = z.object({ id:z.string(), entries:z.string() });
+const poolSchema = z.object({ id: z.string(), virus_ids: z.string() });
+const dropSchema = z.object({ id: z.string(), entries: z.string() });
 const missionSchema = z.object({
-  id:z.string(), name:z.string(), type:z.string(),
-  requirement:z.string(), region_id:z.string(),
-  reward_zenny:z.string().optional().default('0'),
-  reward_chip_ids:z.string().optional().default(''),
-  description:z.string().optional().default(''),
-  image_url:z.string().optional().default(''),
+  id: z.string(), name: z.string(), type: z.string(),
+  requirement: z.string(), region_id: z.string(),
+  reward_zenny: z.string().optional().default('0'),
+  reward_chip_ids: z.string().optional().default(''),
+  description: z.string().optional().default(''),
+  image_url: z.string().optional().default(''),
 });
 const paSchema = z.object({
-  id:z.string(), name:z.string(), result_chip_id:z.string(),
-  required_chip_ids:z.string(), required_letters:z.string(),
-  description:z.string().optional().default(''),
+  id: z.string(), name: z.string(), result_chip_id: z.string(),
+  required_chip_ids: z.string(), required_letters: z.string(),
+  description: z.string().optional().default(''),
 });
-const shopSchema = z.object({ id:z.string(), region_id:z.string(), entries:z.string() });
+const shopSchema = z.object({ id: z.string(), region_id: z.string(), entries: z.string() });
 
 // ---- loaders ----
 function toChip(r: z.infer<typeof chipSchema>): ChipRow {
   return {
-    id:r.id, name:r.name, element:r.element as any, letters:r.letters,
-    mb_cost:n(r.mb_cost), power:n(r.power), hits:n(r.hits||'1'), acc:Number(r.acc||'0.95'),
-    category:r.category as any, effects:r.effects||'', description:r.description||'',
-    image_url:r.image_url||'', rarity:n(r.rarity||'1'),
-    zenny_cost:n(r.zenny_cost||'0'), stock:n(r.stock||'1'), is_upgrade:b01(r.is_upgrade||'0'),
+    id: r.id, name: r.name, element: r.element as any, letters: r.letters,
+    mb_cost: n(r.mb_cost), power: n(r.power), hits: n(r.hits || '1'), acc: Number(r.acc || '0.95'),
+    category: r.category as any, effects: r.effects || '', description: r.description || '',
+    image_url: r.image_url || '', rarity: n(r.rarity || '1'),
+    zenny_cost: n(r.zenny_cost || '0'), stock: n(r.stock || '1'), is_upgrade: b01(r.is_upgrade || '0'),
   };
 }
 function toVirus(r: z.infer<typeof virusSchema>): VirusRow {
   return {
-    id:r.id, name:r.name, element:r.element as any,
-    hp:n(r.hp), atk:n(r.atk), def:n(r.def), spd:n(r.spd), acc:n(r.acc),
-    cr:n(r.cr),
-    region:r.region, zone:n(r.zone||'1'),
-    drop_table_id:r.drop_table_id||'',
-    image_url:r.image_url||'', anim_url:r.anim_url||'',
-    description:r.description||'',
-    zenny_range:r.zenny_range||'0-0',
-    move_1json:r.move_1json, move_2json:r.move_2json, move_3json:r.move_3json, move_4json:r.move_4json,
-    boss:r.boss, stat_points:n(r.stat_points||'0'),
+    id: r.id, name: r.name, element: r.element as any,
+    hp: n(r.hp), atk: n(r.atk), def: n(r.def), spd: n(r.spd), acc: n(r.acc),
+    cr: n(r.cr),
+    region: r.region, zone: n(r.zone || '1'),
+    drop_table_id: r.drop_table_id || '',
+    image_url: r.image_url || '', anim_url: r.anim_url || '',
+    description: r.description || '',
+    zenny_range: r.zenny_range || '0-0',
+    move_1json: r.move_1json, move_2json: r.move_2json, move_3json: r.move_3json, move_4json: r.move_4json,
+    boss: r.boss, stat_points: n(r.stat_points || '0'),
+  };
+}
+function toBoss(r: z.infer<typeof bossSchema>): BossRow {
+  return {
+    id: r.id, name: r.name, element: r.element as any,
+    hp: n(r.hp), atk: n(r.atk), def: n(r.def), spd: n(r.spd), acc: n(r.acc),
+    cr: n(r.cr),
+    region_id: r.region_id || '',
+    signature_chip_id: r.signature_chip_id || '',
+    image_url: r.image_url || '',
+    anim_url: r.anim_url || '',
+    background_url: r.background_url || '',
+    phase_thresholds: r.phase_thresholds || '',
+    effects: r.effects || '',
   };
 }
 function toRegion(r: z.infer<typeof regionSchema>): RegionRow {
   return {
-    id:r.id, name:r.name, background_url:r.background_url||'',
-    encounter_rate:Number(r.encounter_rate||'0.7'),
-    virus_pool_id:r.virus_pool_id||'', shop_id:r.shop_id||'',
-    boss_id:r.boss_id||'', min_level:n(r.min_level||'1'),
-    description:r.description||'', field_effects:r.field_effects||'',
+    id: r.id, name: r.name, background_url: r.background_url || '',
+    encounter_rate: Number(r.encounter_rate || '0.7'),
+    virus_pool_id: r.virus_pool_id || '', shop_id: r.shop_id || '',
+    boss_id: r.boss_id || '', min_level: n(r.min_level || '1'),
+    description: r.description || '', field_effects: r.field_effects || '',
+    next_region_ids: r.next_region_ids || '',
   };
 }
 
-export function loadTSVBundle(dir='./data'): { data: DataBundle; report: LoadReport } {
+export function loadTSVBundle(dir = './data'): { data: DataBundle; report: LoadReport } {
   const errors: string[] = [];
   const warnings: string[] = [];
-  const counts: Record<string,number> = {};
+  const counts: Record<string, number> = {};
 
   const rd = (f: string) => readTSV(path.join(dir, f));
 
@@ -137,6 +166,15 @@ export function loadTSVBundle(dir='./data'): { data: DataBundle; report: LoadRep
       return [v.id, v] as const;
     }).filter(Boolean) as any
   ); counts.viruses = Object.keys(viruses).length;
+
+  const bosses = Object.fromEntries(
+    (fs.existsSync(path.join(dir, 'bosses.tsv')) ? rd('bosses.tsv') : []).map(row => {
+      const p = bossSchema.safeParse(row);
+      if (!p.success) { errors.push(`bosses: ${row.id ?? row.name ?? 'unknown'} ⇒ ${p.error.issues[0]?.message}`); return null; }
+      const v = toBoss(p.data);
+      return [v.id, v] as const;
+    }).filter(Boolean) as any
+  ); counts.bosses = Object.keys(bosses).length;
 
   const regions = Object.fromEntries(
     rd('regions.tsv').map(row => {
@@ -167,15 +205,16 @@ export function loadTSVBundle(dir='./data'): { data: DataBundle; report: LoadRep
     rd('missions.tsv').map(row => {
       const p = missionSchema.safeParse(row);
       if (!p.success) { errors.push(`missions: ${row.id ?? 'unknown'} ⇒ ${p.error.issues[0]?.message}`); return null; }
-      return [p.data.id, {
-        ...p.data,
-        reward_zenny: String(p.data.reward_zenny||'0'),
-      } as unknown as MissionRow] as const;
+      const m: MissionRow = {
+        ...(p.data as any),
+        reward_zenny: n(p.data.reward_zenny || '0', 0),
+      } as any;
+      return [m.id, m] as const;
     }).filter(Boolean) as any
   ); counts.missions = Object.keys(missions).length;
 
   const programAdvances = Object.fromEntries(
-    rd('program_advances.tsv').map(row => {
+    (fs.existsSync(path.join(dir, 'program_advances.tsv')) ? rd('program_advances.tsv') : []).map(row => {
       const p = paSchema.safeParse(row);
       if (!p.success) { errors.push(`program_advances: ${row.id ?? 'unknown'} ⇒ ${p.error.issues[0]?.message}`); return null; }
       return [p.data.id, p.data as unknown as ProgramAdvanceRow] as const;
@@ -183,7 +222,7 @@ export function loadTSVBundle(dir='./data'): { data: DataBundle; report: LoadRep
   ); counts.program_advances = Object.keys(programAdvances).length;
 
   const shops = Object.fromEntries(
-    rd('shops.tsv').map(row => {
+    (fs.existsSync(path.join(dir, 'shops.tsv')) ? rd('shops.tsv') : []).map(row => {
       const p = shopSchema.safeParse(row);
       if (!p.success) { errors.push(`shops: ${row.id ?? 'unknown'} ⇒ ${p.error.issues[0]?.message}`); return null; }
       return [p.data.id, p.data as unknown as ShopRow] as const;
@@ -195,6 +234,8 @@ export function loadTSVBundle(dir='./data'): { data: DataBundle; report: LoadRep
   for (const r of Object.values(regions)) {
     if (r.virus_pool_id && !virusPools[r.virus_pool_id]) warnings.push(`regions.${r.id}: missing virus_pool_id ${r.virus_pool_id}`);
     if (r.shop_id && !shops[r.shop_id]) warnings.push(`regions.${r.id}: missing shop_id ${r.shop_id}`);
+    if (r.boss_id && !bosses[r.boss_id]) warnings.push(`regions.${r.id}: missing boss_id ${r.boss_id}`);
+    // next_region_ids are free-form; no strict check to allow hidden areas
   }
   // viruses → drop_table
   for (const v of Object.values(viruses)) {
@@ -202,14 +243,29 @@ export function loadTSVBundle(dir='./data'): { data: DataBundle; report: LoadRep
   }
   // drop tables reference chips
   for (const dt of Object.values(dropTables)) {
-    const entries = (dt.entries||'').split(',').map(x=>x.trim()).filter(Boolean);
+    const entries = String(dt.entries || '').split(',').map(x => x.trim()).filter(Boolean);
     for (const e of entries) {
       const id = e.split(':')[0]?.trim();
       if (id && !chips[id]) warnings.push(`drop_tables.${dt.id}: unknown chip "${id}"`);
     }
   }
+  // program advances reference chips
+  for (const pa of Object.values(programAdvances)) {
+    const req = String(pa.required_chip_ids || '').split(',').map(x => x.trim()).filter(Boolean);
+    const miss = req.filter(id => !chips[id]);
+    if (miss.length) warnings.push(`program_advances.${pa.id}: unknown chips ${miss.join(', ')}`);
+    if (pa.result_chip_id && !chips[pa.result_chip_id]) warnings.push(`program_advances.${pa.id}: unknown result_chip_id ${pa.result_chip_id}`);
+  }
+  // shops entries reference chips
+  for (const sh of Object.values(shops)) {
+    const entries = String(sh.entries || '').split(',').map(x => x.trim()).filter(Boolean);
+    for (const e of entries) {
+      const id = e.split(':')[0]?.trim();
+      if (id && !chips[id]) warnings.push(`shops.${sh.id}: unknown chip "${id}"`);
+    }
+  }
 
-  const bundle: DataBundle = { chips, viruses, regions, virusPools, dropTables, missions, programAdvances, shops };
+  const bundle: DataBundle = { chips, viruses, bosses, regions, virusPools, dropTables, missions, programAdvances, shops };
   const ok = errors.length === 0;
   return { data: bundle, report: { ok, errors, warnings, counts } };
 }
