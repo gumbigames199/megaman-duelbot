@@ -1,19 +1,18 @@
 import { RNG } from './rng';
 import { getBundle } from './data';
-import { db, getPlayer } from './db';
+import { db, getPlayer, markSeenVirus } from './db';
 import { Element } from './types';
 import { computeDamage, rollHit } from './damage';
 import { tickStart, tickEnd, StatusState } from './effects';
 import { detectPA } from './pas';
-import { markSeenVirus } from './db';
 
-export type EnemyKind = 'virus'|'boss';
+export type EnemyKind = 'virus' | 'boss';
 
 export interface BattleState {
   id: string;
   user_id: string;
 
-  enemy_kind: EnemyKind; // NEW
+  enemy_kind: EnemyKind;
   enemy_id: string;
   enemy_hp: number;
 
@@ -36,10 +35,11 @@ export interface BattleState {
   enemy_status: StatusState;
 
   // Boss phases
-  phase_index?: number;         // NEW (0-based)
-  phase_thresholds?: number[];  // e.g. [0.7, 0.4]
+  phase_index?: number;        // 0-based
+  phase_thresholds?: number[]; // e.g., [0.7, 0.4]
 }
 
+// ---- Storage (SQLite row) ----
 const ensureTempTable = () => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS temp_battles (
@@ -80,12 +80,19 @@ const Q = {
   del: db.prepare(`DELETE FROM temp_battles WHERE id=?`),
 };
 
+// Helper to grab virus/boss row
 function enemyMeta(kind: EnemyKind, id: string) {
   const b = getBundle();
   return kind === 'boss' ? b.bosses[id] : b.viruses[id];
 }
 
-export function createBattle(userId: string, enemyId: string, playerElement: Element|'Neutral', enemyKind: EnemyKind = 'virus'): BattleState {
+// ---- Public API ----
+export function createBattle(
+  userId: string,
+  enemyId: string,
+  playerElement: Element | 'Neutral',
+  enemyKind: EnemyKind = 'virus'
+): BattleState {
   const rng = new RNG();
   const id = `b_${userId}_${Date.now()}`;
 
@@ -98,31 +105,57 @@ export function createBattle(userId: string, enemyId: string, playerElement: Ele
     eva: p?.evasion ?? 10,
   };
 
+  // Build deck from folder or fallback to first 30 chips
   const { chips } = getBundle();
   const folder = (db.prepare(`SELECT chip_id FROM folder WHERE user_id=? ORDER BY slot`).all(userId) as any[])
-    .map(r => r.chip_id).filter(Boolean);
+    .map(r => r.chip_id)
+    .filter(Boolean);
   const fallback = Object.keys(chips).slice(0, 30);
   const deck = (folder.length ? folder : fallback).slice();
-  for (let i = deck.length - 1; i > 0; i--) { const j = rng.int(0, i); [deck[i], deck[j]] = [deck[j], deck[i]]; }
+
+  // Shuffle
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = rng.int(0, i);
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
 
   const em = enemyMeta(enemyKind, enemyId);
   const enemy_hp = em?.hp ?? 80;
 
-  const thresholds = (em?.phase_thresholds || '')
-    .split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n) && n > 0 && n < 1);
+  // Parse boss thresholds like "0.7,0.4"
+  const thresholds = String(em?.phase_thresholds || '')
+    .split(',')
+    .map(s => parseFloat(s.trim()))
+    .filter(n => !isNaN(n) && n > 0 && n < 1);
 
   const s: BattleState = {
-    id, user_id: userId,
-    enemy_kind: enemyKind, enemy_id: enemyId, enemy_hp,
+    id,
+    user_id: userId,
+    enemy_kind: enemyKind,
+    enemy_id: enemyId,
+    enemy_hp,
     player_element: playerElement,
     player_hp: stats.hp_max,
     player_hp_max: stats.hp_max,
-    navi_atk: stats.atk, navi_def: stats.def, navi_acc: stats.acc, navi_eva: stats.eva,
-    turn: 1, seed: rng.seed,
-    draw_pile: deck, discard_pile: [], hand: [], locked: [],
-    player_status: {}, enemy_status: {},
-    phase_index: 0, phase_thresholds: thresholds,
+    navi_atk: stats.atk,
+    navi_def: stats.def,
+    navi_acc: stats.acc,
+    navi_eva: stats.eva,
+    turn: 1,
+    seed: rng.seed,
+    draw_pile: deck,
+    discard_pile: [],
+    hand: [],
+    locked: [],
+    player_status: {},
+    enemy_status: {},
+    phase_index: 0,
+    phase_thresholds: thresholds,
   };
+
+  // Record dex seen
+  if (enemyKind === 'virus') markSeenVirus(userId, enemyId);
+
   drawHand(s, 5);
   save(s);
   return s;
@@ -131,7 +164,7 @@ export function createBattle(userId: string, enemyId: string, playerElement: Ele
 export const initBattle = createBattle; // legacy alias
 
 export function load(id: string): BattleState | null {
-  const r = Q.get.get(id);
+  const r = Q.get.get(id) as any;
   if (!r) return null;
   return {
     id: r.id,
@@ -159,35 +192,56 @@ export function load(id: string): BattleState | null {
   } as BattleState;
 }
 
-export function end(id: string) { Q.del.run(id); } // keep only once
+export function save(s: BattleState) {
+  Q.put.run(
+    s.id, s.user_id, s.enemy_kind, s.enemy_id, s.enemy_hp,
+    s.player_element, s.player_hp, s.player_hp_max,
+    s.navi_atk, s.navi_def, s.navi_acc, s.navi_eva,
+    s.turn, s.seed,
+    JSON.stringify(s.draw_pile), JSON.stringify(s.discard_pile),
+    JSON.stringify(s.hand), JSON.stringify(s.locked),
+    JSON.stringify(s.player_status), JSON.stringify(s.enemy_status),
+    s.phase_index ?? 0, JSON.stringify(s.phase_thresholds ?? [])
+  );
+}
 
-export function drawHand(s: BattleState, n=5) {
+export function end(id: string) { Q.del.run(id); }
+
+// ---- Mechanics ----
+export function drawHand(s: BattleState, n = 5) {
   while (s.hand.length < n) {
     if (!s.draw_pile.length) {
       s.draw_pile = s.discard_pile.slice();
       s.discard_pile = [];
       const rng = new RNG(s.seed ^ (s.turn << 1));
-      for (let i = s.draw_pile.length - 1; i > 0; i--) { const j = rng.int(0, i); [s.draw_pile[i], s.draw_pile[j]] = [s.draw_pile[j], s.draw_pile[i]]; }
+      for (let i = s.draw_pile.length - 1; i > 0; i--) {
+        const j = rng.int(0, i);
+        [s.draw_pile[i], s.draw_pile[j]] = [s.draw_pile[j], s.draw_pile[i]];
+      }
     }
     if (!s.draw_pile.length) break;
     s.hand.push(s.draw_pile.pop()!);
   }
 }
 
-export function resolveTurn(s: BattleState, chosenIds: string[]): { log: string; enemy_hp: number; player_hp: number; outcome: 'ongoing'|'victory'|'defeat' } {
+export function resolveTurn(
+  s: BattleState,
+  chosenIds: string[]
+): { log: string; enemy_hp: number; player_hp: number; outcome: 'ongoing' | 'victory' | 'defeat' } {
   const em = enemyMeta(s.enemy_kind, s.enemy_id);
   const parts: string[] = [];
 
-  // Start-of-turn ticks
-  const ps = tickStart(s.player_hp, s.player_status); s.player_hp = ps.hp; if (ps.notes.length) parts.push(`you: ${ps.notes.join(', ')}`);
-  const es = tickStart(s.enemy_hp, s.enemy_status); s.enemy_hp = es.hp; if (es.notes.length) parts.push(`enemy: ${es.notes.join(', ')}`);
+  // Start-of-turn status ticks
+  const ps = tickStart(s.player_hp, s.player_status);
+  s.player_hp = ps.hp; if (ps.notes.length) parts.push(`you: ${ps.notes.join(', ')}`);
+  const es = tickStart(s.enemy_hp, s.enemy_status);
+  s.enemy_hp = es.hp; if (es.notes.length) parts.push(`enemy: ${es.notes.join(', ')}`);
 
-// PLAYER ACTION
-if (playerActs) {
+  // ----- PLAYER ACTION -----
   const { chips } = getBundle();
   let seq = chosenIds.slice();
 
-  // Program Advance collapse
+  // Program Advance collapse (single-turn replacement)
   const paResult = detectPA(seq);
   if (paResult) seq = [paResult];
 
@@ -207,73 +261,35 @@ if (playerActs) {
       target_evasion: 10,
       def_element: (em?.element as any) ?? 'Neutral',
       rng: () => {
-        const x = Math.imul(1664525, (s.seed ^ (s.turn << 8) ^ (i+1))) + 1013904223;
+        const x = Math.imul(1664525, (s.seed ^ (s.turn << 8) ^ (i + 1))) + 1013904223;
         return ((x >>> 0) % 1_000_000) / 1_000_000;
       },
     };
     if (!rollHit(ctx)) { parts.push(`${id}: miss`); return; }
-    const d = computeDamage(ctx);
-    total += d;
-    parts.push(`${id}${paResult && i===0 ? ' (PA)' : ''}: ${d}`);
-  });
-
-if (enemyKind === 'virus') markSeenVirus(userId, enemyId);
-
-  // PLAYER ACTION
-if (playerActs) {
-  const { chips } = getBundle();
-  let seq = chosenIds.slice();
-
-  // Program Advance collapse
-  const paResult = detectPA(seq);
-  if (paResult) seq = [paResult];
-
-  let total = 0;
-  seq.forEach((id, i) => {
-    const c = chips[id]; if (!c) return;
-    const ctx = {
-      chip_pow: c.power || 0,
-      hits: Math.max(1, c.hits || 1),
-      navi_atk: s.navi_atk,
-      target_def: em?.def ?? 6,
-      chip_element: c.element as any,
-      navi_element: s.player_element as any,
-      crit_chance: 0.06,
-      acc: c.acc ?? 0.95,
-      navi_acc: s.navi_acc,
-      target_evasion: 10,
-      def_element: (em?.element as any) ?? 'Neutral',
-      rng: () => {
-        const x = Math.imul(1664525, (s.seed ^ (s.turn << 8) ^ (i+1))) + 1013904223;
-        return ((x >>> 0) % 1_000_000) / 1_000_000;
-      },
-    };
-    if (!rollHit(ctx)) { parts.push(`${id}: miss`); return; }
-    const d = computeDamage(ctx);
-    total += d;
-    parts.push(`${id}${paResult && i===0 ? ' (PA)' : ''}: ${d}`);
-  });
+    let d = computeDamage(ctx);
 
     // enemy barrier (MVP)
-    if (s.enemy_status.barrier && s.enemy_status.barrier > 0 && total > 0) {
-      const absorb = Math.min(s.enemy_status.barrier, total);
-      s.enemy_status.barrier! -= absorb; total -= absorb;
+    if (s.enemy_status.barrier && s.enemy_status.barrier > 0 && d > 0) {
+      const absorb = Math.min(s.enemy_status.barrier, d);
+      s.enemy_status.barrier! -= absorb; d -= absorb;
       parts.push(`enemy barrier absorbed ${absorb}`);
       if (s.enemy_status.barrier! <= 0) delete s.enemy_status.barrier;
     }
-    s.enemy_hp = Math.max(0, s.enemy_hp - total);
-  }
 
-  // Phase shift check (boss only)
+    total += Math.max(0, d);
+    parts.push(`${id}${paResult && i === 0 ? ' (PA)' : ''}: ${Math.max(0, d)}`);
+  });
+
+  s.enemy_hp = Math.max(0, s.enemy_hp - total);
+
+  // Boss phase shift (simple)
   if (s.enemy_kind === 'boss' && s.phase_thresholds?.length && em?.hp) {
     const pct = s.enemy_hp / em.hp;
-    const nextIdx = (s.phase_index ?? 0);
+    const nextIdx = s.phase_index ?? 0;
     const trigger = s.phase_thresholds[nextIdx];
     if (trigger !== undefined && pct <= trigger) {
       s.phase_index = nextIdx + 1;
-      // Simple phase buff: add barrier and +20% atk/def on enemy meta proxy (handled in calc via status/def)
       s.enemy_status.barrier = (s.enemy_status.barrier ?? 0) + 100;
-      // Soft log
       parts.push(`phase ${s.phase_index} — boss powers up!`);
     }
   }
@@ -283,7 +299,7 @@ if (playerActs) {
     return { log: parts.join(' • ') || '—', enemy_hp: s.enemy_hp, player_hp: s.player_hp, outcome: 'victory' };
   }
 
-  // Enemy action (very simple)
+  // ----- ENEMY ACTION -----
   if (!(s.enemy_status.freeze) && !(s.enemy_status.paralyze && Math.random() < 0.5)) {
     const basePow = Math.max(10, em?.atk ?? 10) * (s.enemy_kind === 'boss' ? 5 : 4);
     const ctx = {
@@ -301,7 +317,7 @@ if (playerActs) {
       rng: Math.random,
     };
     if (!rollHit(ctx)) {
-      parts.push(`enemy: miss`);
+      parts.push('enemy: miss');
     } else {
       let dmg = computeDamage(ctx);
       if (s.player_status.barrier && s.player_status.barrier > 0) {
@@ -317,6 +333,7 @@ if (playerActs) {
     parts.push('enemy is stunned');
   }
 
+  // End-of-turn ticks
   tickEnd(s.player_status);
   tickEnd(s.enemy_status);
 
@@ -326,9 +343,9 @@ if (playerActs) {
   s.locked = [];
   drawHand(s, 5);
 
-  const outcome = s.player_hp <= 0 ? 'defeat' : 'ongoing' as const;
+  const outcome = s.player_hp <= 0 ? 'defeat' : 'ongoing';
   save(s);
-  return { log: parts.join(' • ') || '—', enemy_hp: s.enemy_hp, player_hp: s.player_hp, outcome };
+  return { log: parts.join(' • ') || '—', enemy_hp: s.enemy_hp, player_hp: s.player_hp, outcome: outcome as any };
 }
 
 function tidyAfterTurn(s: BattleState) {
@@ -337,5 +354,6 @@ function tidyAfterTurn(s: BattleState) {
   s.locked = [];
 }
 
-export function tryRun(_s: BattleState): boolean { return Math.random() < 0.5; }
-export function end(id: string) { Q.del.run(id); }
+export function tryRun(_s: BattleState): boolean {
+  return Math.random() < 0.5;
+}
