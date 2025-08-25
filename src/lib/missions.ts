@@ -1,12 +1,13 @@
+// src/lib/mission.ts
 import { db, addZenny, grantChip } from './db';
 import { getBundle } from './data';
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS missions_state (
-  user_id TEXT NOT NULL,
+  user_id   TEXT NOT NULL,
   mission_id TEXT NOT NULL,
-  state TEXT NOT NULL DEFAULT 'Available', -- Available|Accepted|Completed|TurnedIn
-  counter INTEGER NOT NULL DEFAULT 0,
+  state     TEXT NOT NULL DEFAULT 'Available', -- Available|Accepted|Completed|TurnedIn
+  counter   INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (user_id, mission_id)
 );
 `);
@@ -35,7 +36,7 @@ export function listMissionsFor(userId: string): MissionStateRow[] {
     const row = Q.getRow.get(userId, id) as MissionStateRow | undefined;
     mine.set(
       id,
-      row ?? { user_id: userId, mission_id: id, state: 'Available', counter: 0 },
+      row ?? { user_id: userId, mission_id: id, state: 'Available', counter: 0 }
     );
   }
   return Array.from(mine.values());
@@ -86,12 +87,9 @@ export function progressDefeat(userId: string, virusId: string) {
     const needCount = Number(needCountStr || '1');
     if (needId !== virusId) continue;
 
-    const row = (Q.getRow.get(userId, m.id) as MissionStateRow | undefined) ?? {
-      user_id: userId,
-      mission_id: m.id,
-      state: 'Available' as MissionState,
-      counter: 0,
-    };
+    const row =
+      (Q.getRow.get(userId, m.id) as MissionStateRow | undefined) ??
+      ({ user_id: userId, mission_id: m.id, state: 'Available', counter: 0 } as MissionStateRow);
 
     const nextCounter = Math.min(needCount, (row.counter ?? 0) + 1);
     const nextState =
