@@ -2,13 +2,14 @@
   "name": "meganet-discord-bn",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "engines": { "node": ">=20.10" },
   "scripts": {
-    "dev": "NODE_ENV=development ts-node --esm --transpile-only src/index.ts",
-    "start": "node --experimental-specifier-resolution=node dist/index.js",
+    "dev": "NODE_ENV=development ts-node --transpile-only src/index.ts",
+    "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json",
-    "reload:data": "ts-node --esm --transpile-only src/scripts/reload-data.ts",
+    "build:strict": "npm run reload:data && tsc -p tsconfig.json",
+    "reload:data": "ts-node --transpile-only src/scripts/reload-data.ts",
     "lint": "eslint ."
   },
   "dependencies": {
