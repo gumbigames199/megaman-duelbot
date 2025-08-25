@@ -4,13 +4,13 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=20.10" },
-  "scripts": {
-    "dev": "NODE_ENV=development ts-node --transpile-only src/index.ts",
-    "start": "node dist/index.js",
-    "build": "tsc -p tsconfig.json",
-    "lint": "eslint .",
-    "reload:data": "ts-node --transpile-only scripts/reload-data.ts"
-  },
+ "scripts": {
+  "dev": "NODE_ENV=development ts-node --transpile-only src/index.ts",
+  "start": "node dist/index.js",
+  "build": "npm run reload:data && tsc -p tsconfig.json",
+  "lint": "eslint .",
+  "reload:data": "ts-node --transpile-only src/scripts/reload-data.ts"
+},
   "dependencies": {
     "discord.js": "^14.15.3",
     "better-sqlite3": "^11.7.0",

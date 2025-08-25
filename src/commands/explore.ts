@@ -9,9 +9,10 @@ import {
   ButtonStyle,
 } from 'discord.js';
 
-import { getPlayer, getRegion } from '../lib/db';
+import { getPlayer } from '../lib/db';
+import { getRegion } from '../lib/regions';
 import { rollEncounter } from '../lib/regions';
-import { createBattle, save } from '../lib/battle';
+import { createBattle } from '../lib/battle';
 import { getBundle } from '../lib/data';
 
 export const data = new SlashCommandBuilder()
@@ -32,45 +33,46 @@ export async function execute(ix: ChatInputCommandInteraction) {
     return;
   }
 
-  const { viruses } = getBundle();
+  const { viruses, chips } = getBundle();
   const v = viruses[encounter.virusId];
   if (!v) {
     await ix.reply({ ephemeral: true, content: `⚠️ Virus ${encounter.virusId} not found in TSV.` });
     return;
   }
 
-  // init battle state
-  const battle = createBattle(ix.user.id, encounter.virusId);
-  const battle = createBattle(ix.user.id, encounter.virusId, p.element);
+  // Init battle state (pass player element)
+  const battle = createBattle(ix.user.id, encounter.virusId, (p.element as any) || 'Neutral', 'virus');
 
-  // public embed (battlefield)
+  // Public embed
   const embed = new EmbedBuilder()
     .setTitle(`⚔️ Encounter! ${v.name}`)
     .setDescription(v.description || '')
-    .addFields({ name: 'HP', value: `${v.hp}`, inline: true })
-    .setThumbnail(v.image_url || null)
-    .setImage(v.anim_url || null)
+    .addFields({ name: 'HP', value: String(v.hp), inline: true })
     .setFooter({ text: `Battle ID: ${battle.id}` });
+
+  if (v.image_url) embed.setThumbnail(v.image_url);
+  const big = v.anim_url || v.image_url;
+  if (big) embed.setImage(big);
 
   await ix.reply({ embeds: [embed] });
 
-  // ephemeral “Custom Screen” — 5 drawn chips
+  // Ephemeral “Custom Screen” — 5 drawn chips
+  const opts = battle.hand.slice(0, 25).map((id) => {
+    const c = chips[id];
+    return {
+      label: (c?.name || id).slice(0, 100),
+      description: `${c?.element || ''} Pow:${c?.power || 0}`,
+      value: id,
+    };
+  });
+
   const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`pick:${battle.id}`)
       .setPlaceholder('Choose up to 3 chips')
       .setMinValues(0)
-      .setMaxValues(3)
-      .addOptions(
-        battle.hand.map((id) => {
-          const c = getBundle().chips[id];
-          return {
-            label: c?.name || id,
-            description: `${c?.element || ''} Pow:${c?.power || 0}`,
-            value: id,
-          };
-        })
-      )
+      .setMaxValues(Math.min(3, opts.length || 1))
+      .addOptions(opts)
   );
 
   const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(

@@ -1,19 +1,28 @@
+// src/scripts/reload-data.ts
 import 'dotenv/config';
-import loadTSVBundle from '../src/lib/tsv';
+import loadTSVBundle from '../lib/tsv';
 
-(async () => {
-  try {
-    const { report } = loadTSVBundle(process.env.DATA_DIR || './data');
-    const lines = [
-      `✅ Load complete`,
-      `counts: ${JSON.stringify(report.counts)}`,
-      report.warnings.length ? `warnings:\n- ${report.warnings.join('\n- ')}` : 'warnings: none',
-      report.errors.length ? `errors:\n- ${report.errors.join('\n- ')}` : 'errors: none'
-    ];
-    console.log(lines.join('\n'));
-    if (!report.ok) process.exitCode = 1;
-  } catch (e:any) {
-    console.error('Load failed:', e?.message || e);
-    process.exit(1);
-  }
-})();
+const dir = process.env.DATA_DIR || './data';
+const { report } = loadTSVBundle(dir);
+
+// Pretty output for CI / Railway logs
+const counts = Object.entries(report.counts || {})
+  .map(([k, v]) => `${k}:${v}`)
+  .join(' • ') || 'none';
+
+console.log(`📦 TSV load from ${dir}: ${report.ok ? 'OK' : 'ISSUES'}`);
+console.log(`Counts: ${counts}`);
+
+if (report.warnings?.length) {
+  console.log('⚠️ Warnings:');
+  for (const w of report.warnings) console.log('- ' + w);
+}
+
+if (report.errors?.length) {
+  console.error('❌ Errors:');
+  for (const e of report.errors) console.error('- ' + e);
+  // Fail the process if errors so Railway build can stop
+  process.exit(1);
+}
+
+process.exit(0);

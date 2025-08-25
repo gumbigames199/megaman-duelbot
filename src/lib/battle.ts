@@ -35,8 +35,8 @@ export interface BattleState {
   enemy_status: StatusState;
 
   // Boss phases
-  phase_index?: number;        // 0-based
-  phase_thresholds?: number[]; // e.g., [0.7, 0.4]
+  phase_index?: number;         // 0-based
+  phase_thresholds?: number[];  // parsed from "0.7,0.4"
 }
 
 // ---- Storage (SQLite row) ----
@@ -80,7 +80,7 @@ const Q = {
   del: db.prepare(`DELETE FROM temp_battles WHERE id=?`),
 };
 
-// Helper to grab virus/boss row
+// Helper to grab virus/boss row (union)
 function enemyMeta(kind: EnemyKind, id: string) {
   const b = getBundle();
   return kind === 'boss' ? b.bosses[id] : b.viruses[id];
@@ -122,11 +122,14 @@ export function createBattle(
   const em = enemyMeta(enemyKind, enemyId);
   const enemy_hp = em?.hp ?? 80;
 
-  // Parse boss thresholds like "0.7,0.4"
-  const thresholds = String(em?.phase_thresholds || '')
-    .split(',')
-    .map(s => parseFloat(s.trim()))
-    .filter(n => !isNaN(n) && n > 0 && n < 1);
+  // Parse boss thresholds like "0.7,0.4" ONLY for bosses
+  const thresholds =
+    enemyKind === 'boss'
+      ? String((em as any)?.phase_thresholds || '')
+          .split(',')
+          .map(s => parseFloat(s.trim()))
+          .filter(n => !isNaN(n) && n > 0 && n < 1)
+      : [];
 
   const s: BattleState = {
     id,
@@ -282,11 +285,11 @@ export function resolveTurn(
 
   s.enemy_hp = Math.max(0, s.enemy_hp - total);
 
-  // Boss phase shift (simple)
-  if (s.enemy_kind === 'boss' && s.phase_thresholds?.length && em?.hp) {
+  // ----- BOSS PHASE SHIFT (narrowed to bosses) -----
+  if (s.enemy_kind === 'boss' && (s.phase_thresholds?.length ?? 0) > 0 && em?.hp) {
     const pct = s.enemy_hp / em.hp;
     const nextIdx = s.phase_index ?? 0;
-    const trigger = s.phase_thresholds[nextIdx];
+    const trigger = s.phase_thresholds![nextIdx];
     if (trigger !== undefined && pct <= trigger) {
       s.phase_index = nextIdx + 1;
       s.enemy_status.barrier = (s.enemy_status.barrier ?? 0) + 100;
@@ -296,7 +299,12 @@ export function resolveTurn(
 
   if (s.enemy_hp <= 0) {
     tidyAfterTurn(s); save(s);
-    return { log: parts.join(' • ') || '—', enemy_hp: s.enemy_hp, player_hp: s.player_hp, outcome: 'victory' };
+    return {
+      log: parts.join(' • ') || '—',
+      enemy_hp: s.enemy_hp,
+      player_hp: s.player_hp,
+      outcome: 'victory'
+    };
   }
 
   // ----- ENEMY ACTION -----
@@ -343,9 +351,16 @@ export function resolveTurn(
   s.locked = [];
   drawHand(s, 5);
 
-  const outcome = s.player_hp <= 0 ? 'defeat' : 'ongoing';
+  const outcome: 'ongoing' | 'victory' | 'defeat' =
+    s.player_hp <= 0 ? 'defeat' : 'ongoing';
+
   save(s);
-  return { log: parts.join(' • ') || '—', enemy_hp: s.enemy_hp, player_hp: s.player_hp, outcome: outcome as any };
+  return {
+    log: parts.join(' • ') || '—',
+    enemy_hp: s.enemy_hp,
+    player_hp: s.player_hp,
+    outcome
+  };
 }
 
 function tidyAfterTurn(s: BattleState) {

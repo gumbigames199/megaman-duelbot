@@ -77,6 +77,7 @@ export interface BossRow {
   background_url?: string;
   phase_thresholds?: string;  // "0.7,0.4"
   effects?: string;           // e.g., "Aura(Fire),Barrier(200)"
+  description: string;
 }
 
 export interface RegionRow {
