@@ -12,7 +12,7 @@ import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end } fro
 import { rollRewards, rollBossRewards } from './lib/rewards';
 import { progressDefeat } from './lib/missions';
 import { unlockNextFromRegion } from './lib/unlock';
-import { getRegion } from './lib/regions';
+import { getRegion } from './lib/db';               // ⬅️ patched: from db, not regions
 import { wantDmg } from './lib/settings-util';
 
 import * as Start from './commands/start';
@@ -90,7 +90,7 @@ client.on('interactionCreate', async (ix) => {
         const warnings = report.warnings.length ? `\n⚠️ Warnings:\n- ${report.warnings.join('\n- ')}` : '';
         const errors = report.errors.length ? `\n❌ Errors:\n- ${report.errors.join('\n- ')}` : '';
 
-        // refresh the cached in-memory bundle so gameplay uses the new data immediately
+        // refresh in-memory cache so gameplay uses new data immediately
         invalidateBundleCache();
 
         await ix.editReply(`📦 TSV load: **${report.ok ? 'OK' : 'ISSUES'}**\nCounts: ${counts}${warnings}${errors}`);
