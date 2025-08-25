@@ -19,7 +19,7 @@ function parseTSV(text: string): Array<Record<string, string>> {
     return obj;
   });
 }
-function readTSV(filePath: string) {
+function readTSV(filePath: string): Array<Record<string, string>> {
   const text = fs.readFileSync(filePath, 'utf8');
   return parseTSV(text);
 }
