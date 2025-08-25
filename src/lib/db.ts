@@ -130,10 +130,12 @@ export function listInventory(userId: string): Array<{ chip_id: string; qty: num
   return getInv.all(userId) as Array<{ chip_id: string; qty: number }>;
 }
 
-export function grantChip(userId: string, chipId: string, qty = 1): void {
-  const cur: number = (db.prepare(
-    `SELECT qty FROM inventory WHERE user_id=? AND chip_id=?`
-  ).get(userId, chipId)?.qty ?? 0) as number;
+export function grantChip(userId: string, chipId: string, qty = 1) {
+  const row = db
+    .prepare(`SELECT qty FROM inventory WHERE user_id=? AND chip_id=?`)
+    .get(userId, chipId) as { qty?: number } | undefined;
+
+  const cur = row?.qty ?? 0;
   setInv.run(userId, chipId, Math.max(0, cur + qty));
 }
 

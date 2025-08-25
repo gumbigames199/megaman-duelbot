@@ -97,6 +97,7 @@ export interface RegionRow {
   min_level: number;
   description: string;
   field_effects?: string;
+  next_region_ids?: string;
 }
 
 export interface VirusPoolRow { id: string; virus_ids: string; }
