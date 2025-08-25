@@ -14,14 +14,14 @@ export interface StatusState {
 export function tickStart(targetHP: number, s: StatusState): { hp: number; notes: string[] } {
   const notes: string[] = [];
 
-  // Burn: ~5% of current HP (at least 1)
+  // Burn: ~5% of current HP (min 1)
   if (s.burn && s.burn > 0) {
     const dmg = Math.max(1, Math.floor(targetHP * 0.05));
     targetHP = Math.max(0, targetHP - dmg);
     notes.push(`burn ${dmg}`);
   }
 
-  // Poison: ~8% of current HP (at least 1)
+  // Poison: ~8% of current HP (min 1)
   if (s.poison && s.poison > 0) {
     const dmg = Math.max(1, Math.floor(targetHP * 0.08));
     targetHP = Math.max(0, targetHP - dmg);
@@ -32,9 +32,17 @@ export function tickStart(targetHP: number, s: StatusState): { hp: number; notes
 }
 
 export function tickEnd(s: StatusState) {
-  for (const k of ['burn', 'freeze', 'paralyze', 'poison', 'blind'] as (keyof StatusState)[]) {
-    if (typeof s[k] === 'number' && (s[k] as number) > 0) s[k]! -= 1;
-    if ((s[k] as number) <= 0) delete s[k];
+  // Decay duration-based statuses by 1
+  for (const k of ['burn', 'freeze', 'paralyze', 'poison', 'blind'] as const) {
+    const val = (s as Record<string, number | undefined>)[k];
+    if (typeof val === 'number') {
+      const next = val - 1;
+      if (next > 0) {
+        (s as Record<string, number>)[k] = next;
+      } else {
+        delete (s as Record<string, unknown>)[k];
+      }
+    }
   }
   // barrier/aura persist until consumed/explicitly removed
 }
