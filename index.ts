@@ -24,7 +24,6 @@ import * as Explore from './commands/explore';
 import * as Mission from './commands/mission';
 import * as Travel from './commands/travel';
 import * as Leaderboard from './commands/leaderboard';
-// import * as Boss from './commands/boss'; // removed
 import * as Settings from './commands/settings';
 import * as Chip from './commands/chip';
 import * as VirusDex from './commands/virusdex';
@@ -53,7 +52,7 @@ const commands = [
     .setDescription('Reload TSV bundle from /data (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   Start.data, Profile.data, Folder.data, Shop.data, Explore.data,
-  Mission.data, /* Boss.data, */ Travel.data, Leaderboard.data, // Boss removed
+  Mission.data, Travel.data, Leaderboard.data,
   Settings.data, Chip.data, VirusDex.data, JackIn.data,
 ].map((c: any) => c.toJSON());
 
@@ -105,7 +104,6 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'shop')         { await Shop.execute(ix); return; }
       if (ix.commandName === 'explore')      { await Explore.execute(ix); return; }
       if (ix.commandName === 'mission')      { await Mission.execute(ix); return; }
-      // if (ix.commandName === 'boss')      { await Boss.execute(ix); return; } // removed
       if (ix.commandName === 'travel')       { await Travel.execute(ix); return; }
       if (ix.commandName === 'leaderboard')  { await Leaderboard.execute(ix); return; }
       if (ix.commandName === 'settings')     { await Settings.execute(ix); return; }
