@@ -32,6 +32,15 @@ const START = {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 
+/* ---------- LEVELING (NEW) ---------- */
+const LVL_MAX = Number(process.env.LEVEL_MAX || 40);
+
+// XP needed to go from level L -> L+1
+function levelThreshold(lvl: number) {
+  // 1→2 needs 1000, 2→3 needs 2000, … (lvl * 1000)
+  return Math.max(0, lvl * 1000);
+}
+
 /* ---------- Schema ---------- */
 db.exec(`
 CREATE TABLE IF NOT EXISTS players (
@@ -48,6 +57,7 @@ CREATE TABLE IF NOT EXISTS players (
   evasion   INTEGER NOT NULL DEFAULT 10,
   zenny     INTEGER NOT NULL DEFAULT 0,
   region_id TEXT,
+  region_zone INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL
 );
 
@@ -77,17 +87,24 @@ CREATE TABLE IF NOT EXISTS player_settings (
 );
 `);
 
+// Ensure region_zone exists for legacy DBs
+try {
+  db.exec(`ALTER TABLE players ADD COLUMN region_zone INTEGER NOT NULL DEFAULT 1;`);
+} catch {}
+
 /* ---------- Statements ---------- */
 const selPlayer   = db.prepare(`SELECT * FROM players WHERE user_id=?`);
 const insPlayer   = db.prepare(`
-  INSERT INTO players (user_id, name, element, level, exp, hp_max, atk, def, spd, acc, evasion, zenny, region_id, created_at)
-  VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+  INSERT INTO players (user_id, name, element, level, exp, hp_max, atk, def, spd, acc, evasion, zenny, region_id, region_zone, created_at)
+  VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, 0, NULL, 1, ?)
   ON CONFLICT(user_id) DO NOTHING
 `);
 const updPlayerNE = db.prepare(`UPDATE players SET name=?, element=? WHERE user_id=?`);
 const updZenny    = db.prepare(`UPDATE players SET zenny = zenny + ? WHERE user_id=?`);
 const updRegion   = db.prepare(`UPDATE players SET region_id = ? WHERE user_id=?`);
-const selRegion   = db.prepare(`SELECT region_id FROM players WHERE user_id=?`);
+const updZone     = db.prepare(`UPDATE players SET region_zone=? WHERE user_id=?`);
+const selRegion   = db.prepare(`SELECT region_id, region_zone FROM players WHERE user_id=?`);
+const selZone     = db.prepare(`SELECT region_zone FROM players WHERE user_id=?`);
 
 const getInv = db.prepare(`SELECT chip_id, qty FROM inventory WHERE user_id=? AND qty>0 ORDER BY chip_id`);
 const setInv = db.prepare(`
@@ -103,6 +120,28 @@ const Supsert  = db.prepare(`
   INSERT INTO player_settings (user_id, json) VALUES (?, ?)
   ON CONFLICT(user_id) DO UPDATE SET json=excluded.json
 `);
+
+/* ---------- XP add (NEW IMPL) ---------- */
+export function addXP(userId: string, delta: number): { level: number; exp: number; leveledUp: number } {
+  const row = selPlayer.get(userId) as any;
+  if (!row) return { level: 1, exp: 0, leveledUp: 0 };
+
+  let level = Number(row.level || 1);
+  let exp   = Math.max(0, Number(row.exp || 0) + Math.max(0, delta));
+  let ups   = 0;
+
+  // level up while we can (cap at LVL_MAX)
+  while (level < LVL_MAX) {
+    const need = levelThreshold(level);
+    if (exp < need) break;
+    exp -= need;
+    level += 1;
+    ups += 1;
+  }
+
+  db.prepare(`UPDATE players SET level=?, exp=? WHERE user_id=?`).run(level, exp, userId);
+  return { level, exp, leveledUp: ups };
+}
 
 /* ---------- Player helpers ---------- */
 export function ensurePlayer(userId: string, name: string, element: string): PlayerRow | undefined {
@@ -164,12 +203,18 @@ export function addEvasion(userId: string, delta: number): void {
 }
 
 /* ---------- Region helpers ---------- */
-export function getRegion(userId: string): string | undefined {
-  const r = selRegion.get(userId) as { region_id?: string } | undefined;
-  return r?.region_id || undefined;
+export function getRegion(userId: string): { region_id?: string; region_zone?: number } | undefined {
+  return selRegion.get(userId) as { region_id?: string; region_zone?: number } | undefined;
+}
+export function getZone(userId: string): number {
+  return (selZone.get(userId) as any)?.region_zone ?? 1;
+}
+export function setZone(userId: string, zone: number) {
+  updZone.run(Math.max(1, zone|0), userId);
 }
 export function setRegion(userId: string, regionId: string): void {
   updRegion.run(regionId, userId);
+  setZone(userId, 1);
 }
 
 /* ---------- Inventory / Folder ---------- */

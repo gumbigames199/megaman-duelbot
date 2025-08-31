@@ -1,7 +1,7 @@
 // Elements & effectiveness
 export type Element = 'Fire' | 'Aqua' | 'Elec' | 'Wood' | 'Neutral';
 
-export const TYPE_ORDER: Element[] = ['Fire','Wood','Elec','Aqua']; // Fire>Wood>Elec>Aqua>Fire
+export const TYPE_ORDER: Element[] = ['Fire', 'Wood', 'Elec', 'Aqua']; // Fire>Wood>Elec>Aqua>Fire
 export function effectiveness(attacker: Element, defender: Element): number {
   if (attacker === 'Neutral' || defender === 'Neutral') return 1.0;
   const i = TYPE_ORDER.indexOf(attacker);
@@ -30,7 +30,7 @@ export interface PlayerRow {
 }
 
 // ---- TSV-backed shapes ----
-export type ChipCategory = 'Shot'|'Sword'|'Bomb'|'Support'|'Barrier'|'Other';
+export type ChipCategory = 'Shot' | 'Sword' | 'Bomb' | 'Support' | 'Barrier' | 'Other';
 
 export interface ChipRow {
   id: string;
@@ -58,14 +58,15 @@ export interface VirusRow {
   hp: number; atk: number; def: number; spd: number; acc: number;
   cr: number;
   region: string;
-  zone: number;
+  zone: number;                 // 1..3+
   drop_table_id: string;
   image_url: string;
   anim_url: string;
   description: string;
-  zenny_range: string;
+  zenny_range: string;          // "50-120"
+  xp_range: string;             // NEW, e.g. "30-60"
   move_1json?: string; move_2json?: string; move_3json?: string; move_4json?: string;
-  boss?: string | number;
+  boss?: number | boolean;      // 0/1 or true/false
   stat_points?: number;
 }
 
@@ -97,6 +98,7 @@ export interface RegionRow {
   min_level: number;
   description: string;
   field_effects?: string;
+  zone_count?: number; // NEW (defaults to 1 if missing)
   next_region_ids?: string;
 }
 

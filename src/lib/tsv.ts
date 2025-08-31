@@ -48,6 +48,7 @@ const virusSchema = z.object({
   image_url: z.string().optional().default(''), anim_url: z.string().optional().default(''),
   description: z.string().optional().default(''),
   zenny_range: z.string().optional().default('0-0'),
+  xp_range: z.string().optional().default('10-20'),
   move_1json: z.string().optional(), move_2json: z.string().optional(),
   move_3json: z.string().optional(), move_4json: z.string().optional(),
   boss: z.string().optional(), stat_points: z.string().optional(),
@@ -61,7 +62,7 @@ const bossSchema = z.object({
   image_url: z.string().optional().default(''),
   anim_url: z.string().optional().default(''),
   background_url: z.string().optional().default(''),
-  phase_thresholds: z.string().optional().default(''),  // "0.7,0.4"
+  phase_thresholds: z.string().optional().default(''),
   effects: z.string().optional().default(''),
 });
 const regionSchema = z.object({
@@ -74,7 +75,7 @@ const regionSchema = z.object({
   min_level: z.string().optional().default('1'),
   description: z.string().optional().default(''),
   field_effects: z.string().optional().default(''),
-  next_region_ids: z.string().optional().default(''), // "yacobus,undernet_1"
+  zone_count: z.string().optional().default('1'), // NEW
 });
 const poolSchema = z.object({ id: z.string(), virus_ids: z.string() });
 const dropSchema = z.object({ id: z.string(), entries: z.string() });
@@ -113,6 +114,7 @@ function toVirus(r: z.infer<typeof virusSchema>): VirusRow {
     image_url: r.image_url || '', anim_url: r.anim_url || '',
     description: r.description || '',
     zenny_range: r.zenny_range || '0-0',
+    xp_range: r.xp_range || '10-20',
     move_1json: r.move_1json, move_2json: r.move_2json, move_3json: r.move_3json, move_4json: r.move_4json,
     boss: r.boss, stat_points: n(r.stat_points || '0'),
   };
@@ -136,9 +138,9 @@ function toRegion(r: z.infer<typeof regionSchema>): RegionRow {
     id: r.id, name: r.name, background_url: r.background_url || '',
     encounter_rate: Number(r.encounter_rate || '0.7'),
     virus_pool_id: r.virus_pool_id || '', shop_id: r.shop_id || '',
-    boss_id: r.boss_id || '', min_level: n(r.min_level || '1'),
+    boss_id: r.boss_id || '', min_level: Number(r.min_level || '1'),
     description: r.description || '', field_effects: r.field_effects || '',
-    next_region_ids: r.next_region_ids || '',
+    zone_count: Number(r.zone_count || '1'), // NEW
   };
 }
 
@@ -230,18 +232,14 @@ export function loadTSVBundle(dir = './data'): { data: DataBundle; report: LoadR
   ); counts.shops = Object.keys(shops).length;
 
   // ---- referential checks (light) ----
-  // regions → virus_pool/shop/boss are advisory; warn if missing
   for (const r of Object.values(regions)) {
     if (r.virus_pool_id && !virusPools[r.virus_pool_id]) warnings.push(`regions.${r.id}: missing virus_pool_id ${r.virus_pool_id}`);
     if (r.shop_id && !shops[r.shop_id]) warnings.push(`regions.${r.id}: missing shop_id ${r.shop_id}`);
     if (r.boss_id && !bosses[r.boss_id]) warnings.push(`regions.${r.id}: missing boss_id ${r.boss_id}`);
-    // next_region_ids are free-form; no strict check to allow hidden areas
   }
-  // viruses → drop_table
   for (const v of Object.values(viruses)) {
     if (v.drop_table_id && !dropTables[v.drop_table_id]) warnings.push(`viruses.${v.id}: missing drop_table_id ${v.drop_table_id}`);
   }
-  // drop tables reference chips
   for (const dt of Object.values(dropTables)) {
     const entries = String(dt.entries || '').split(',').map(x => x.trim()).filter(Boolean);
     for (const e of entries) {
@@ -249,14 +247,12 @@ export function loadTSVBundle(dir = './data'): { data: DataBundle; report: LoadR
       if (id && !chips[id]) warnings.push(`drop_tables.${dt.id}: unknown chip "${id}"`);
     }
   }
-  // program advances reference chips
   for (const pa of Object.values(programAdvances)) {
     const req = String(pa.required_chip_ids || '').split(',').map(x => x.trim()).filter(Boolean);
     const miss = req.filter(id => !chips[id]);
     if (miss.length) warnings.push(`program_advances.${pa.id}: unknown chips ${miss.join(', ')}`);
     if (pa.result_chip_id && !chips[pa.result_chip_id]) warnings.push(`program_advances.${pa.id}: unknown result_chip_id ${pa.result_chip_id}`);
   }
-  // shops entries reference chips
   for (const sh of Object.values(shops)) {
     const entries = String(sh.entries || '').split(',').map(x => x.trim()).filter(Boolean);
     for (const e of entries) {

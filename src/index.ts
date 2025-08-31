@@ -1,3 +1,4 @@
+// src/index.ts
 import 'dotenv/config';
 import {
   Client, GatewayIntentBits, Partials, REST, Routes,
@@ -12,7 +13,7 @@ import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end } fro
 import { rollRewards, rollBossRewards } from './lib/rewards';
 import { progressDefeat } from './lib/missions';
 import { unlockNextFromRegion } from './lib/unlock';
-import { getRegion } from './lib/db';               // ⬅️ patched: from db, not regions
+import { getRegion } from './lib/db'; // from db, not regions
 import { wantDmg } from './lib/settings-util';
 
 import * as Start from './commands/start';
@@ -23,11 +24,11 @@ import * as Explore from './commands/explore';
 import * as Mission from './commands/mission';
 import * as Travel from './commands/travel';
 import * as Leaderboard from './commands/leaderboard';
-import * as Boss from './commands/boss';
 import * as Settings from './commands/settings';
 import * as Chip from './commands/chip';
 import * as VirusDex from './commands/virusdex';
 import * as JackIn from './commands/jack_in';
+import { handleComponent as JackInComponents } from './commands/jack_in';
 
 // ---- Env checks ----
 const TOKEN    = process.env.DISCORD_TOKEN!;
@@ -51,7 +52,7 @@ const commands = [
     .setDescription('Reload TSV bundle from /data (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   Start.data, Profile.data, Folder.data, Shop.data, Explore.data,
-  Mission.data, Boss.data, Travel.data, Leaderboard.data,
+  Mission.data, Travel.data, Leaderboard.data,
   Settings.data, Chip.data, VirusDex.data, JackIn.data,
 ].map((c: any) => c.toJSON());
 
@@ -103,7 +104,6 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'shop')         { await Shop.execute(ix); return; }
       if (ix.commandName === 'explore')      { await Explore.execute(ix); return; }
       if (ix.commandName === 'mission')      { await Mission.execute(ix); return; }
-      if (ix.commandName === 'boss')         { await Boss.execute(ix); return; }
       if (ix.commandName === 'travel')       { await Travel.execute(ix); return; }
       if (ix.commandName === 'leaderboard')  { await Leaderboard.execute(ix); return; }
       if (ix.commandName === 'settings')     { await Settings.execute(ix); return; }
@@ -113,25 +113,51 @@ client.on('interactionCreate', async (ix) => {
       return;
     }
 
-    // Select menu: choose chips
+    // Select menus: pick1/pick2/pick3
     if (ix.isStringSelectMenu()) {
-      const [kind, battleId] = ix.customId.split(':');
-      if (kind !== 'pick') return;
-      const s = loadBattle(battleId); if (!s || s.user_id !== ix.user.id) return;
+      const [kind, battleId] = ix.customId.split(':'); // e.g. pick1:abc
+      if (!kind?.startsWith('pick')) return;
 
-      const chosen = ix.values; // chip IDs
-      const chipRows = chosen.map(id => ({ id, letters: getBundle().chips[id]?.letters || '' }));
-      if (!validateLetterRule(chipRows)) {
-        await ix.reply({ ephemeral: true, content: '❌ Invalid selection. Pick chips that share a letter, same name, or use *.' });
+      const s = loadBattle(battleId);
+      if (!s || s.user_id !== ix.user.id) return;
+
+      // which index?
+      const slotIdx = ({ pick1: 0, pick2: 1, pick3: 2 } as any)[kind] ?? 0;
+      const chosenId = ix.values[0]; // may be undefined if they cleared selection
+
+      // ensure arrays sized
+      while (s.locked.length < 3) s.locked.push('');
+
+      // prevent duplicates
+      if (chosenId && s.locked.includes(chosenId)) {
+        await ix.reply({ ephemeral: true, content: '⚠️ Already selected that chip in another slot.' });
         return;
       }
-      s.locked = chosen;
-      await ix.reply({ ephemeral: true, content: `Selected: ${chosen.join(', ') || '—'}` });
+      s.locked[slotIdx] = chosenId || '';
+
+      // Validate letter rule on non-empty picks
+      const chosen = s.locked.filter(Boolean);
+      const chipRows = chosen.map(id => ({ id, letters: getBundle().chips[id]?.letters || '' }));
+      if (chosen.length && !validateLetterRule(chipRows)) {
+        // revert this pick
+        s.locked[slotIdx] = '';
+        await ix.reply({ ephemeral: true, content: '❌ Invalid combo. Chips must share a letter, exact name, or include *.' });
+        return;
+      }
+
+      await ix.reply({
+        ephemeral: true,
+        content: `Current order: ${s.locked.filter(Boolean).join(' → ') || '—'}`,
+      });
       return;
     }
 
-    // Buttons: lock or run
+    // Components
     if (ix.isButton()) {
+      // let jack_in own its customIds
+      if (await JackInComponents(ix)) return;
+
+      // Battle buttons: lock or run
       const [kind, battleId] = ix.customId.split(':');
       const s = loadBattle(battleId); if (!s || s.user_id !== ix.user.id) return;
 
@@ -148,7 +174,12 @@ client.on('interactionCreate', async (ix) => {
 
       if (kind === 'lock') {
         const res = resolveBattleTurn(s, s.locked);
-        const embed = battleEmbed(s);
+
+        const embed = battleEmbed(s, {
+          playerName: ix.user.username,
+          playerAvatar: ix.user.displayAvatarURL?.() || undefined,
+          regionId: getRegion(s.user_id) || process.env.START_REGION_ID || 'den_city',
+        });
         await ix.reply({ embeds: [embed], ephemeral: false });
 
         const extra = wantDmg(s.user_id) ? `\n${res.log}` : '';
@@ -158,14 +189,23 @@ client.on('interactionCreate', async (ix) => {
           if (s.enemy_kind === 'boss') {
             const br = rollBossRewards(s.user_id, s.enemy_id);
             const curRegion = getRegion(s.user_id) || process.env.START_REGION_ID || 'den_city';
+
+            // XP + level up already handled in rollBossRewards → addXP
             const unlocked = unlockNextFromRegion(s.user_id, curRegion);
             rewardText =
-              `**Boss Rewards:** ${br.zenny}z${br.drops.length ? ` • chips: ${br.drops.join(', ')}` : ''}` +
+              `**Boss Rewards:** +${br.zenny}z • +${br.xp}xp` +
+              (br.drops.length ? ` • chips: ${br.drops.join(', ')}` : '') +
+              (br.leveledUp > 0 ? `\n🆙 Level Up x${br.leveledUp}` : '') +
               (unlocked.length ? `\n🔓 Unlocked: ${unlocked.join(', ')}` : '');
           } else {
             const vr = rollRewards(s.user_id, s.enemy_id);
+
+            // XP + level up already handled in rollRewards → addXP
             progressDefeat(s.user_id, s.enemy_id);
-            rewardText = `**Rewards:** ${vr.zenny}z${vr.drops.length ? ` • chips: ${vr.drops.join(', ')}` : ''}`;
+            rewardText =
+              `**Rewards:** +${vr.zenny}z • +${vr.xp}xp` +
+              (vr.drops.length ? ` • chips: ${vr.drops.join(', ')}` : '') +
+              (vr.leveledUp > 0 ? `\n🆙 Level Up x${vr.leveledUp}` : '');
           }
           end(battleId);
           await ix.followUp({ content: `✅ Victory!${extra ? ` ${extra}` : ''}\n${rewardText}`, ephemeral: false });

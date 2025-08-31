@@ -1,58 +1,50 @@
 // src/lib/regions.ts
 import { RNG } from './rng';
 import { getBundle } from './data';
-import { db } from './db';
 
-/** Default start region (env overrideable) */
-const START_REGION = process.env.START_REGION_ID || 'den_city';
-
-/** Ensure players.region_id exists; ignore if it already does. */
-(function ensureRegionColumn() {
-  try {
-    db.exec(`ALTER TABLE players ADD COLUMN region_id TEXT`);
-  } catch { /* column exists */ }
-  try {
-    // Backfill NULLs with START_REGION
-    db.prepare(`UPDATE players SET region_id = COALESCE(region_id, ?) WHERE region_id IS NULL`).run(START_REGION);
-  } catch { /* table will exist already in db.ts; safe to ignore here */ }
-})();
-
-/** Get a player's current region_id (or START_REGION if unset). */
-export function getRegion(userId: string): string {
-  const row = db.prepare(`SELECT region_id FROM players WHERE user_id=?`).get(userId) as { region_id?: string } | undefined;
-  return row?.region_id || START_REGION;
-}
-
-/** Set a player's current region_id. */
-export function setRegion(userId: string, regionId: string): void {
-  db.prepare(`UPDATE players SET region_id=? WHERE user_id=?`).run(regionId, userId);
-}
+export type Encounter =
+  | { kind: 'virus'; id: string }
+  | { kind: 'boss';  id: string };
 
 /**
- * Roll an encounter for the given region.
- * Returns a virusId if one is encountered, otherwise null.
+ * Roll an encounter for a region (optionally filtered by zone).
+ * - Respects region.encounter_rate (default 0.7).
+ * - Has a rare boss chance if region.boss_id exists (default 2% via BOSS_ENCOUNTER_RATE).
+ * - Otherwise picks a virus from the region's pool; if zone provided, prefers viruses with that zone.
  */
-export function rollEncounter(regionId: string, seed?: number): { virusId: string } | null {
-  const { regions, virusPools } = getBundle();
+export function rollEncounter(regionId: string, zone?: number, seed?: number): Encounter | null {
+  const { regions, virusPools, viruses } = getBundle();
   const r = regions[regionId];
   if (!r) return null;
 
   const rng = new RNG(seed ?? Date.now());
 
-  // Chance to encounter based on region's encounter_rate (default 0.7)
-  if (!rng.chance(Number(r.encounter_rate ?? 0.7))) return null;
+  // Region encounter gate
+  const rate = Number(r.encounter_rate ?? 0.7);
+  if (!rng.chance(rate)) return null;
 
-  // Virus pool
+  // Rare boss roll (if region defines one)
+  const bossRate = Number(process.env.BOSS_ENCOUNTER_RATE ?? '0.02'); // 2% default
+  if (r.boss_id && rng.chance(bossRate)) {
+    return { kind: 'boss', id: r.boss_id };
+  }
+
+  // Virus pool roll
   const pool = virusPools[r.virus_pool_id];
   if (!pool) return null;
 
-  // Parse virus IDs
   const ids = String(pool.virus_ids || '')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
 
-  if (!ids.length) return null;
+  // If a zone was provided, try to filter by it; fall back to full list if filter would be empty
+  const zoneFiltered = typeof zone === 'number'
+    ? ids.filter(id => (viruses[id]?.zone ?? 1) === zone)
+    : ids;
 
-  return { virusId: rng.pick(ids) };
+  const pickable = zoneFiltered.length ? zoneFiltered : ids;
+  if (!pickable.length) return null;
+
+  return { kind: 'virus', id: rng.pick(pickable) };
 }

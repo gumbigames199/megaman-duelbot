@@ -1,27 +1,33 @@
+// src/lib/render.ts
 import { EmbedBuilder } from 'discord.js';
 import { getBundle } from './data';
-import { BattleState } from './battle';
+import type { BattleState } from './battle';
 
-function bar(cur: number, max: number, width = 20) {
-  const pct = Math.max(0, Math.min(1, cur / Math.max(1, max)));
-  const full = Math.round(pct * width);
-  return '█'.repeat(full) + '░'.repeat(width - full);
-}
+export function battleEmbed(
+  s: BattleState,
+  opts?: { playerName?: string; playerAvatar?: string; regionId?: string }
+) {
+  const b = getBundle();
+  const enemy = s.enemy_kind === 'boss' ? (b as any).bosses[s.enemy_id] : b.viruses[s.enemy_id];
+  const regionBg = opts?.regionId ? b.regions[opts.regionId]?.background_url : undefined;
 
-export function battleEmbed(s: BattleState) {
-  const v = getBundle().viruses[s.enemy_id] || getBundle().bosses?.[s.enemy_id];
-  const vMax = v?.hp ?? 1;
-  const pMax = s.player_hp_max;
-  const phaseTxt = s.enemy_kind === 'boss' && s.phase_index ? ` • Phase ${s.phase_index}` : '';
-
-  return new EmbedBuilder()
-    .setTitle(`⚔️ ${v?.name || s.enemy_id} — Turn ${s.turn}${phaseTxt}`)
-    .addFields(
-      { name: 'You', value: `HP ${s.player_hp}/${pMax}\n\`${bar(s.player_hp, pMax)}\`\n${s.player_element}`, inline: false },
-      { name: v?.name || 'Enemy', value: `HP ${s.enemy_hp}/${vMax}\n\`${bar(s.enemy_hp, vMax)}\`\n${v?.element ?? '?'}`, inline: false },
-      { name: 'Your hand', value: s.hand.join(' • ') || '—', inline: false },
+  const title = s.enemy_kind === 'boss' ? `👑 ${enemy?.name || s.enemy_id}` : `⚔️ ${enemy?.name || s.enemy_id}`;
+  const e = new EmbedBuilder()
+    .setTitle(`${title}  —  VS  —  ${opts?.playerName || 'You'}`)
+    .setDescription(
+      [
+        `**Your HP:** ${s.player_hp}/${s.player_hp_max}`,
+        `**Enemy HP:** ${s.enemy_hp}/${enemy?.hp ?? '?'}`,
+      ].join('\n')
     )
-    .setImage(v?.anim_url || v?.image_url || null)
-    .setFooter({ text: s.id });
-}
+    .setFooter({ text: `Battle ${s.id} • Turn ${s.turn}` });
 
+  if (regionBg) e.setImage(regionBg);
+  if (opts?.playerAvatar) e.setThumbnail(opts.playerAvatar);
+  else if (enemy?.image_url) e.setThumbnail(enemy.image_url);
+
+  // If enemy has an anim/big image, prefer that above the background
+  if (enemy?.anim_url && !regionBg) e.setImage(enemy.anim_url);
+
+  return e;
+}
