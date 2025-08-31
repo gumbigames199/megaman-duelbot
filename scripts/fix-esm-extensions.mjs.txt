@@ -1,0 +1,68 @@
+// scripts/fix-esm-extensions.mjs
+import { readdir, readFile, writeFile, stat } from 'node:fs/promises';
+import { extname, join } from 'node:path';
+
+const SRC_DIR = 'src';
+const FILE_EXTS = new Set(['.ts', '.tsx']); // adjust if you have .tsx
+
+// For specifiers that already have one of these, don't change:
+const PASS_THROUGH_EXTS = ['.js', '.json', '.node'];
+
+const relativeImportRe =
+  /(from\s+['"])(\.{1,2}\/[^'"]+)(['"])/g; // import/export ... from '...'
+const dynamicImportRe =
+  /(import\(\s*['"])(\.{1,2}\/[^'"]+)(['"]\s*\))/g; // import('...')
+
+/** Given a specifier like ./lib/tsv or ../x/y.ts, add/normalize .js */
+function normalize(spec) {
+  // Leave query/hash (rare in Node) alone entirely
+  if (spec.includes('?') || spec.includes('#')) return spec;
+
+  // If already has known extension, keep it
+  for (const e of PASS_THROUGH_EXTS) {
+    if (spec.endsWith(e)) return spec;
+  }
+
+  // If it ends with .ts or .tsx → .js
+  if (spec.endsWith('.ts') || spec.endsWith('.tsx')) {
+    return spec.replace(/\.tsx?$/, '.js');
+  }
+
+  // Otherwise, append .js
+  return `${spec}.js`;
+}
+
+async function walk(dir) {
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) {
+      await walk(p);
+      continue;
+    }
+    const ext = extname(p);
+    if (!FILE_EXTS.has(ext)) continue;
+    if (p.endsWith('.d.ts')) continue; // skip types
+
+    let src = await readFile(p, 'utf8');
+    const orig = src;
+
+    // Static imports/exports
+    src = src.replace(relativeImportRe, (_, a, spec, b) => a + normalize(spec) + b);
+    // Dynamic imports
+    src = src.replace(dynamicImportRe, (_, a, spec, b) => a + normalize(spec) + b);
+
+    if (src !== orig) {
+      await writeFile(p, src, 'utf8');
+      console.log('fixed:', p);
+    }
+  }
+}
+
+try {
+  await walk(SRC_DIR);
+  console.log('✅ ESM extension fix complete.');
+} catch (err) {
+  console.error('❌ Fix failed:', err);
+  process.exit(1);
+}
