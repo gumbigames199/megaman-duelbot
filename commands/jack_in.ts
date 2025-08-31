@@ -40,8 +40,9 @@ export async function execute(ix: ChatInputCommandInteraction) {
 
   const e = new EmbedBuilder()
     .setTitle('🔌 Jack In')
-    .setDescription('Pick a **region** to enter.')
-    .setImage(regions[0].background_url || null);
+    .setDescription('Pick a region to enter.')
+    .setImage(process.env.JACKIN_GIF_URL || null) // added
+    .setFooter({ text: 'Step 1/3 — Region' });
 
   await ix.reply({ embeds:[e], components: rows, ephemeral: true });
 }
