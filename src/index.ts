@@ -105,7 +105,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'shop')         { await Shop.execute(ix); return; }
       if (ix.commandName === 'explore')      { await Explore.execute(ix); return; }
       if (ix.commandName === 'mission')      { await Mission.execute(ix); return; }
-      // if (ix.commandName === 'boss')      { await Boss.execute(ix); return; } // removed
+      // if (ix.commandName === 'boss')      { /* removed */ return; }
       if (ix.commandName === 'travel')       { await Travel.execute(ix); return; }
       if (ix.commandName === 'leaderboard')  { await Leaderboard.execute(ix); return; }
       if (ix.commandName === 'settings')     { await Settings.execute(ix); return; }
@@ -180,7 +180,7 @@ client.on('interactionCreate', async (ix) => {
         const embed = battleEmbed(s, {
           playerName: ix.user.username,
           playerAvatar: ix.user.displayAvatarURL?.() || undefined,
-          regionId: getRegion(s.user_id) || process.env.START_REGION_ID || 'den_city',
+          regionId: getRegion(s.user_id)?.region_id || process.env.START_REGION_ID || 'den_city',
         });
         await ix.reply({ embeds: [embed], ephemeral: false });
 
@@ -190,7 +190,7 @@ client.on('interactionCreate', async (ix) => {
           let rewardText = '';
           if (s.enemy_kind === 'boss') {
             const br = rollBossRewards(s.user_id, s.enemy_id);
-            const curRegion = getRegion(s.user_id) || process.env.START_REGION_ID || 'den_city';
+            const curRegion = getRegion(s.user_id)?.region_id || process.env.START_REGION_ID || 'den_city';
 
             // XP + level up already handled in rollBossRewards → addXP
             const unlocked = unlockNextFromRegion(s.user_id, curRegion);
