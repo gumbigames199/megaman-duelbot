@@ -25,6 +25,8 @@ function readTSV(filePath: string): Array<Record<string, string>> {
 }
 function n(v: string, d = 0) { const x = Number(v); return Number.isFinite(x) ? x : d; }
 function b01(v: string) { return ['1', 'true', 'yes', 'y'].includes(String(v || '').toLowerCase()) ? 1 : 0; }
+// number-or-blank: if empty string, return 0 default; otherwise number
+const nb = (v?: string) => n(v || '0', 0);
 
 // ---- zod schemas (soft) ----
 const chipSchema = z.object({
@@ -39,6 +41,7 @@ const chipSchema = z.object({
   stock: z.string().optional().default('1'),
   is_upgrade: z.string().optional().default('0'),
 });
+
 const virusSchema = z.object({
   id: z.string(), name: z.string(), element: z.string(),
   hp: z.string(), atk: z.string(), def: z.string(), spd: z.string(), acc: z.string(),
@@ -53,6 +56,7 @@ const virusSchema = z.object({
   move_3json: z.string().optional(), move_4json: z.string().optional(),
   boss: z.string().optional(), stat_points: z.string().optional(),
 });
+
 const bossSchema = z.object({
   id: z.string(), name: z.string(), element: z.string(),
   hp: z.string(), atk: z.string(), def: z.string(), spd: z.string(), acc: z.string(),
@@ -65,6 +69,7 @@ const bossSchema = z.object({
   phase_thresholds: z.string().optional().default(''),
   effects: z.string().optional().default(''),
 });
+
 const regionSchema = z.object({
   id: z.string(), name: z.string(),
   background_url: z.string().optional().default(''),
@@ -75,8 +80,9 @@ const regionSchema = z.object({
   min_level: z.string().optional().default('1'),
   description: z.string().optional().default(''),
   field_effects: z.string().optional().default(''),
-  zone_count: z.string().optional().default('1'), // NEW
+  zone_count: z.string().optional().default('1'), // kept as string in TSV, coerced below
 });
+
 const poolSchema = z.object({ id: z.string(), virus_ids: z.string() });
 const dropSchema = z.object({ id: z.string(), entries: z.string() });
 const missionSchema = z.object({
@@ -104,6 +110,7 @@ function toChip(r: z.infer<typeof chipSchema>): ChipRow {
     zenny_cost: n(r.zenny_cost || '0'), stock: n(r.stock || '1'), is_upgrade: b01(r.is_upgrade || '0'),
   };
 }
+
 function toVirus(r: z.infer<typeof virusSchema>): VirusRow {
   return {
     id: r.id, name: r.name, element: r.element as any,
@@ -119,6 +126,7 @@ function toVirus(r: z.infer<typeof virusSchema>): VirusRow {
     boss: r.boss, stat_points: n(r.stat_points || '0'),
   };
 }
+
 function toBoss(r: z.infer<typeof bossSchema>): BossRow {
   return {
     id: r.id, name: r.name, element: r.element as any,
@@ -133,14 +141,15 @@ function toBoss(r: z.infer<typeof bossSchema>): BossRow {
     effects: r.effects || '',
   };
 }
+
 function toRegion(r: z.infer<typeof regionSchema>): RegionRow {
   return {
     id: r.id, name: r.name, background_url: r.background_url || '',
     encounter_rate: Number(r.encounter_rate || '0.7'),
     virus_pool_id: r.virus_pool_id || '', shop_id: r.shop_id || '',
-    boss_id: r.boss_id || '', min_level: Number(r.min_level || '1'),
+    boss_id: r.boss_id || '', min_level: nb(r.min_level || '1'),
     description: r.description || '', field_effects: r.field_effects || '',
-    zone_count: Number(r.zone_count || '1'), // NEW
+    zone_count: nb(r.zone_count || '1'), // <— coerce to number here
   };
 }
 
