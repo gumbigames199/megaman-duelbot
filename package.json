@@ -1,0 +1,30 @@
+{
+  "name": "meganet-discord-bn",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": { "node": ">=20.10" },
+  "scripts": {
+    "dev": "NODE_ENV=development ts-node --transpile-only src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "build:strict": "npm run reload:data && tsc -p tsconfig.json",
+    "reload:data": "ts-node --transpile-only src/scripts/reload-data.ts",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.10",
+    "@types/node": "^20.14.12",
+    "@typescript-eslint/eslint-plugin": "^8.0.1",
+    "@typescript-eslint/parser": "^8.0.1",
+    "eslint": "^9.9.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4"
+  }
+}

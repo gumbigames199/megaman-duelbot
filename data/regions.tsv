@@ -1,0 +1,9 @@
+id	name	zone_count	background_url	encounter_rate	virus_pool_id	shop_id	boss_id	min_level	description	field_effects
+Green Area	Green Area	3	https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/Green+Area.gif	100		Green Area	BlastMan	1	Level 1-5 Area	
+Pavillion Comp	Pavillion Comp	4	https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/Pavillion+Area.gif	100		Pavillion Comp	DiveMan	5	Level 5-10 Area	
+ACDC Area	ACDC Area	3	https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/ACDC+Area.gif	100		ACDC Area	CircusMan	10	Level 10-15 Area	
+SciLab Area	SciLab Area	3	https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/SciLab.gif	100		SciLab Area	JudgeMan	15	Level 15-20 Area	
+Seaside Area	Seaside Area	3	https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/Sky+Area.gif	100		Seaside Area	ElementMan	20	Level 20-25 Area	
+Sky Area	Sky Area	3	https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/Sky+Area.gif	100		Sky Area	Colonel	25	Level 25-30 Area	
+Graveyard	Graveyard	3	https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/Graveyard.gif	100		Graveyard	EraserMan	30	Level 30-35 Area	
+Undernet	Undernet	3	https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/Undernet.gif	100		Undernet	Bass	35	Level 35-40 Area	
