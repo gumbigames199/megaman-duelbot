@@ -25,38 +25,57 @@ export async function execute(ix: ChatInputCommandInteraction) {
     return;
   }
 
-  const regionId = getRegion(ix.user.id) || process.env.START_REGION_ID || 'den_city';
+  const regionId =
+    getRegion(ix.user.id)?.region_id ||
+    process.env.START_REGION_ID ||
+    'den_city';
   const zone = getZone(ix.user.id) || 1;
 
   const encounter = rollEncounter(regionId, zone);
   if (!encounter) {
-    await ix.reply({ ephemeral: false, content: `🌐 You explore ${regionId} (Zone ${zone})… nothing happens.` });
+    await ix.reply({
+      ephemeral: false,
+      content: `🌐 You explore ${regionId} (Zone ${zone})… nothing happens.`,
+    });
     return;
   }
 
-  const { viruses, regions, chips } = getBundle();
-  const v = viruses[encounter.virusId];
+  const { viruses, bosses, regions, chips } = getBundle();
+  const isBoss = encounter.kind === 'boss';
+  const enemyId = encounter.id;
+
+  const v = isBoss ? bosses?.[enemyId] : viruses?.[enemyId];
   const r = regions[regionId];
   if (!v) {
-    await ix.reply({ ephemeral: true, content: `⚠️ Virus ${encounter.virusId} not found in TSV.` });
+    await ix.reply({
+      ephemeral: true,
+      content: `⚠️ ${isBoss ? 'Boss' : 'Virus'} ${enemyId} not found in TSV.`,
+    });
     return;
   }
 
-  // Determine enemy kind (boss/virus) and start battle
-  const enemyKind = (v as any)?.boss ? 'boss' : 'virus';
-  const battle = createBattle(ix.user.id, v.id, (p.element as any) || 'Neutral', enemyKind);
+  // Start battle with explicit enemy kind
+  const battle = createBattle(
+    ix.user.id,
+    enemyId,
+    (p.element as any) || 'Neutral',
+    isBoss ? 'boss' : 'virus'
+  );
 
   // Background preference: region bg > enemy anim > enemy image
-  const bg = r?.background_url || v.anim_url || v.image_url || null;
+  const bg = r?.background_url || (v as any).anim_url || (v as any).image_url || null;
 
   // Public encounter embed
   const embed = new EmbedBuilder()
-    .setTitle(`⚔️ Encounter! ${v.name} — Zone ${zone}`)
-    .setDescription(v.description || '')
-    .addFields({ name: 'HP', value: String(v.hp), inline: true })
+    .setTitle(`⚔️ Encounter! ${(v as any).name} — Zone ${zone}`)
+    .setDescription((v as any).description || '')
+    .addFields(
+      { name: 'Player HP', value: `${battle.player_hp}/${battle.player_hp_max}`, inline: true },
+      { name: 'Enemy HP', value: `${battle.enemy_hp}`, inline: true },
+    )
     .setFooter({ text: `Battle ID: ${battle.id}` });
 
-  if (v.image_url) embed.setThumbnail(v.image_url);
+  if ((v as any).image_url) embed.setThumbnail((v as any).image_url);
   if (bg) embed.setImage(bg);
 
   await ix.reply({ embeds: [embed] });
@@ -75,21 +94,24 @@ export async function execute(ix: ChatInputCommandInteraction) {
     new StringSelectMenuBuilder()
       .setCustomId(`pick1:${battle.id}`)
       .setPlaceholder('1st chip')
-      .setMinValues(0).setMaxValues(1)
+      .setMinValues(0)
+      .setMaxValues(1)
       .addOptions(mkOptions)
   );
   const row2 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`pick2:${battle.id}`)
       .setPlaceholder('2nd chip (optional)')
-      .setMinValues(0).setMaxValues(1)
+      .setMinValues(0)
+      .setMaxValues(1)
       .addOptions(mkOptions)
   );
   const row3 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`pick3:${battle.id}`)
       .setPlaceholder('3rd chip (optional)')
-      .setMinValues(0).setMaxValues(1)
+      .setMinValues(0)
+      .setMaxValues(1)
       .addOptions(mkOptions)
   );
 

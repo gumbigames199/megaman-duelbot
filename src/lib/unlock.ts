@@ -1,7 +1,6 @@
 // src/lib/unlock.ts
-import { db } from './db';
+import { db, getRegion, setRegion } from './db';
 import { getBundle } from './data';
-import { getRegion, setRegion } from './regions';
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS unlocked_regions (
@@ -30,8 +29,8 @@ export function listUnlocked(userId: string): string[] {
 export function ensureStartUnlocked(userId: string): void {
   const start = process.env.START_REGION_ID || 'den_city';
   unlockRegion(userId, start);
-  const cur = getRegion(userId);
-  if (!cur) setRegion(userId, start);
+  const curRegionId = getRegion(userId)?.region_id;
+  if (!curRegionId) setRegion(userId, start);
 }
 
 /** Unlock next regions (from regions.tsv `next_region_ids`) after a boss clear. */

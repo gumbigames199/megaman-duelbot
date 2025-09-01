@@ -58,13 +58,19 @@ export function rollBossRewards(userId: string, bossId: string) {
   const rng = new RNG();
 
   // bump ranges a bit for bosses if not explicitly set
-  const zenny = pickRange(rng, boss?.zenny_range || '800-1500', 1000);
+  const zenny = pickRange(rng, (boss as any)?.zenny_range || '800-1500', 1000);
   if (zenny > 0) addZenny(userId, zenny);
 
   const xp = pickRange(rng, (boss as any)?.xp_range || '900-1800', 1200);
   const xpRes = xp > 0 ? addXP(userId, xp) : { level: 0, exp: 0, leveledUp: 0 };
 
-  const drops = boss?.drop_table_id ? rollDrop(rng, boss.drop_table_id) : [];
+  // prefer explicit boss drop table; otherwise just give signature chip if present
+  let drops: string[] = [];
+  if ((boss as any)?.drop_table_id) {
+    drops = rollDrop(rng, (boss as any).drop_table_id);
+  } else if ((boss as any)?.signature_chip_id) {
+    drops = [(boss as any).signature_chip_id];
+  }
   for (const id of drops) grantChip(userId, id, 1);
 
   return { zenny, xp, leveledUp: xpRes.leveledUp, drops };
