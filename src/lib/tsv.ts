@@ -39,6 +39,7 @@ const chipSchema = z.object({
   stock: z.string().optional().default('1'),
   is_upgrade: z.string().optional().default('0'),
 });
+
 const virusSchema = z.object({
   id: z.string(), name: z.string(), element: z.string(),
   hp: z.string(), atk: z.string(), def: z.string(), spd: z.string(), acc: z.string(),
@@ -53,6 +54,7 @@ const virusSchema = z.object({
   move_3json: z.string().optional(), move_4json: z.string().optional(),
   boss: z.string().optional(), stat_points: z.string().optional(),
 });
+
 const bossSchema = z.object({
   id: z.string(), name: z.string(), element: z.string(),
   hp: z.string(), atk: z.string(), def: z.string(), spd: z.string(), acc: z.string(),
@@ -64,7 +66,9 @@ const bossSchema = z.object({
   background_url: z.string().optional().default(''),
   phase_thresholds: z.string().optional().default(''),
   effects: z.string().optional().default(''),
+  description: z.string().optional().default(''), // align with BossRow
 });
+
 const regionSchema = z.object({
   id: z.string(), name: z.string(),
   background_url: z.string().optional().default(''),
@@ -75,10 +79,13 @@ const regionSchema = z.object({
   min_level: z.string().optional().default('1'),
   description: z.string().optional().default(''),
   field_effects: z.string().optional().default(''),
-  zone_count: z.string().optional().default('1'), // NEW
+  zone_count: z.string().optional().default('1'),       // keep
+  next_region_ids: z.string().optional().default(''),   // added
 });
+
 const poolSchema = z.object({ id: z.string(), virus_ids: z.string() });
 const dropSchema = z.object({ id: z.string(), entries: z.string() });
+
 const missionSchema = z.object({
   id: z.string(), name: z.string(), type: z.string(),
   requirement: z.string(), region_id: z.string(),
@@ -87,11 +94,13 @@ const missionSchema = z.object({
   description: z.string().optional().default(''),
   image_url: z.string().optional().default(''),
 });
+
 const paSchema = z.object({
   id: z.string(), name: z.string(), result_chip_id: z.string(),
   required_chip_ids: z.string(), required_letters: z.string(),
   description: z.string().optional().default(''),
 });
+
 const shopSchema = z.object({ id: z.string(), region_id: z.string(), entries: z.string() });
 
 // ---- loaders ----
@@ -104,6 +113,7 @@ function toChip(r: z.infer<typeof chipSchema>): ChipRow {
     zenny_cost: n(r.zenny_cost || '0'), stock: n(r.stock || '1'), is_upgrade: b01(r.is_upgrade || '0'),
   };
 }
+
 function toVirus(r: z.infer<typeof virusSchema>): VirusRow {
   return {
     id: r.id, name: r.name, element: r.element as any,
@@ -119,6 +129,7 @@ function toVirus(r: z.infer<typeof virusSchema>): VirusRow {
     boss: r.boss, stat_points: n(r.stat_points || '0'),
   };
 }
+
 function toBoss(r: z.infer<typeof bossSchema>): BossRow {
   return {
     id: r.id, name: r.name, element: r.element as any,
@@ -131,8 +142,10 @@ function toBoss(r: z.infer<typeof bossSchema>): BossRow {
     background_url: r.background_url || '',
     phase_thresholds: r.phase_thresholds || '',
     effects: r.effects || '',
+    description: r.description || '',
   };
 }
+
 function toRegion(r: z.infer<typeof regionSchema>): RegionRow {
   return {
     id: r.id, name: r.name, background_url: r.background_url || '',
@@ -140,7 +153,8 @@ function toRegion(r: z.infer<typeof regionSchema>): RegionRow {
     virus_pool_id: r.virus_pool_id || '', shop_id: r.shop_id || '',
     boss_id: r.boss_id || '', min_level: Number(r.min_level || '1'),
     description: r.description || '', field_effects: r.field_effects || '',
-    zone_count: Number(r.zone_count || '1'), // NEW
+    zone_count: Number(r.zone_count || '1'),
+    next_region_ids: r.next_region_ids || '',
   };
 }
 

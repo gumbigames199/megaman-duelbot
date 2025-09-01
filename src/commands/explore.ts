@@ -34,29 +34,56 @@ export async function execute(ix: ChatInputCommandInteraction) {
     return;
   }
 
-  const { viruses, regions, chips } = getBundle();
-  const v = viruses[encounter.virusId];
-  const r = regions[regionId];
-  if (!v) {
-    await ix.reply({ ephemeral: true, content: `⚠️ Virus ${encounter.virusId} not found in TSV.` });
-    return;
+  const { viruses, bosses, regions, chips } = getBundle();
+
+  // Normalize enemy info based on encounter.kind
+  let enemyId = encounter.id as string;
+  let enemyKind: 'virus' | 'boss' = encounter.kind;
+  let name = '';
+  let hp = 0;
+  let description = '';
+  let image_url: string | undefined;
+  let anim_url: string | undefined;
+
+  if (encounter.kind === 'boss') {
+    const b = bosses[encounter.id];
+    if (!b) {
+      await ix.reply({ ephemeral: true, content: `⚠️ Boss ${encounter.id} not found in TSV.` });
+      return;
+    }
+    name = b.name;
+    hp = b.hp;
+    description = b.description || '';
+    image_url = b.image_url || undefined;
+    anim_url = b.anim_url || undefined;
+  } else {
+    const v = viruses[encounter.id];
+    if (!v) {
+      await ix.reply({ ephemeral: true, content: `⚠️ Virus ${encounter.id} not found in TSV.` });
+      return;
+    }
+    name = v.name;
+    hp = v.hp;
+    description = v.description || '';
+    image_url = v.image_url || undefined;
+    anim_url = v.anim_url || undefined;
   }
 
-  // Determine enemy kind (boss/virus) and start battle
-  const enemyKind = (v as any)?.boss ? 'boss' : 'virus';
-  const battle = createBattle(ix.user.id, v.id, (p.element as any) || 'Neutral', enemyKind);
+  // Start battle with the correct enemy kind
+  const battle = createBattle(ix.user.id, enemyId, (p.element as any) || 'Neutral', enemyKind);
 
   // Background preference: region bg > enemy anim > enemy image
-  const bg = r?.background_url || v.anim_url || v.image_url || null;
+  const r = regions[regionId];
+  const bg = r?.background_url || anim_url || image_url || null;
 
   // Public encounter embed
   const embed = new EmbedBuilder()
-    .setTitle(`⚔️ Encounter! ${v.name} — Zone ${zone}`)
-    .setDescription(v.description || '')
-    .addFields({ name: 'HP', value: String(v.hp), inline: true })
+    .setTitle(`⚔️ Encounter! ${name} — Zone ${zone}`)
+    .setDescription(description)
+    .addFields({ name: 'HP', value: String(hp), inline: true })
     .setFooter({ text: `Battle ID: ${battle.id}` });
 
-  if (v.image_url) embed.setThumbnail(v.image_url);
+  if (image_url) embed.setThumbnail(image_url);
   if (bg) embed.setImage(bg);
 
   await ix.reply({ embeds: [embed] });

@@ -1,3 +1,4 @@
+// src/commands/jack_in.ts
 import {
   SlashCommandBuilder, ChatInputCommandInteraction,
   EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder
@@ -5,8 +6,7 @@ import {
 
 import { listUnlocked, ensureStartUnlocked } from '../lib/unlock';
 import { getBundle } from '../lib/data';
-import { setRegion } from '../lib/db';
-import { getZone, setZone } from '../lib/regions';
+import { setRegion, getRegion, setZone } from '../lib/db';
 
 export const data = new SlashCommandBuilder()
   .setName('jack_in')
@@ -19,7 +19,7 @@ export async function execute(ix: ChatInputCommandInteraction) {
   const unlocked = new Set(listUnlocked(ix.user.id));
   const regions = Object.values(getBundle().regions)
     .filter(r => unlocked.has(r.id))
-    .sort((a,b) => (a.min_level||1) - (b.min_level||1) || a.name.localeCompare(b.name));
+    .sort((a, b) => (a.min_level || 1) - (b.min_level || 1) || a.name.localeCompare(b.name));
 
   if (!regions.length) {
     await ix.reply({ ephemeral: true, content: '❌ No regions unlocked yet.' });
@@ -31,9 +31,12 @@ export async function execute(ix: ChatInputCommandInteraction) {
   for (const r of regions) {
     const btn = new ButtonBuilder()
       .setCustomId(`jack:r:${r.id}`)
-      .setLabel(`${r.name} (Lv${r.min_level||1}+ )`)
+      .setLabel(`${r.name} (Lv${r.min_level || 1}+ )`)
       .setStyle(ButtonStyle.Primary);
-    if (cur.components.length >= 5) { rows.push(cur); cur = new ActionRowBuilder<ButtonBuilder>(); }
+    if (cur.components.length >= 5) {
+      rows.push(cur);
+      cur = new ActionRowBuilder<ButtonBuilder>();
+    }
     cur.addComponents(btn);
   }
   if (cur.components.length) rows.push(cur);
@@ -41,8 +44,8 @@ export async function execute(ix: ChatInputCommandInteraction) {
   const e = new EmbedBuilder()
     .setTitle('🔌 Jack In')
     .setDescription('Pick a region to enter.')
-    .setImage(process.env.JACKIN_GIF_URL || null) // added
+    .setImage(process.env.JACKIN_GIF_URL || regions[0].background_url || null) // fallback to region background
     .setFooter({ text: 'Step 1/3 — Region' });
 
-  await ix.reply({ embeds:[e], components: rows, ephemeral: true });
+  await ix.reply({ embeds: [e], components: rows, ephemeral: true });
 }
