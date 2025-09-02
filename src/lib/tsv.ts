@@ -23,8 +23,8 @@ function readTSV(filePath: string): Array<Record<string, string>> {
   const text = fs.readFileSync(filePath, 'utf8');
   return parseTSV(text);
 }
-function n(v: string | undefined, d = 0) { const x = Number(v); return Number.isFinite(x) ? x : d; }
-function b01(v: string | undefined) { return ['1', 'true', 'yes', 'y'].includes(String(v || '').toLowerCase()) ? 1 : 0; }
+function n(v: string, d = 0) { const x = Number(v); return Number.isFinite(x) ? x : d; }
+function b01(v: string) { return ['1', 'true', 'yes', 'y'].includes(String(v || '').toLowerCase()) ? 1 : 0; }
 
 // ---- zod schemas (soft) ----
 const chipSchema = z.object({
@@ -46,17 +46,13 @@ const virusSchema = z.object({
   cr: z.string(),
   region: z.string(), zone: z.string().optional().default('1'),
   drop_table_id: z.string().optional().default(''),
-  image_url: z.string().optional().default(''),
-  anim_url: z.string().optional().default(''),
+  image_url: z.string().optional().default(''), anim_url: z.string().optional().default(''),
   description: z.string().optional().default(''),
   zenny_range: z.string().optional().default('0-0'),
   xp_range: z.string().optional().default('10-20'),
-  move_1json: z.string().optional(),
-  move_2json: z.string().optional(),
-  move_3json: z.string().optional(),
-  move_4json: z.string().optional(),
-  boss: z.string().optional(),
-  stat_points: z.string().optional(),
+  move_1json: z.string().optional(), move_2json: z.string().optional(),
+  move_3json: z.string().optional(), move_4json: z.string().optional(),
+  boss: z.string().optional(), stat_points: z.string().optional(),
 });
 
 const bossSchema = z.object({
@@ -111,27 +107,31 @@ const shopSchema = z.object({ id: z.string(), region_id: z.string(), entries: z.
 function toChip(r: z.infer<typeof chipSchema>): ChipRow {
   return {
     id: r.id, name: r.name, element: r.element as any, letters: r.letters,
-    mb_cost: n(r.mb_cost), power: n(r.power), hits: n(r.hits, 1), acc: Number(r.acc || '0.95'),
+    mb_cost: n(r.mb_cost), power: n(r.power), hits: n(r.hits || '1'), acc: Number(r.acc || '0.95'),
     category: r.category as any, effects: r.effects || '', description: r.description || '',
-    image_url: r.image_url || '', rarity: n(r.rarity, 1),
-    zenny_cost: n(r.zenny_cost, 0), stock: n(r.stock, 1), is_upgrade: b01(r.is_upgrade),
+    image_url: r.image_url || '', rarity: n(r.rarity || '1'),
+    zenny_cost: n(r.zenny_cost || '0'), stock: n(r.stock || '1'), is_upgrade: b01(r.is_upgrade || '0'),
   };
 }
+
 function toVirus(r: z.infer<typeof virusSchema>): VirusRow {
   return {
     id: r.id, name: r.name, element: r.element as any,
     hp: n(r.hp), atk: n(r.atk), def: n(r.def), spd: n(r.spd), acc: n(r.acc),
     cr: n(r.cr),
-    region: r.region, zone: n(r.zone, 1),
+    region: r.region, zone: n(r.zone || '1'),
     drop_table_id: r.drop_table_id || '',
     image_url: r.image_url || '', anim_url: r.anim_url || '',
     description: r.description || '',
     zenny_range: r.zenny_range || '0-0',
     xp_range: r.xp_range || '10-20',
     move_1json: r.move_1json, move_2json: r.move_2json, move_3json: r.move_3json, move_4json: r.move_4json,
-    boss: r.boss, stat_points: n(r.stat_points, 0),
+    // IMPORTANT: coerce boss flag to number (0/1) to match VirusRow type
+    boss: b01(r.boss || '0'),
+    stat_points: n(r.stat_points || '0'),
   };
 }
+
 function toBoss(r: z.infer<typeof bossSchema>): BossRow {
   return {
     id: r.id, name: r.name, element: r.element as any,
@@ -147,18 +147,15 @@ function toBoss(r: z.infer<typeof bossSchema>): BossRow {
     description: r.description || '',
   };
 }
+
 function toRegion(r: z.infer<typeof regionSchema>): RegionRow {
   return {
-    id: r.id, name: r.name,
-    background_url: r.background_url || '',
+    id: r.id, name: r.name, background_url: r.background_url || '',
     encounter_rate: Number(r.encounter_rate || '0.7'),
-    virus_pool_id: r.virus_pool_id || '',
-    shop_id: r.shop_id || '',
-    boss_id: r.boss_id || '',
-    min_level: n(r.min_level, 1),
-    description: r.description || '',
-    field_effects: r.field_effects || '',
-    zone_count: n(r.zone_count, 1),
+    virus_pool_id: r.virus_pool_id || '', shop_id: r.shop_id || '',
+    boss_id: r.boss_id || '', min_level: Number(r.min_level || '1'),
+    description: r.description || '', field_effects: r.field_effects || '',
+    zone_count: Number(r.zone_count || '1'),
     next_region_ids: r.next_region_ids || '',
   };
 }
@@ -228,7 +225,7 @@ export function loadTSVBundle(dir = './data'): { data: DataBundle; report: LoadR
       if (!p.success) { errors.push(`missions: ${row.id ?? 'unknown'} ⇒ ${p.error.issues[0]?.message}`); return null; }
       const m: MissionRow = {
         ...(p.data as any),
-        reward_zenny: n(p.data.reward_zenny, 0),
+        reward_zenny: n(p.data.reward_zenny || '0', 0),
       } as any;
       return [m.id, m] as const;
     }).filter(Boolean) as any
