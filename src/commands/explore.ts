@@ -28,6 +28,7 @@ export async function execute(ix: ChatInputCommandInteraction) {
   const regionId = getRegion(ix.user.id) || process.env.START_REGION_ID || 'den_city';
   const zone = getZone(ix.user.id) || 1;
 
+  // rollEncounter returns { kind: 'virus' | 'boss', id: string, zone?: number } | null
   const encounter = rollEncounter(regionId, zone);
   if (!encounter) {
     await ix.reply({ ephemeral: false, content: `🌐 You explore ${regionId} (Zone ${zone})… nothing happens.` });
@@ -35,61 +36,39 @@ export async function execute(ix: ChatInputCommandInteraction) {
   }
 
   const { viruses, bosses, regions, chips } = getBundle();
+  const isBoss = encounter.kind === 'boss';
+  const enemyId = encounter.id;
 
-  // Normalize enemy info based on encounter.kind
-  let enemyId = encounter.id as string;
-  let enemyKind: 'virus' | 'boss' = encounter.kind;
-  let name = '';
-  let hp = 0;
-  let description = '';
-  let image_url: string | undefined;
-  let anim_url: string | undefined;
+  const meta = isBoss ? bosses[enemyId] : viruses[enemyId];
+  const r = regions[regionId];
 
-  if (encounter.kind === 'boss') {
-    const b = bosses[encounter.id];
-    if (!b) {
-      await ix.reply({ ephemeral: true, content: `⚠️ Boss ${encounter.id} not found in TSV.` });
-      return;
-    }
-    name = b.name;
-    hp = b.hp;
-    description = b.description || '';
-    image_url = b.image_url || undefined;
-    anim_url = b.anim_url || undefined;
-  } else {
-    const v = viruses[encounter.id];
-    if (!v) {
-      await ix.reply({ ephemeral: true, content: `⚠️ Virus ${encounter.id} not found in TSV.` });
-      return;
-    }
-    name = v.name;
-    hp = v.hp;
-    description = v.description || '';
-    image_url = v.image_url || undefined;
-    anim_url = v.anim_url || undefined;
+  if (!meta) {
+    await ix.reply({
+      ephemeral: true,
+      content: `⚠️ ${isBoss ? 'Boss' : 'Virus'} ${enemyId} not found in TSV.`,
+    });
+    return;
   }
 
-  // Start battle with the correct enemy kind
-  const battle = createBattle(ix.user.id, enemyId, (p.element as any) || 'Neutral', enemyKind);
+  // Start battle with standardized enemy kind/id
+  const battle = createBattle(ix.user.id, enemyId, (p.element as any) || 'Neutral', isBoss ? 'boss' : 'virus');
 
-  // Background preference: region bg > enemy anim > enemy image
-  const r = regions[regionId];
-  const bg = r?.background_url || anim_url || image_url || null;
+  // Background: region bg > enemy anim > enemy image
+  const bg = r?.background_url || (meta as any).anim_url || (meta as any).image_url || null;
 
-  // Public encounter embed
   const embed = new EmbedBuilder()
-    .setTitle(`⚔️ Encounter! ${name} — Zone ${zone}`)
-    .setDescription(description)
-    .addFields({ name: 'HP', value: String(hp), inline: true })
+    .setTitle(`⚔️ Encounter! ${meta.name} — Zone ${zone}`)
+    .setDescription((meta as any).description || '')
+    .addFields({ name: 'HP', value: String((meta as any).hp ?? '?'), inline: true })
     .setFooter({ text: `Battle ID: ${battle.id}` });
 
-  if (image_url) embed.setThumbnail(image_url);
+  if ((meta as any).image_url) embed.setThumbnail((meta as any).image_url);
   if (bg) embed.setImage(bg);
 
   await ix.reply({ embeds: [embed] });
 
   // Build 3 ordered selects: pick1, pick2, pick3 (no duplicates)
-  const mkOptions = battle.hand.map((id) => {
+  const mkOptions = battle.hand.map((id: string) => {
     const c = chips[id];
     return {
       label: (c?.name || id).slice(0, 100),

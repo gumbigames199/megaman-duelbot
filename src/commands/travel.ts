@@ -15,7 +15,6 @@ export const data = new SlashCommandBuilder()
     o.setName('zone')
       .setDescription('Zone number (1..region.zone_count)')
       .setMinValue(1)
-      .setMaxValue(10)
   );
 
 export async function execute(ix: ChatInputCommandInteraction) {
@@ -51,8 +50,9 @@ export async function execute(ix: ChatInputCommandInteraction) {
 
   // Otherwise, adjust zone within current region
   if (wantZone !== undefined) {
-    const curRegion = getRegion(ix.user.id) || process.env.START_REGION_ID || 'den_city';
-    const r = bundle.regions[curRegion];
+    const cur = getRegion(ix.user.id);
+    const curRegionId = cur?.region_id || process.env.START_REGION_ID || 'den_city';
+    const r = bundle.regions[curRegionId];
     if (!r) {
       await ix.reply({ ephemeral: true, content: `❌ Current region invalid.` });
       return;
