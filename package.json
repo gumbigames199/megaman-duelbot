@@ -5,12 +5,18 @@
   "type": "commonjs",
   "engines": { "node": ">=20.10" },
   "scripts": {
-  "dev": "ts-node --transpile-only src/index.ts",
-  "start": "npm run build && node dist/index.js",
-  "build": "tsc -p tsconfig.json",
-  "build:strict": "npm run reload:data && tsc -p tsconfig.json",
-  "reload:data": "ts-node --transpile-only src/scripts/reload-data.ts",
-  "lint": "eslint ."
+    "dev": "NODE_ENV=development ts-node --transpile-only src/index.ts",
+
+    "build": "tsc -p tsconfig.json",
+
+    // this runs on Railway before start; it also prints what’s in /dist
+    "prestart": "npm run build && node -e \"const fs=require('fs'); console.log('dist exists:', fs.existsSync('dist')); if(fs.existsSync('dist')) console.log('dist files:', fs.readdirSync('dist'));\"",
+
+    "start": "node dist/index.js",
+
+    "build:strict": "npm run reload:data && tsc -p tsconfig.json",
+    "reload:data": "ts-node --transpile-only src/scripts/reload-data.ts",
+    "lint": "eslint ."
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
