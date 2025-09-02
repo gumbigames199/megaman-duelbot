@@ -25,8 +25,13 @@ export async function execute(ix: ChatInputCommandInteraction) {
     return;
   }
 
-  // getRegion returns a plain string region id
-  const regionId = getRegion(ix.user.id) || process.env.START_REGION_ID || 'den_city';
+  // getRegion might be a string OR an old object shape; normalize to a string
+  const got = getRegion(ix.user.id) as unknown as string | { region_id?: string; region_zone?: number } | null | undefined;
+  const regionId: string =
+    (typeof got === 'string' ? got : got?.region_id) ||
+    process.env.START_REGION_ID ||
+    'den_city';
+
   const zone = getZone(ix.user.id) || 1;
 
   // rollEncounter returns { kind: 'virus' | 'boss', id: string, zone?: number } | null
@@ -51,13 +56,12 @@ export async function execute(ix: ChatInputCommandInteraction) {
     return;
   }
 
-  // Start battle with the standardized enemy kind/id
+  // Start battle with standardized enemy kind/id
   const battle = createBattle(ix.user.id, enemyId, (p.element as any) || 'Neutral', isBoss ? 'boss' : 'virus');
 
-  // Background preference: region bg > enemy anim > enemy image
+  // Background: region bg > enemy anim > enemy image
   const bg = r?.background_url || (meta as any).anim_url || (meta as any).image_url || null;
 
-  // Public encounter embed
   const embed = new EmbedBuilder()
     .setTitle(`⚔️ Encounter! ${meta.name} — Zone ${zone}`)
     .setDescription((meta as any).description || '')
