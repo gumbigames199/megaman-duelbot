@@ -5,13 +5,12 @@
   "type": "commonjs",
   "engines": { "node": ">=20.10" },
   "scripts": {
-    "dev": "NODE_ENV=development ts-node --transpile-only src/index.ts",
-    "start": "node dist/index.js",
-    "prestart": "npm run build",
-    "build": "tsc -p tsconfig.json",
-    "build:strict": "npm run reload:data && tsc -p tsconfig.json",
-    "reload:data": "ts-node --transpile-only src/scripts/reload-data.ts",
-    "lint": "eslint ."
+  "dev": "ts-node --transpile-only src/index.ts",
+  "start": "npm run build && node dist/index.js",
+  "build": "tsc -p tsconfig.json",
+  "build:strict": "npm run reload:data && tsc -p tsconfig.json",
+  "reload:data": "ts-node --transpile-only src/scripts/reload-data.ts",
+  "lint": "eslint ."
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
