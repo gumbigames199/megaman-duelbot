@@ -1,50 +1,73 @@
 // src/lib/regions.ts
-import { RNG } from './rng';
 import { getBundle } from './data';
+import { RNG } from './rng';
 
-export type Encounter =
-  | { kind: 'virus'; id: string }
-  | { kind: 'boss';  id: string };
+export type Encounter = {
+  kind: 'virus' | 'boss';
+  id: string;         // virus id or boss id
+  zone?: number;      // the zone the roll happened in (if provided)
+};
 
 /**
- * Roll an encounter for a region (optionally filtered by zone).
- * - Respects region.encounter_rate (default 0.7).
- * - Has a rare boss chance if region.boss_id exists (default 2% via BOSS_ENCOUNTER_RATE).
- * - Otherwise picks a virus from the region's pool; if zone provided, prefers viruses with that zone.
+ * Roll an encounter for a region/zone using the data bundle.
+ * - Returns { kind, id, zone? } or null if nothing spawns.
+ * - region_id must be a string TSV id (e.g. "den_city").
+ * - region_zone is optional; defaults to 1 when filtering zone-gated viruses.
  */
-export function rollEncounter(regionId: string, zone?: number, seed?: number): Encounter | null {
-  const { regions, virusPools, viruses } = getBundle();
-  const r = regions[regionId];
-  if (!r) return null;
+export function rollEncounter(region_id: string, region_zone?: number): Encounter | null {
+  const rng = new RNG();
+  const { regions, viruses, virusPools, bosses } = getBundle();
 
-  const rng = new RNG(seed ?? Date.now());
+  const region = regions[region_id];
+  if (!region) return null;
 
-  // Region encounter gate
-  const rate = Number(r.encounter_rate ?? 0.7);
-  if (!rng.chance(rate)) return null;
+  const zone = Math.max(1, Number(region_zone || 1));
 
-  // Rare boss roll (if region defines one)
-  const bossRate = Number(process.env.BOSS_ENCOUNTER_RATE ?? '0.02'); // 2% default
-  if (r.boss_id && rng.chance(bossRate)) {
-    return { kind: 'boss', id: r.boss_id };
+  // 1) Encounter gate (region-based)
+  const encounterRate = Number.isFinite(region.encounter_rate)
+    ? Number(region.encounter_rate)
+    : 0.7;
+  if (rng.float() > encounterRate) return null;
+
+  // 2) Optional boss chance (disabled by default unless env set)
+  //    You can tune this via BOSS_CHANCE=0.05 (5%) in .env, or leave 0.
+  const bossChance = Math.max(0, Math.min(1, Number(process.env.BOSS_CHANCE || 0)));
+  if (bossChance > 0 && region.boss_id && bosses[region.boss_id] && rng.float() < bossChance) {
+    return { kind: 'boss', id: region.boss_id, zone };
   }
 
-  // Virus pool roll
-  const pool = virusPools[r.virus_pool_id];
-  if (!pool) return null;
+  // 3) Virus pool:
+  //    Prefer region.virus_pool_id; if missing, fall back to all viruses tagged to this region.
+  let candidateVirusIds: string[] = [];
 
-  const ids = String(pool.virus_ids || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
+  if (region.virus_pool_id && virusPools[region.virus_pool_id]) {
+    const pool = String(virusPools[region.virus_pool_id].virus_ids || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
 
-  // If a zone was provided, try to filter by it; fall back to full list if filter would be empty
-  const zoneFiltered = typeof zone === 'number'
-    ? ids.filter(id => (viruses[id]?.zone ?? 1) === zone)
-    : ids;
+    // If your pool doesn’t pre-filter by zone, do it here based on the VirusRow.zone field.
+    candidateVirusIds = pool.filter(id => {
+      const v = viruses[id];
+      if (!v) return false;
+      // If a virus has a zone number, require exact match; otherwise allow it everywhere.
+      return v.zone ? Number(v.zone) === zone : true;
+    });
+  } else {
+    // Fallback: everything with v.region === region_id and zone match
+    candidateVirusIds = Object.keys(viruses).filter(id => {
+      const v = viruses[id];
+      if (!v) return false;
+      if (v.region !== region_id) return false;
+      return v.zone ? Number(v.zone) === zone : true;
+    });
+  }
 
-  const pickable = zoneFiltered.length ? zoneFiltered : ids;
-  if (!pickable.length) return null;
+  if (candidateVirusIds.length === 0) {
+    // No valid viruses for this zone/region
+    return null;
+  }
 
-  return { kind: 'virus', id: rng.pick(pickable) };
+  const pick = candidateVirusIds[Math.floor(rng.float() * candidateVirusIds.length)];
+  return { kind: 'virus', id: pick, zone };
 }
