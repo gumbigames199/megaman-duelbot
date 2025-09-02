@@ -6,8 +6,9 @@
   "engines": { "node": ">=20.10" },
   "scripts": {
     "dev": "NODE_ENV=development ts-node --transpile-only src/index.ts",
-    "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json",
+    "prestart": "npm run build",
+    "start": "node dist/index.js",
     "build:strict": "npm run reload:data && tsc -p tsconfig.json",
     "reload:data": "ts-node --transpile-only src/scripts/reload-data.ts",
     "lint": "eslint ."
