@@ -13,7 +13,7 @@ import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end } fro
 import { rollRewards, rollBossRewards } from './lib/rewards';
 import { progressDefeat } from './lib/missions';
 import { unlockNextFromRegion } from './lib/unlock';
-import { getRegion } from './lib/db'; // from db, not regions
+import { getRegion, getZone } from './lib/db'; // NOTE: getRegion returns an object now
 import { wantDmg } from './lib/settings-util';
 
 import * as Start from './commands/start';
@@ -28,8 +28,7 @@ import * as Leaderboard from './commands/leaderboard';
 import * as Settings from './commands/settings';
 import * as Chip from './commands/chip';
 import * as VirusDex from './commands/virusdex';
-import * as JackIn from './commands/jack_in';
-import { handleComponent as JackInComponents } from './commands/jack_in';
+import * as JackIn from './commands/jack_in'; // robust import (handleComponent may be optional)
 
 // ---- Env checks ----
 const TOKEN    = process.env.DISCORD_TOKEN!;
@@ -156,8 +155,11 @@ client.on('interactionCreate', async (ix) => {
 
     // Components
     if (ix.isButton()) {
-      // let jack_in own its customIds
-      if (await JackInComponents(ix)) return;
+      // Let /jack_in own its customIds if it exposes a component handler
+      if (typeof (JackIn as any).handleComponent === 'function') {
+        const handled = await (JackIn as any).handleComponent(ix);
+        if (handled) return;
+      }
 
       // Battle buttons: lock or run
       const [kind, battleId] = ix.customId.split(':');
@@ -177,10 +179,15 @@ client.on('interactionCreate', async (ix) => {
       if (kind === 'lock') {
         const res = resolveBattleTurn(s, s.locked);
 
+        const regionObj = getRegion(s.user_id);                // <-- object
+        const regionId  = regionObj?.region_id
+          || process.env.START_REGION_ID
+          || 'den_city';
+
         const embed = battleEmbed(s, {
           playerName: ix.user.username,
           playerAvatar: ix.user.displayAvatarURL?.() || undefined,
-          regionId: getRegion(s.user_id) || process.env.START_REGION_ID || 'den_city',
+          regionId,
         });
         await ix.reply({ embeds: [embed], ephemeral: false });
 
@@ -189,25 +196,26 @@ client.on('interactionCreate', async (ix) => {
         if (res.outcome === 'victory') {
           let rewardText = '';
           if (s.enemy_kind === 'boss') {
-            const br = rollBossRewards(s.user_id, s.enemy_id);
-            const curRegion = getRegion(s.user_id) || process.env.START_REGION_ID || 'den_city';
+            const br: any = rollBossRewards(s.user_id, s.enemy_id); // treat as any so xp/leveledUp don’t type-error
+            const curRegionObj = getRegion(s.user_id);
+            const curRegionId  = curRegionObj?.region_id || process.env.START_REGION_ID || 'den_city';
 
-            // XP + level up already handled in rollBossRewards → addXP
-            const unlocked = unlockNextFromRegion(s.user_id, curRegion);
+            const unlocked = unlockNextFromRegion(s.user_id, curRegionId);
             rewardText =
-              `**Boss Rewards:** +${br.zenny}z • +${br.xp}xp` +
-              (br.drops.length ? ` • chips: ${br.drops.join(', ')}` : '') +
-              (br.leveledUp > 0 ? `\n🆙 Level Up x${br.leveledUp}` : '') +
+              `**Boss Rewards:** +${br.zenny}z` +
+              (br.xp ? ` • +${br.xp}xp` : '') +
+              (br.drops?.length ? ` • chips: ${br.drops.join(', ')}` : '') +
+              (br.leveledUp ? `\n🆙 Level Up x${br.leveledUp}` : '') +
               (unlocked.length ? `\n🔓 Unlocked: ${unlocked.join(', ')}` : '');
           } else {
-            const vr = rollRewards(s.user_id, s.enemy_id);
+            const vr: any = rollRewards(s.user_id, s.enemy_id);
 
-            // XP + level up already handled in rollRewards → addXP
             progressDefeat(s.user_id, s.enemy_id);
             rewardText =
-              `**Rewards:** +${vr.zenny}z • +${vr.xp}xp` +
-              (vr.drops.length ? ` • chips: ${vr.drops.join(', ')}` : '') +
-              (vr.leveledUp > 0 ? `\n🆙 Level Up x${vr.leveledUp}` : '');
+              `**Rewards:** +${vr.zenny}z` +
+              (vr.xp ? ` • +${vr.xp}xp` : '') +
+              (vr.drops?.length ? ` • chips: ${vr.drops.join(', ')}` : '') +
+              (vr.leveledUp ? `\n🆙 Level Up x${vr.leveledUp}` : '');
           }
           end(battleId);
           await ix.followUp({ content: `✅ Victory!${extra ? ` ${extra}` : ''}\n${rewardText}`, ephemeral: false });
