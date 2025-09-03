@@ -1,6 +1,8 @@
 // src/lib/unlock.ts
-import { db, getRegion, setRegion } from './db';
+import { db } from './db';
 import { getBundle } from './data';
+
+const START_REGION = process.env.START_REGION_ID || 'green_area';
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS unlocked_regions (
@@ -10,42 +12,38 @@ CREATE TABLE IF NOT EXISTS unlocked_regions (
 );
 `);
 
-const qHas  = db.prepare(`SELECT 1 FROM unlocked_regions WHERE user_id=? AND region_id=?`);
-const qAdd  = db.prepare(`INSERT OR IGNORE INTO unlocked_regions (user_id, region_id) VALUES (?,?)`);
-const qList = db.prepare(`SELECT region_id FROM unlocked_regions WHERE user_id=? ORDER BY region_id`);
-
-export function hasRegion(userId: string, regionId: string): boolean {
-  return !!qHas.get(userId, regionId);
-}
-
-export function unlockRegion(userId: string, regionId: string): void {
-  if (!regionId) return;
-  qAdd.run(userId, regionId);
-}
+const put = db.prepare(`INSERT OR IGNORE INTO unlocked_regions (user_id, region_id) VALUES (?, ?)`);
+const all = db.prepare(`SELECT region_id FROM unlocked_regions WHERE user_id=? ORDER BY region_id`);
 
 export function listUnlocked(userId: string): string[] {
-  return (qList.all(userId) as Array<{ region_id: string }>).map(r => r.region_id);
+  // ensure the start region is always present
+  put.run(userId, START_REGION);
+  const rows = all.all(userId) as Array<{ region_id: string }>;
+  const out = rows.map(r => r.region_id);
+  // de-dupe just in case
+  return Array.from(new Set([START_REGION, ...out]));
 }
 
-/** Ensure the start region is unlocked and set as current if not set. */
-export function ensureStartUnlocked(userId: string): void {
-  const start = process.env.START_REGION_ID || 'den_city';
-  unlockRegion(userId, start);
-  const cur = getRegion(userId);
-  if (!cur) setRegion(userId, start);
+export function unlockRegion(userId: string, regionId: string): boolean {
+  const { regions } = getBundle();
+  if (!regions[regionId]) return false;
+  put.run(userId, regionId);
+  return true;
 }
 
-/**
- * Unlock next regions listed on the current region (if you use this).
- * Safe to keep even if you gate progression by level only.
- */
-export function unlockNextFromRegion(userId: string, currentRegionId: string): string[] {
-  const r = getBundle().regions[currentRegionId];
+/** Unlock neighbors listed in regions[next_region_ids] when you clear a region */
+export function unlockNextFromRegion(userId: string, regionId: string): string[] {
+  const { regions } = getBundle();
+  const r = regions[regionId];
   if (!r) return [];
-  const nexts = String(r.next_region_ids || '')
+  const next = String(r.next_region_ids || '')
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
-  for (const id of nexts) unlockRegion(userId, id);
-  return nexts;
+  const gained: string[] = [];
+  for (const n of next) {
+    const before = listUnlocked(userId);
+    if (!before.includes(n) && unlockRegion(userId, n)) gained.push(n);
+  }
+  return gained;
 }

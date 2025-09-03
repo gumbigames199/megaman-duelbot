@@ -1,69 +1,82 @@
+// src/commands/shop.ts
 import {
   SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder
 } from 'discord.js';
-import { listShopStock, getChipById } from '../lib/data';
-import { addZenny, grantChip, getPlayer, addHPMax, addATK } from '../lib/db';
-
-const HP_COST   = Number(process.env.UPGRADE_HP_COST   || 1200);
-const HP_DELTA  = Number(process.env.UPGRADE_HP_DELTA  || 20);
-const ATK_COST  = Number(process.env.UPGRADE_ATK_COST  || 1500);
-const ATK_DELTA = Number(process.env.UPGRADE_ATK_DELTA || 2);
+import { getBundle } from '../lib/data';
+import { getRegion, addZenny, grantChip } from '../lib/db';
 
 export const data = new SlashCommandBuilder()
   .setName('shop')
-  .setDescription('Browse & buy')
-  .addSubcommand(s=>s.setName('list').setDescription('Show stock'))
-  .addSubcommand(s=>s.setName('buy').setDescription('Buy an item')
-    .addStringOption(o=>o.setName('id').setDescription('chip_id | hp_memory | powerup').setRequired(true))
-    .addIntegerOption(o=>o.setName('qty').setDescription('Quantity').setMinValue(1)));
+  .setDescription('View or buy items in the current region shop')
+  .addSubcommand(sc => sc
+    .setName('list')
+    .setDescription('Show what this region sells'))
+  .addSubcommand(sc => sc
+    .setName('buy')
+    .setDescription('Buy a chip by id from this region shop')
+    .addStringOption(o => o.setName('chip_id').setDescription('TSV chip id').setRequired(true)));
 
 export async function execute(ix: ChatInputCommandInteraction) {
   const sub = ix.options.getSubcommand();
+  const { regions, shops, chips } = getBundle();
+
+  const regionId = (getRegion(ix.user.id)?.region_id) || (process.env.START_REGION_ID || 'green_area');
+  const region = regions[regionId];
+  const shopId = region?.shop_id || '';
+  const shop = shopId ? shops[shopId] : undefined;
+
+  if (!shop) {
+    await ix.reply({ ephemeral: true, content: `🛒 No shop in ${region?.name ?? regionId}.` });
+    return;
+  }
+
+  // entries: "chipId:price" comma-separated
+  const entries = String(shop.entries || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(e => {
+      const [id, priceStr] = e.split(':').map(x => x.trim());
+      return { id, price: Math.max(0, Number(priceStr) || 0) };
+    });
 
   if (sub === 'list') {
-    const stock = listShopStock().slice(0, 25);
-    const chipLines = stock.map(c => `• **${c.id}** — ${c.name} — ${c.zenny_cost}z`).join('\n') || '—';
-    const upgLines = [
-      `• **hp_memory** — +${HP_DELTA} HP — ${HP_COST}z`,
-      `• **powerup** — +${ATK_DELTA} ATK — ${ATK_COST}z`,
-    ].join('\n');
-    const e = new EmbedBuilder()
-      .setTitle('🛒 Shop')
-      .addFields(
-        { name: 'Chips', value: chipLines },
-        { name: 'Upgrades', value: upgLines },
-      );
-    await ix.reply({ ephemeral:true, embeds:[e] });
+    const lines = entries.map(({ id, price }) => {
+      const c = chips[id];
+      return `• **${c?.name || id}** — ${price}z`;
+    });
+    const embed = new EmbedBuilder()
+      .setTitle(`🛒 ${region?.name || regionId} — Shop`)
+      .setDescription(lines.length ? lines.join('\n') : '_Empty_');
+    await ix.reply({ embeds: [embed], ephemeral: true });
     return;
   }
 
   if (sub === 'buy') {
-    const id = ix.options.getString('id', true).trim().toLowerCase();
-    const qty = ix.options.getInteger('qty', false) ?? 1;
-    const p = getPlayer(ix.user.id);
-    if (!p) { await ix.reply({ ephemeral:true, content:'❌ No profile. Use /start.' }); return; }
+    const wantId = ix.options.getString('chip_id', true);
+    const entry = entries.find(e => e.id === wantId);
+    if (!entry) {
+      await ix.reply({ ephemeral: true, content: `❌ That item is not sold in this region.` });
+      return;
+    }
+    const price = entry.price;
 
-    // Upgrades
-    if (id === 'hp_memory' || id === 'powerup') {
-      const cost = (id === 'hp_memory' ? HP_COST : ATK_COST) * qty;
-      if (p.zenny < cost) { await ix.reply({ ephemeral:true, content:`❌ Need ${cost}z, you have ${p.zenny}z.` }); return; }
-      addZenny(ix.user.id, -cost);
-      if (id === 'hp_memory') addHPMax(ix.user.id, HP_DELTA * qty);
-      else addATK(ix.user.id, ATK_DELTA * qty);
-      await ix.reply({ ephemeral:true, content:`✅ Bought ${id} ×${qty} for ${cost}z.` });
+    // fetch player & zenny
+    const p = require('../lib/db').getPlayer(ix.user.id);
+    if (!p) { await ix.reply({ ephemeral: true, content: `❌ No profile. Use /start first.` }); return; }
+
+    if ((p.zenny ?? 0) < price) {
+      await ix.reply({ ephemeral: true, content: `❌ Not enough zenny. Need ${price}z.` });
       return;
     }
 
-    // Chips
-    const chip = getChipById(id);
-    if (!chip || chip.stock !== 1 || (chip.zenny_cost|0) <= 0) {
-      await ix.reply({ ephemeral:true, content:'❌ Not purchasable.' }); return;
-    }
-    const total = chip.zenny_cost * qty;
-    if (p.zenny < total) { await ix.reply({ ephemeral:true, content:`❌ Need ${total}z, you have ${p.zenny}z.` }); return; }
+    addZenny(ix.user.id, -price);
+    grantChip(ix.user.id, wantId, 1);
 
-    addZenny(ix.user.id, -total);
-    grantChip(ix.user.id, id, qty);
-    await ix.reply({ ephemeral:true, content:`✅ Bought ${id} ×${qty} for ${total}z.` });
+    const c = chips[wantId];
+    await ix.reply({
+      ephemeral: true,
+      content: `✅ Purchased **${c?.name || wantId}** for **${price}z**.`
+    });
   }
 }

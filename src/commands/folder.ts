@@ -1,3 +1,4 @@
+// src/commands/folder.ts
 import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from 'discord.js';
 import { getBundle } from '../lib/data';
 import { listInventory } from '../lib/db';
@@ -10,22 +11,59 @@ function parseList(raw?: string): string[] {
     .filter(Boolean);
 }
 
-function padTo30(ids: string[]): string[] {
+/**
+ * Pad to 30 chips without violating the duplicate cap and trying to keep memory low.
+ * Strategy:
+ *  - Start from current ids
+ *  - Count per-chip occurrences
+ *  - Sort all chips by mb_cost asc (stable)
+ *  - Fill with next cheapest chips whose count < maxDup
+ */
+function padTo30Smart(ids: string[]): string[] {
   const b = getBundle();
-  const fallback = Object.keys(b.chips)[0] || '';
-  const out = ids.slice();
-  while (out.length < 30 && fallback) out.push(fallback);
+  const cap = Math.max(1, Number(process.env.FOLDER_MAX_DUP || 4));
+
+  const out = ids.slice(0, 30);
+  const counts: Record<string, number> = {};
+  for (const id of out) counts[id] = (counts[id] || 0) + 1;
+
+  // sortable list of available chips (cheapest first; deterministic fallback to id)
+  const all = Object.values(b.chips)
+    .map(c => ({ id: c.id, cost: Number(c.mb_cost || 0) }))
+    .sort((a, b) => (a.cost - b.cost) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  let i = 0;
+  while (out.length < 30 && all.length) {
+    const cand = all[i % all.length];
+    i++;
+
+    // skip if already at duplicate cap
+    if ((counts[cand.id] || 0) >= cap) continue;
+
+    // only add real chips
+    if (!b.chips[cand.id]) continue;
+
+    out.push(cand.id);
+    counts[cand.id] = (counts[cand.id] || 0) + 1;
+
+    // safety valve in case data is tiny
+    if (i > all.length * 10) break;
+  }
+
+  // If we somehow still didn't reach 30 (tiny dataset), just trim/pad with unique ids we have.
+  while (out.length < 30) out.push(all[(out.length) % all.length]?.id || out[out.length - 1]);
+
   return out.slice(0, 30);
 }
 
 export const data = new SlashCommandBuilder()
   .setName('folder')
-  .setDescription('Manage your 30‑chip folder')
+  .setDescription('Manage your 30-chip folder')
   .addSubcommand(s => s.setName('list').setDescription('Show folder & inventory'))
   .addSubcommand(s => s.setName('setslot').setDescription('Set a slot to a chip id')
     .addIntegerOption(o => o.setName('slot').setDescription('0-29').setRequired(true).setMinValue(0).setMaxValue(29))
     .addStringOption(o => o.setName('chip_id').setDescription('Chip ID from TSV').setRequired(true)))
-  .addSubcommand(s => s.setName('clear').setDescription('Clear a slot (replaces with fallback chip)')
+  .addSubcommand(s => s.setName('clear').setDescription('Clear a slot (replaces with a valid filler chip)')
     .addIntegerOption(o => o.setName('slot').setDescription('0-29').setRequired(true).setMinValue(0).setMaxValue(29)))
   .addSubcommand(s => s.setName('setall').setDescription('Set all 30 by list (validates memory & dup caps)')
     .addStringOption(o => o.setName('ids').setDescription('exactly 30 ids, comma/space sep').setRequired(true)))
@@ -39,7 +77,7 @@ export async function execute(ix: ChatInputCommandInteraction) {
   const b = getBundle();
 
   if (sub === 'list') {
-    const ids = getFolder(ix.user.id);
+    const ids = padTo30Smart(getFolder(ix.user.id));
     const mem = ids.reduce((m, id) => m + Number(b.chips[id]?.mb_cost || 0), 0);
     const inv = listInventory(ix.user.id);
 
@@ -68,7 +106,7 @@ export async function execute(ix: ChatInputCommandInteraction) {
     const chipId = ix.options.getString('chip_id', true).trim();
     if (!b.chips[chipId]) { await ix.reply({ ephemeral: true, content: `❌ Unknown chip id: ${chipId}` }); return; }
 
-    const cur = padTo30(getFolder(ix.user.id));
+    const cur = padTo30Smart(getFolder(ix.user.id));
     cur[slot] = chipId;
 
     const val = validateFolder(cur);
@@ -81,11 +119,23 @@ export async function execute(ix: ChatInputCommandInteraction) {
 
   if (sub === 'clear') {
     const slot = ix.options.getInteger('slot', true);
-    const cur = padTo30(getFolder(ix.user.id));
-    const fallback = Object.keys(b.chips)[0];
-    if (!fallback) { await ix.reply({ ephemeral: true, content: '❌ No fallback chip available.' }); return; }
+    const cur = padTo30Smart(getFolder(ix.user.id));
 
-    cur[slot] = fallback;
+    // Replace this slot with a valid filler chip (cheapest available that won't break dup cap)
+    const cap = Math.max(1, Number(process.env.FOLDER_MAX_DUP || 4));
+    const counts: Record<string, number> = {};
+    for (const id of cur) counts[id] = (counts[id] || 0) + 1;
+
+    const fillers = Object.values(b.chips)
+      .map(c => ({ id: c.id, cost: Number(c.mb_cost || 0) }))
+      .sort((a, b) => (a.cost - b.cost) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+    let replacement = cur[slot]; // default to what was there
+    for (const f of fillers) {
+      if ((counts[f.id] || 0) < cap) { replacement = f.id; break; }
+    }
+
+    cur[slot] = replacement;
 
     const val = validateFolder(cur);
     if (!val.ok) { await ix.reply({ ephemeral: true, content: `❌ ${val.msg}` }); return; }
@@ -109,13 +159,12 @@ export async function execute(ix: ChatInputCommandInteraction) {
 
   if (sub === 'addmany') {
     const add = parseList(ix.options.getString('ids', true));
-    const cur = padTo30(getFolder(ix.user.id));
+    const cur = padTo30Smart(getFolder(ix.user.id));
     const next = cur.slice();
 
     for (const id of add) {
       if (!b.chips[id]) continue;
-      // replace from the front to keep size at 30
-      next.shift();
+      next.shift();     // maintain length 30
       next.push(id);
     }
 
@@ -129,11 +178,9 @@ export async function execute(ix: ChatInputCommandInteraction) {
 
   if (sub === 'removemany') {
     const rem = new Set(parseList(ix.options.getString('ids', true)));
-    const cur = padTo30(getFolder(ix.user.id)).filter(id => !rem.has(id));
+    const cur = getFolder(ix.user.id).filter(id => !rem.has(id));
 
-    // pad back to 30 with a fallback chip
-    const fallback = Object.keys(b.chips)[0] || '';
-    const next = padTo30(cur.length ? cur : [fallback]);
+    const next = padTo30Smart(cur);
 
     const val = validateFolder(next);
     if (!val.ok) { await ix.reply({ ephemeral: true, content: `❌ ${val.msg}` }); return; }
