@@ -1,58 +1,53 @@
 // src/lib/regions.ts
 import { getBundle } from './data';
-import { RNG } from './rng';
+import type { VirusRow } from './types';
 
-export type Encounter = {
-  kind: 'virus' | 'boss';
-  id: string;        // virus_id or boss_id
-  zone?: number;     // optional: zone the encounter came from
-};
+/** Return 1..zone_count for a region (defaults to [1]) */
+export function listZones(regionId: string): number[] {
+  const r = getBundle().regions[regionId];
+  const n = Math.max(1, Number(r?.zone_count ?? 1));
+  return Array.from({ length: n }, (_, i) => i + 1);
+}
+
+/** All non-boss viruses available for (region, zone) */
+export function listVirusesForRegionZone(regionId: string, zone: number): VirusRow[] {
+  const { viruses } = getBundle();
+  return Object.values(viruses).filter((v: any) =>
+    !v.boss && v.region === regionId && Array.isArray(v.zones) && v.zones.includes(zone)
+  ) as VirusRow[];
+}
+
+/** Boss virus for (region, zone), or null if none configured */
+export function getBossForRegionZone(regionId: string, zone: number): VirusRow | null {
+  const { viruses } = getBundle();
+  const boss = Object.values(viruses).find((v: any) =>
+    !!v.boss && v.region === regionId && Array.isArray(v.zones) && v.zones.includes(zone)
+  );
+  return (boss as VirusRow) || null;
+}
 
 /**
- * Roll an encounter for a region/zone.
- * - Uses regions.tsv.encounter_rate (defaults to 0.7).
- * - If region.virus_pool_id is set, uses that pool; otherwise filters viruses by region id.
- * - If a boss_id exists on the region, you can optionally gate it by zone or add a small chance.
+ * Uniform encounter picker for a region/zone.
+ * - If boss roll succeeds and a boss exists, returns that boss.
+ * - Otherwise returns a uniformly random non-boss virus.
+ *
+ * @throws if no non-boss viruses are configured for the zone
  */
-export function rollEncounter(region_id: string, region_zone?: number): Encounter | null {
-  const { regions, viruses, virusPools } = getBundle();
-  const r = regions[region_id];
-  if (!r) return null;
-
-  const rng = new RNG();
-
-  // Encounter check
-  const rate = Number.isFinite(r.encounter_rate) ? Number(r.encounter_rate) : 0.7;
-  if (!rng.chance(rate)) return null;
-
-  // Build virus candidate list
-  let candidates: string[] = [];
-
-  if (r.virus_pool_id && virusPools[r.virus_pool_id]) {
-    const ids = String(virusPools[r.virus_pool_id].virus_ids || '')
-      .split(',')
-      .map(x => x.trim())
-      .filter(Boolean);
-    candidates = ids.filter(id => {
-      const v = viruses[id];
-      if (!v) return false;
-      if (v.region && v.region !== region_id) return false;
-      if (typeof region_zone === 'number' && v.zone && v.zone > region_zone) return false;
-      return true;
-    });
-  } else {
-    // Fallback: all viruses that list this region (and not above the zone)
-    candidates = Object.keys(viruses).filter(id => {
-      const v = viruses[id];
-      if (!v) return false;
-      if (v.region && v.region !== region_id) return false;
-      if (typeof region_zone === 'number' && v.zone && v.zone > region_zone) return false;
-      return true;
-    });
+export function pickUniformEncounter(
+  regionId: string,
+  zone: number,
+  bossChance = 0.0,
+  bossRoll = Math.random()
+): { enemy_kind: 'boss' | 'virus'; virus: VirusRow } {
+  if (bossRoll < bossChance) {
+    const boss = getBossForRegionZone(regionId, zone);
+    if (boss) return { enemy_kind: 'boss', virus: boss };
   }
 
-  if (!candidates.length) return null;
-
-  const virusId = rng.pick(candidates);
-  return { kind: 'virus', id: virusId, zone: region_zone };
+  const pool = listVirusesForRegionZone(regionId, zone);
+  if (!pool.length) {
+    throw new Error(`No non-boss viruses configured for ${regionId} zone ${zone}`);
+  }
+  const virus = pool[Math.floor(Math.random() * pool.length)];
+  return { enemy_kind: 'virus', virus };
 }
