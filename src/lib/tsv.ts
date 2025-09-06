@@ -3,24 +3,28 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import {
-  ChipRow, VirusRow, BossRow, RegionRow, VirusPoolRow, DropTableRow,
-  MissionRow, ProgramAdvanceRow, ShopRow, DataBundle, LoadReport
+  ChipRow, VirusRow, RegionRow, DropTableRow,
+  MissionRow, ProgramAdvanceRow, ShopRow,
+  DataBundle, LoadReport
 } from './types';
 
-// add at top-level
+// --- keep: helper to parse "1,2,4-6" into [1,2,4,5,6] ---
 export const parseZoneList = (raw: string): number[] => {
   if (!raw) return [];
-  return raw.split(',').flatMap(p => {
-    const s = p.trim();
-    if (!s) return [];
-    const m = s.match(/^(\d+)\s*-\s*(\d+)$/);
-    if (m) {
-      const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
-      const [lo, hi] = a <= b ? [a, b] : [b, a];
-      return Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
-    }
-    return [parseInt(s, 10)];
-  }).filter(n => Number.isFinite(n));
+  return raw
+    .split(',')
+    .flatMap(p => {
+      const s = p.trim();
+      if (!s) return [];
+      const m = s.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (m) {
+        const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+        const [lo, hi] = a <= b ? [a, b] : [b, a];
+        return Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
+      }
+      return [parseInt(s, 10)];
+    })
+    .filter(n => Number.isFinite(n));
 };
 
 // ---- tiny TSV parser ----
@@ -60,7 +64,7 @@ const virusSchema = z.object({
   id: z.string(), name: z.string(), element: z.string(),
   hp: z.string(), atk: z.string(), def: z.string(), spd: z.string(), acc: z.string(),
   cr: z.string(),
-  region: z.string(), zone: z.string().optional().default('1'),
+  region: z.string(), zone: z.string().optional().default('1'), // raw CSV/range, we convert to zones[]
   drop_table_id: z.string().optional().default(''),
   image_url: z.string().optional().default(''), anim_url: z.string().optional().default(''),
   description: z.string().optional().default(''),
@@ -71,27 +75,12 @@ const virusSchema = z.object({
   boss: z.string().optional(), stat_points: z.string().optional(),
 });
 
-const bossSchema = z.object({
-  id: z.string(), name: z.string(), element: z.string(),
-  hp: z.string(), atk: z.string(), def: z.string(), spd: z.string(), acc: z.string(),
-  cr: z.string(),
-  region_id: z.string().optional().default(''),
-  signature_chip_id: z.string().optional().default(''),
-  image_url: z.string().optional().default(''),
-  anim_url: z.string().optional().default(''),
-  background_url: z.string().optional().default(''),
-  phase_thresholds: z.string().optional().default(''),
-  effects: z.string().optional().default(''),
-  description: z.string().optional().default(''),
-});
-
 const regionSchema = z.object({
   id: z.string(), name: z.string(),
   background_url: z.string().optional().default(''),
   encounter_rate: z.string().optional().default('0.7'),
-  virus_pool_id: z.string().optional().default(''),
+  // removed: virus_pool_id, boss_id
   shop_id: z.string().optional().default(''),
-  boss_id: z.string().optional().default(''),
   min_level: z.string().optional().default('1'),
   description: z.string().optional().default(''),
   field_effects: z.string().optional().default(''),
@@ -99,7 +88,6 @@ const regionSchema = z.object({
   next_region_ids: z.string().optional().default(''),
 });
 
-const poolSchema = z.object({ id: z.string(), virus_ids: z.string() });
 const dropSchema = z.object({ id: z.string(), entries: z.string() });
 
 const missionSchema = z.object({
@@ -135,32 +123,16 @@ function toVirus(r: z.infer<typeof virusSchema>): VirusRow {
     id: r.id, name: r.name, element: r.element as any,
     hp: n(r.hp), atk: n(r.atk), def: n(r.def), spd: n(r.spd), acc: n(r.acc),
     cr: n(r.cr),
-    region: r.region, zone: n(r.zone || '1'),
+    region: r.region,
+    zones: parseZoneList(r.zone || '1'), // <-- convert raw zone -> zones[]
     drop_table_id: r.drop_table_id || '',
     image_url: r.image_url || '', anim_url: r.anim_url || '',
     description: r.description || '',
     zenny_range: r.zenny_range || '0-0',
     xp_range: r.xp_range || '10-20',
     move_1json: r.move_1json, move_2json: r.move_2json, move_3json: r.move_3json, move_4json: r.move_4json,
-    // IMPORTANT: coerce boss flag to number (0/1) to match VirusRow type
-    boss: b01(r.boss || '0'),
+    boss: b01(r.boss || '0'),      // 0/1 flag (bosses live in viruses.tsv)
     stat_points: n(r.stat_points || '0'),
-  };
-}
-
-function toBoss(r: z.infer<typeof bossSchema>): BossRow {
-  return {
-    id: r.id, name: r.name, element: r.element as any,
-    hp: n(r.hp), atk: n(r.atk), def: n(r.def), spd: n(r.spd), acc: n(r.acc),
-    cr: n(r.cr),
-    region_id: r.region_id || '',
-    signature_chip_id: r.signature_chip_id || '',
-    image_url: r.image_url || '',
-    anim_url: r.anim_url || '',
-    background_url: r.background_url || '',
-    phase_thresholds: r.phase_thresholds || '',
-    effects: r.effects || '',
-    description: r.description || '',
   };
 }
 
@@ -168,8 +140,8 @@ function toRegion(r: z.infer<typeof regionSchema>): RegionRow {
   return {
     id: r.id, name: r.name, background_url: r.background_url || '',
     encounter_rate: Number(r.encounter_rate || '0.7'),
-    virus_pool_id: r.virus_pool_id || '', shop_id: r.shop_id || '',
-    boss_id: r.boss_id || '', min_level: Number(r.min_level || '1'),
+    shop_id: r.shop_id || '',
+    min_level: Number(r.min_level || '1'),
     description: r.description || '', field_effects: r.field_effects || '',
     zone_count: Number(r.zone_count || '1'),
     next_region_ids: r.next_region_ids || '',
@@ -201,15 +173,6 @@ export function loadTSVBundle(dir = './data'): { data: DataBundle; report: LoadR
     }).filter(Boolean) as any
   ); counts.viruses = Object.keys(viruses).length;
 
-  const bosses = Object.fromEntries(
-    (fs.existsSync(path.join(dir, 'bosses.tsv')) ? rd('bosses.tsv') : []).map(row => {
-      const p = bossSchema.safeParse(row);
-      if (!p.success) { errors.push(`bosses: ${row.id ?? row.name ?? 'unknown'} ⇒ ${p.error.issues[0]?.message}`); return null; }
-      const v = toBoss(p.data);
-      return [v.id, v] as const;
-    }).filter(Boolean) as any
-  ); counts.bosses = Object.keys(bosses).length;
-
   const regions = Object.fromEntries(
     rd('regions.tsv').map(row => {
       const p = regionSchema.safeParse(row);
@@ -218,14 +181,6 @@ export function loadTSVBundle(dir = './data'): { data: DataBundle; report: LoadR
       return [v.id, v] as const;
     }).filter(Boolean) as any
   ); counts.regions = Object.keys(regions).length;
-
-  const virusPools = Object.fromEntries(
-    rd('virus_pools.tsv').map(row => {
-      const p = poolSchema.safeParse(row);
-      if (!p.success) { errors.push(`virus_pools: ${row.id ?? 'unknown'} ⇒ ${p.error.issues[0]?.message}`); return null; }
-      return [p.data.id, p.data as unknown as VirusPoolRow] as const;
-    }).filter(Boolean) as any
-  ); counts.virus_pools = Object.keys(virusPools).length;
 
   const dropTables = Object.fromEntries(
     rd('drop_tables.tsv').map(row => {
@@ -264,37 +219,39 @@ export function loadTSVBundle(dir = './data'): { data: DataBundle; report: LoadR
   ); counts.shops = Object.keys(shops).length;
 
   // ---- referential checks (light) ----
-  for (const r of Object.values(regions)) {
-    if (r.virus_pool_id && !virusPools[r.virus_pool_id]) warnings.push(`regions.${r.id}: missing virus_pool_id ${r.virus_pool_id}`);
-    if (r.shop_id && !shops[r.shop_id]) warnings.push(`regions.${r.id}: missing shop_id ${r.shop_id}`);
-    if (r.boss_id && !bosses[r.boss_id]) warnings.push(`regions.${r.id}: missing boss_id ${r.boss_id}`);
-  }
-  for (const v of Object.values(viruses)) {
+  for (const v of Object.values(viruses) as any[]) {
+    if (v.region && !regions[v.region]) warnings.push(`viruses.${v.id}: unknown region "${v.region}"`);
     if (v.drop_table_id && !dropTables[v.drop_table_id]) warnings.push(`viruses.${v.id}: missing drop_table_id ${v.drop_table_id}`);
+    if (!Array.isArray(v.zones) || v.zones.length === 0) warnings.push(`viruses.${v.id}: no zones parsed (zone="${(v as any).zone}")`);
   }
-  for (const dt of Object.values(dropTables)) {
-    const entries = String(dt.entries || '').split(',').map(x => x.trim()).filter(Boolean);
+
+  for (const dt of Object.values(dropTables) as any[]) {
+    const entries = String(dt.entries || '').split(',').map((x: string) => x.trim()).filter(Boolean);
     for (const e of entries) {
       const id = e.split(':')[0]?.trim();
       if (id && !chips[id]) warnings.push(`drop_tables.${dt.id}: unknown chip "${id}"`);
     }
   }
-  for (const pa of Object.values(programAdvances)) {
-    const req = String(pa.required_chip_ids || '').split(',').map(x => x.trim()).filter(Boolean);
-    const miss = req.filter(id => !chips[id]);
+
+  for (const pa of Object.values(programAdvances) as any[]) {
+    const req = String(pa.required_chip_ids || '').split(',').map((x: string) => x.trim()).filter(Boolean);
+    const miss = req.filter((id: string) => !chips[id]);
     if (miss.length) warnings.push(`program_advances.${pa.id}: unknown chips ${miss.join(', ')}`);
     if (pa.result_chip_id && !chips[pa.result_chip_id]) warnings.push(`program_advances.${pa.id}: unknown result_chip_id ${pa.result_chip_id}`);
   }
-  for (const sh of Object.values(shops)) {
-    const entries = String(sh.entries || '').split(',').map(x => x.trim()).filter(Boolean);
+
+  for (const sh of Object.values(shops) as any[]) {
+    if (sh.region_id && !regions[sh.region_id]) warnings.push(`shops.${sh.id}: unknown region_id "${sh.region_id}"`);
+    const entries = String(sh.entries || '').split(',').map((x: string) => x.trim()).filter(Boolean);
     for (const e of entries) {
       const id = e.split(':')[0]?.trim();
       if (id && !chips[id]) warnings.push(`shops.${sh.id}: unknown chip "${id}"`);
     }
   }
 
-  const bundle: DataBundle = { chips, viruses, bosses, regions, virusPools, dropTables, missions, programAdvances, shops };
+  const bundle: DataBundle = { chips, viruses, regions, dropTables, missions, programAdvances, shops };
   const ok = errors.length === 0;
   return { data: bundle, report: { ok, errors, warnings, counts } };
 }
+
 export default loadTSVBundle;
