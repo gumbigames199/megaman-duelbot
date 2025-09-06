@@ -80,10 +80,10 @@ const Q = {
   del: db.prepare(`DELETE FROM temp_battles WHERE id=?`),
 };
 
-// Helper to grab virus/boss row (union)
-function enemyMeta(kind: EnemyKind, id: string) {
+// Helper to grab enemy row (bosses now live in viruses.tsv with boss=1)
+function enemyMeta(_kind: EnemyKind, id: string) {
   const b = getBundle();
-  return kind === 'boss' ? b.bosses[id] : b.viruses[id];
+  return b.viruses[id];
 }
 
 // ---- Public API ----
@@ -122,7 +122,7 @@ export function createBattle(
   const em = enemyMeta(enemyKind, enemyId);
   const enemy_hp = em?.hp ?? 80;
 
-  // Parse boss thresholds like "0.7,0.4" ONLY for bosses
+  // Parse boss thresholds like "0.7,0.4" ONLY for bosses (stored on virus row)
   const thresholds =
     enemyKind === 'boss'
       ? String((em as any)?.phase_thresholds || '')
@@ -371,4 +371,28 @@ function tidyAfterTurn(s: BattleState) {
 
 export function tryRun(_s: BattleState): boolean {
   return Math.random() < 0.5;
+}
+
+/* ------------------------------
+ * Encounter bootstrap for /jack_in
+ * ------------------------------ */
+
+export type StartBattleInit = {
+  user_id: string;
+  enemy_kind: EnemyKind;
+  enemy_id: string;
+  // Accepted for future use / parity with caller; currently not stored in BattleState
+  region_id?: string;
+  zone?: number;
+};
+
+/**
+ * Creates and saves a new battle, returning its id and initial state.
+ * Determines the player's element automatically from the DB; defaults to 'Neutral'.
+ */
+export function startEncounterBattle(init: StartBattleInit): { battleId: string; state: BattleState } {
+  const p = getPlayer(init.user_id) as any;
+  const playerElement: Element | 'Neutral' = (p?.element as Element) || 'Neutral';
+  const state = createBattle(init.user_id, init.enemy_id, playerElement, init.enemy_kind);
+  return { battleId: state.id, state };
 }

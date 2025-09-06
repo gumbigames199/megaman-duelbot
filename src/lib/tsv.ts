@@ -7,6 +7,22 @@ import {
   MissionRow, ProgramAdvanceRow, ShopRow, DataBundle, LoadReport
 } from './types';
 
+// add at top-level
+export const parseZoneList = (raw: string): number[] => {
+  if (!raw) return [];
+  return raw.split(',').flatMap(p => {
+    const s = p.trim();
+    if (!s) return [];
+    const m = s.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+      const [lo, hi] = a <= b ? [a, b] : [b, a];
+      return Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
+    }
+    return [parseInt(s, 10)];
+  }).filter(n => Number.isFinite(n));
+};
+
 // ---- tiny TSV parser ----
 function parseTSV(text: string): Array<Record<string, string>> {
   const lines = text.split(/\r?\n/).filter(Boolean);

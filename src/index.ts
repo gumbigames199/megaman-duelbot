@@ -12,23 +12,21 @@ import { battleEmbed } from './lib/render';
 import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end } from './lib/battle';
 import { rollRewards, rollBossRewards } from './lib/rewards';
 import { progressDefeat } from './lib/missions';
-import { unlockNextFromRegion } from './lib/unlock';
-import { getRegion, getZone } from './lib/db'; // NOTE: getRegion returns an object now
+import { diffNewlyUnlockedRegions, sendUnlockNotifications } from './lib/unlock';
+import { getRegion, getZone, getPlayer } from './lib/db'; // NOTE: getRegion returns an object now
 import { wantDmg } from './lib/settings-util';
 
 import * as Start from './commands/start';
 import * as Profile from './commands/profile';
 import * as Folder from './commands/folder';
 import * as Shop from './commands/shop';
-import * as Explore from './commands/explore';
 import * as Mission from './commands/mission';
-import * as Travel from './commands/travel';
 import * as Leaderboard from './commands/leaderboard';
 // import * as Boss from './commands/boss'; // removed
 import * as Settings from './commands/settings';
 import * as Chip from './commands/chip';
 import * as VirusDex from './commands/virusdex';
-import * as JackIn from './commands/jack_in'; // robust import (handleComponent may be optional)
+import * as JackIn from './commands/jack_in'; // now exports explicit handlers
 
 // ---- Env checks ----
 const TOKEN    = process.env.DISCORD_TOKEN!;
@@ -45,14 +43,15 @@ const client = new Client({
 });
 
 // ---- Slash commands (guild-scoped) ----
+// Removed Explore.data and Travel.data (deprecated)
 const commands = [
   new SlashCommandBuilder().setName('health').setDescription('Bot status (ephemeral)'),
   new SlashCommandBuilder()
     .setName('reload_data')
     .setDescription('Reload TSV bundle from /data (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-  Start.data, Profile.data, Folder.data, Shop.data, Explore.data,
-  Mission.data, /* Boss.data, */ Travel.data, Leaderboard.data, // Boss removed
+  Start.data, Profile.data, Folder.data, Shop.data,
+  Mission.data, /* Boss.data, */ Leaderboard.data, // Boss removed
   Settings.data, Chip.data, VirusDex.data, JackIn.data,
 ].map((c: any) => c.toJSON());
 
@@ -102,10 +101,8 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'profile')      { await Profile.execute(ix); return; }
       if (ix.commandName === 'folder')       { await Folder.execute(ix); return; }
       if (ix.commandName === 'shop')         { await Shop.execute(ix); return; }
-      if (ix.commandName === 'explore')      { await Explore.execute(ix); return; }
       if (ix.commandName === 'mission')      { await Mission.execute(ix); return; }
       // if (ix.commandName === 'boss')      { /* removed */ return; }
-      if (ix.commandName === 'travel')       { await Travel.execute(ix); return; }
       if (ix.commandName === 'leaderboard')  { await Leaderboard.execute(ix); return; }
       if (ix.commandName === 'settings')     { await Settings.execute(ix); return; }
       if (ix.commandName === 'chip')         { await Chip.execute(ix); return; }
@@ -114,7 +111,17 @@ client.on('interactionCreate', async (ix) => {
       return;
     }
 
-    // Select menus: pick1/pick2/pick3
+    // --- Jack-In component routing (before other components) ---
+    if (ix.isStringSelectMenu()) {
+      if (ix.customId === 'jackin:selectRegion') { await JackIn.onSelectRegion(ix); return; }
+      if (ix.customId === 'jackin:selectZone')   { await JackIn.onSelectZone(ix);   return; }
+    }
+    if (ix.isButton()) {
+      if (ix.customId === 'jackin:openTravel')   { await JackIn.onOpenTravel(ix);   return; }
+      if (ix.customId === 'jackin:encounter')    { await JackIn.onEncounter(ix);    return; }
+    }
+
+    // --- Battle pick menus: pick1/pick2/pick3 ---
     if (ix.isStringSelectMenu()) {
       const [kind, battleId] = ix.customId.split(':'); // e.g. pick1:abc
       if (!kind?.startsWith('pick')) return;
@@ -153,15 +160,8 @@ client.on('interactionCreate', async (ix) => {
       return;
     }
 
-    // Components
+    // --- Battle buttons: lock or run ---
     if (ix.isButton()) {
-      // Let /jack_in own its customIds if it exposes a component handler
-      if (typeof (JackIn as any).handleComponent === 'function') {
-        const handled = await (JackIn as any).handleComponent(ix);
-        if (handled) return;
-      }
-
-      // Battle buttons: lock or run
       const [kind, battleId] = ix.customId.split(':');
       const s = loadBattle(battleId); if (!s || s.user_id !== ix.user.id) return;
 
@@ -194,22 +194,21 @@ client.on('interactionCreate', async (ix) => {
         const extra = wantDmg(s.user_id) ? `\n${res.log}` : '';
 
         if (res.outcome === 'victory') {
+          // Capture old level BEFORE rewards
+          const before = await getPlayer(s.user_id);
+          const oldLevel = Number(before?.level ?? 1);
+
           let rewardText = '';
           if (s.enemy_kind === 'boss') {
-            const br: any = rollBossRewards(s.user_id, s.enemy_id); // treat as any so xp/leveledUp don’t type-error
-            const curRegionObj = getRegion(s.user_id);
-            const curRegionId  = curRegionObj?.region_id || process.env.START_REGION_ID || 'den_city';
-
-            const unlocked = unlockNextFromRegion(s.user_id, curRegionId);
+            const br: any = rollBossRewards(s.user_id, s.enemy_id);
+            // Boss rewards may also include xp/level ups
             rewardText =
               `**Boss Rewards:** +${br.zenny}z` +
               (br.xp ? ` • +${br.xp}xp` : '') +
               (br.drops?.length ? ` • chips: ${br.drops.join(', ')}` : '') +
-              (br.leveledUp ? `\n🆙 Level Up x${br.leveledUp}` : '') +
-              (unlocked.length ? `\n🔓 Unlocked: ${unlocked.join(', ')}` : '');
+              (br.leveledUp ? `\n🆙 Level Up x${br.leveledUp}` : '');
           } else {
             const vr: any = rollRewards(s.user_id, s.enemy_id);
-
             progressDefeat(s.user_id, s.enemy_id);
             rewardText =
               `**Rewards:** +${vr.zenny}z` +
@@ -217,6 +216,15 @@ client.on('interactionCreate', async (ix) => {
               (vr.drops?.length ? ` • chips: ${vr.drops.join(', ')}` : '') +
               (vr.leveledUp ? `\n🆙 Level Up x${vr.leveledUp}` : '');
           }
+
+          // Check for newly unlocked regions AFTER rewards (level may have changed)
+          const after = await getPlayer(s.user_id);
+          const newLevel = Number(after?.level ?? oldLevel);
+          if (newLevel > oldLevel) {
+            const newly = diffNewlyUnlockedRegions(oldLevel, newLevel);
+            await sendUnlockNotifications(ix, newly);
+          }
+
           end(battleId);
           await ix.followUp({ content: `✅ Victory!${extra ? ` ${extra}` : ''}\n${rewardText}`, ephemeral: false });
         } else if (res.outcome === 'defeat') {

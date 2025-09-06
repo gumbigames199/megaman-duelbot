@@ -1,88 +1,123 @@
 // src/lib/unlock.ts
 import { getBundle } from './data';
-import { getSettings, setSetting } from './db';
-
-const KEY = 'unlocked_regions';
-
-function getSet(userId: string): Set<string> {
-  const s = getSettings(userId) as Record<string, unknown>;
-  const arr = Array.isArray(s[KEY]) ? (s[KEY] as string[]) : [];
-  return new Set(arr);
-}
-
-function saveSet(userId: string, set: Set<string>) {
-  const s = getSettings(userId) as Record<string, unknown>;
-  s[KEY] = Array.from(set);
-  setSetting(userId, KEY, s[KEY]);
-}
-
-/** List unlocked region IDs (guaranteed de-duped) */
-export function listUnlocked(userId: string): string[] {
-  return Array.from(getSet(userId));
-}
-
-/** True if a region is already unlocked */
-export function isUnlocked(userId: string, regionId: string): boolean {
-  return getSet(userId).has(regionId);
-}
-
-/** Unlock a single region (no-op if already unlocked). Returns true if newly added. */
-export function unlockRegion(userId: string, regionId: string): boolean {
-  const set = getSet(userId);
-  const before = set.size;
-  set.add(regionId);
-  if (set.size !== before) saveSet(userId, set);
-  return set.size !== before;
-}
+import { Region } from './types';
+import { getPlayer, setRegion /*, setZone */ } from './db';
 
 /**
- * Ensure the starting region is unlocked for this user.
- * Returns the full unlocked list after the operation.
+ * Returns all regions available at the given player level (min_level gate).
  */
-export function ensureStartUnlocked(userId: string): string[] {
-  const start = process.env.START_REGION_ID || 'den_city';
-  const set = getSet(userId);
-  if (!set.has(start)) {
-    set.add(start);
-    saveSet(userId, set);
-  }
-  return Array.from(set);
-}
-
-/**
- * Ensure a specific region is unlocked (wrapper utility).
- * Returns true if it was newly unlocked.
- */
-export function ensureRegionUnlocked(userId: string, regionId: string): boolean {
-  return unlockRegion(userId, regionId);
-}
-
-/**
- * After beating a region’s boss (or other milestone), unlock its “next” regions.
- * Reads `next_region_ids` from TSV `regions.tsv` (comma/space separated).
- * Returns the list of region IDs that were newly unlocked.
- */
-export function unlockNextFromRegion(userId: string, currentRegionId: string): string[] {
+export function listAvailableRegionsForLevel(level: number): Region[] {
   const { regions } = getBundle();
-  const cur = regions[currentRegionId];
-  if (!cur) return [];
+  return Object.values(regions).filter((r) => level >= (r.min_level ?? 1));
+}
 
-  const nextIds = String(cur.next_region_ids || '')
-    .split(/[,\s]+/)
-    .map(x => x.trim())
-    .filter(Boolean);
+/**
+ * Returns whether a given region is unlocked for a given level.
+ */
+export function isRegionUnlockedAtLevel(regionId: string, level: number): boolean {
+  const { regions } = getBundle();
+  const r = regions[regionId];
+  if (!r) return false;
+  return level >= (r.min_level ?? 1);
+}
 
-  if (!nextIds.length) return [];
+/**
+ * Player-facing list of unlocked regions based on their current level.
+ */
+export async function listUnlocked(userId: string): Promise<Region[]> {
+  const p: any = await getPlayer(userId);
+  const level = Number(p?.level ?? 1);
+  return listAvailableRegionsForLevel(level);
+}
 
-  const set = getSet(userId);
-  const newly: string[] = [];
-  for (const id of nextIds) {
-    if (!regions[id]) continue; // ignore unknown ids
-    if (!set.has(id)) {
-      set.add(id);
-      newly.push(id);
-    }
+/**
+ * Given an old and new level, returns just the newly unlocked regions (those that
+ * were locked at oldLevel but unlocked at newLevel).
+ */
+export function diffNewlyUnlockedRegions(oldLevel: number, newLevel: number): Region[] {
+  const prev = new Set(listAvailableRegionsForLevel(oldLevel).map((r) => r.id));
+  return listAvailableRegionsForLevel(newLevel).filter((r) => !prev.has(r.id));
+}
+
+/**
+ * Ensure a player has a valid starting region set.
+ * - Uses START_REGION_ID from env (falls back to the first region with min_level <= player level).
+ * - Does NOT force a zone; if you want Zone 1, set it at jack-in time or uncomment setZone.
+ */
+export async function ensureStartUnlocked(userId: string): Promise<void> {
+  const p: any = await getPlayer(userId);
+  const level = Number(p?.level ?? 1);
+
+  // If player already has a region set, nothing to do.
+  if (p?.region_id) return;
+
+  const { regions } = getBundle();
+
+  // Preferred starter from env (should have min_level <= player level)
+  const envStarter = process.env.START_REGION_ID;
+  if (envStarter && regions[envStarter] && isRegionUnlockedAtLevel(envStarter, level)) {
+    await setRegion(userId, envStarter);
+    // await setZone(userId, 1);
+    return;
   }
-  if (newly.length) saveSet(userId, set);
-  return newly;
+
+  // Fallback: pick the lowest min_level region available to this level.
+  const choices = listAvailableRegionsForLevel(level);
+  if (choices.length > 0) {
+    // choose the region with the lowest min_level, then stable by name
+    choices.sort((a, b) => (a.min_level - b.min_level) || String(a.name).localeCompare(String(b.name)));
+    await setRegion(userId, choices[0].id);
+    // await setZone(userId, 1);
+  }
+}
+
+/**
+ * Notify a player when new regions unlock due to a level increase.
+ * Sends BOTH a DM and an ephemeral follow-up on the provided interaction.
+ *
+ * Usage (e.g. right after you persist a level-up inside a command):
+ *   const newly = diffNewlyUnlockedRegions(oldLevel, newLevel);
+ *   await sendUnlockNotifications(ix, newly);
+ */
+export async function sendUnlockNotifications(ix: any, newly: Region[]): Promise<void> {
+  if (!newly?.length) return;
+
+  const pretty = newly
+    .map((r) => `**${r.name}** (min ${r.min_level})`)
+    .join(', ');
+
+  // 1) DM the user
+  try {
+    const dm = await ix.user.createDM();
+    await dm.send(`🎉 New regions unlocked: ${pretty}\nUse **/jack-in** to visit.`);
+  } catch (err) {
+    console.warn('sendUnlockNotifications: DM failed:', err);
+  }
+
+  // 2) Ephemeral follow-up on the interaction
+  try {
+    // Works for ChatInputCommandInteraction / ButtonInteraction / SelectMenu — any reply-capable ix
+    if (typeof ix.followUp === 'function') {
+      await ix.followUp({
+        ephemeral: true,
+        content: `🎉 New regions unlocked: ${newly.map((r) => `**${r.name}**`).join(', ')} — use **/jack-in** to visit.`,
+      });
+    } else if (typeof ix.reply === 'function') {
+      await ix.reply({
+        ephemeral: true,
+        content: `🎉 New regions unlocked: ${newly.map((r) => `**${r.name}**`).join(', ')} — use **/jack-in** to visit.`,
+      });
+    }
+  } catch (err) {
+    console.warn('sendUnlockNotifications: ephemeral notify failed:', err);
+  }
+}
+
+/**
+ * Back-compat shim: previously boss-gated regions used `unlockNextFromRegion`.
+ * With level-gated progression this is no-op; we keep the export to avoid breaking imports.
+ */
+export async function unlockNextFromRegion(_userId: string, _regionId: string): Promise<void> {
+  // No-op under level-gated progression. Left for compatibility.
+  return;
 }

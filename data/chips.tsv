@@ -124,9 +124,10 @@ Acc+1	Acc+1	Neutral	*	10	—	—	1				https://static.wikia.nocookie.net/megaman/
 Eva+1	Eva+1	Neutral	*	10	—	—	1				https://static.wikia.nocookie.net/megaman/images/a/ab/PMD.gif/revision/latest?cb=20111227052802	1	5000	1	1
 BlastMan	BlastMan	Fire	B,*	30	120	1	0.9	Mega	Burn(10%,3t)	Burns enermy 10% for 3 turns	https://static.wikia.nocookie.net/megaman/images/e/e6/BN6MChip022.png/revision/latest?cb=20111231235658	4	0	0	0
 DiveMan	DiveMan	Aqua	D,*	45	130	1	0.9	Mega		Aqua attack	https://static.wikia.nocookie.net/megaman/images/e/e0/BN6MChip025.png/revision/latest?cb=20111231235745	4	0	0	0
+ProtoMan	ProtoMan	Neutral	B	95	60	6	0.9	Mega		Sword attack	https://static.wikia.nocookie.net/megaman/images/5/59/MMBNChip134.png/revision/latest?cb=20110813012115	4	0	0	0
 CircusMan	CircusMan	Neutral	C,*	42	29	6	0.9	Mega		6-hit attack	https://static.wikia.nocookie.net/megaman/images/6/6a/BN6MChip028.png/revision/latest?cb=20111231235822	4	0	0	0
 JudgeMan	JudgeMan	Elec	J,*	52	100	1	0.9	Mega	Paralyze(3t)	Paralyzes enermy for 3 turns	https://static.wikia.nocookie.net/megaman/images/1/10/BN6MChip031.png/revision/latest?cb=20111231235849	4	0	0	0
 ElementMan	ElementMan	Neutral	E,*	50	100	1	0.9	Mega	Aura (Neutral)	Blocks all elemental damage	https://static.wikia.nocookie.net/megaman/images/8/83/BN6MChip034.png/revision/latest?cb=20111231235918	4	0	0	0
 Colonel	Colonel	Neutral	C	39	300	1	0.9	Mega		Sword attack	https://static.wikia.nocookie.net/megaman/images/4/4c/BN5TCMChip022.png/revision/latest?cb=20111231082327	4	0	0	0
 EraserMan	EraserMan	Wood	K,*	51	120	1	0.9	Mega		Wood attack	https://static.wikia.nocookie.net/megaman/images/8/8b/BN6GMChip016.png/revision/latest?cb=20120101125401	4	0	0	0
-Bass	Bass	Neutral	F	95	60	6	0.9	Mega		6-hit attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6GGChip001.png/revision/latest?cb=20120101125738		0	0	0
+Bass	Bass	Neutral	F	95	60	6	0.9	Mega		6-hit attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6GGChip001.png/revision/latest?cb=20120101125738	4	0	0	0
