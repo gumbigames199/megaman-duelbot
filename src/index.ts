@@ -12,8 +12,8 @@ import { battleEmbed } from './lib/render';
 import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end } from './lib/battle';
 import { rollRewards, rollBossRewards } from './lib/rewards';
 import { progressDefeat } from './lib/missions';
-import { diffNewlyUnlockedRegions, sendUnlockNotifications } from './lib/unlock';
-import { getRegion, getZone, getPlayer } from './lib/db'; // NOTE: getRegion returns an object now
+import { diffNewlyUnlockedRegions } from './lib/unlock'; // <- only this
+import { getRegion, getZone, getPlayer } from './lib/db';
 import { wantDmg } from './lib/settings-util';
 
 import * as Start from './commands/start';
@@ -43,7 +43,6 @@ const client = new Client({
 });
 
 // ---- Slash commands (guild-scoped) ----
-// Removed Explore.data and Travel.data (deprecated)
 const commands = [
   new SlashCommandBuilder().setName('health').setDescription('Bot status (ephemeral)'),
   new SlashCommandBuilder()
@@ -179,7 +178,7 @@ client.on('interactionCreate', async (ix) => {
       if (kind === 'lock') {
         const res = resolveBattleTurn(s, s.locked);
 
-        const regionObj = getRegion(s.user_id);                // <-- object
+        const regionObj = getRegion(s.user_id);
         const regionId  = regionObj?.region_id
           || process.env.START_REGION_ID
           || 'den_city';
@@ -201,7 +200,6 @@ client.on('interactionCreate', async (ix) => {
           let rewardText = '';
           if (s.enemy_kind === 'boss') {
             const br: any = rollBossRewards(s.user_id, s.enemy_id);
-            // Boss rewards may also include xp/level ups
             rewardText =
               `**Boss Rewards:** +${br.zenny}z` +
               (br.xp ? ` • +${br.xp}xp` : '') +
@@ -221,8 +219,14 @@ client.on('interactionCreate', async (ix) => {
           const after = await getPlayer(s.user_id);
           const newLevel = Number(after?.level ?? oldLevel);
           if (newLevel > oldLevel) {
-            const newly = diffNewlyUnlockedRegions(oldLevel, newLevel);
-            await sendUnlockNotifications(ix, newly);
+            const newly = diffNewlyUnlockedRegions(s.user_id);
+            if (newly.length) {
+              const msg = `🔓 New region${newly.length > 1 ? 's' : ''} unlocked: ${newly.join(', ')}\nUse **/jack_in** to enter.`;
+              // DM (best-effort)
+              try { await ix.user.send(msg); } catch {}
+              // Ephemeral notice
+              await ix.followUp({ content: msg, ephemeral: true });
+            }
           }
 
           end(battleId);
