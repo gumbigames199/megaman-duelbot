@@ -14,7 +14,7 @@ import {
 import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
 import { getBundle } from '../lib/data';
 import { getPlayer, setRegion, setZone } from '../lib/db';
-import { startEncounterBattle } from '../lib/battle'; // ⬅️ battle bootstrap
+import { startEncounterBattle } from '../lib/battle'; // if you don't export this, swap to createBattle
 
 // Support either env name (yours used JACKIN_GIF_URL)
 const JACK_GIF =
@@ -24,44 +24,92 @@ const JACK_GIF =
 
 const BOSS_ENCOUNTER = parseFloat(process.env.BOSS_ENCOUNTER || '0.10');
 
-// --- local helper: encounter picker (boss roll -> uniform non-boss) ---
+/* ------------------------------ helpers ------------------------------ */
+
+/** parse "1,2,4-6" → [1,2,4,5,6] (deduped & sorted) */
+function parseZones(raw: unknown): number[] {
+  if (Array.isArray(raw)) return raw.map(Number).filter(Number.isFinite);
+  if (typeof raw === 'number') return Number.isFinite(raw) ? [raw] : [];
+  const s = String(raw ?? '').trim();
+  if (!s) return [];
+  const out: number[] = [];
+  for (const part of s.split(',')) {
+    const p = part.trim();
+    const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      let a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+      if (a > b) [a, b] = [b, a];
+      for (let x = a; x <= b; x++) out.push(x);
+    } else {
+      const n = parseInt(p, 10);
+      if (!Number.isNaN(n)) out.push(n);
+    }
+  }
+  return Array.from(new Set(out)).sort((a, b) => a - b);
+}
+
+function isBossFlag(v: any): boolean {
+  const raw = v?.boss;
+  if (raw === true || raw === false) return raw;
+  if (typeof raw === 'number') return raw === 1;
+  const s = String(raw ?? '').toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'y';
+}
+
+function zonesMatch(v: any, zone: number): boolean {
+  // accept either v.zones (array) or v.zone (string/range); empty = all zones
+  const list = parseZones((v as any).zones ?? (v as any).zone);
+  return list.length === 0 ? true : list.includes(zone);
+}
+
+/** Encounter picker: boss chance, uniform normal; boss-only zone fallback. */
 function pickEncounter(regionId: string, zone: number) {
   const { viruses } = getBundle();
 
-  // Boss roll
-  if (Math.random() < BOSS_ENCOUNTER) {
-    const boss = Object.values(viruses).find(
-      (v: any) => v.boss && v.region === regionId && Array.isArray(v.zones) && v.zones.includes(zone),
-    );
-    if (boss) return { enemy_kind: 'boss' as const, virus: boss };
+  const normRegion = String(regionId || '').trim();
+  const inRegion = (v: any) => String(v?.region || '').trim() === normRegion && zonesMatch(v, zone);
+
+  const inZone = Object.values(viruses).filter(inRegion);
+  const bosses = inZone.filter(isBossFlag);
+  const normals = inZone.filter(v => !isBossFlag(v));
+
+  // Zone configured with only a boss ⇒ always give boss
+  if (normals.length === 0 && bosses.length > 0) {
+    return { enemy_kind: 'boss' as const, virus: bosses[0] };
   }
 
-  // Normal (uniform among non-boss)
-  const candidates = Object.values(viruses).filter(
-    (v: any) => !v.boss && v.region === regionId && Array.isArray(v.zones) && v.zones.includes(zone),
-  );
-  if (!candidates.length) {
-    throw new Error(`No non-boss encounter candidates for ${regionId} zone ${zone}`);
+  // Otherwise apply boss chance
+  if (bosses.length && Math.random() < BOSS_ENCOUNTER) {
+    return { enemy_kind: 'boss' as const, virus: bosses[0] };
   }
-  const pick = candidates[Math.floor(Math.random() * candidates.length)];
-  return { enemy_kind: 'virus' as const, virus: pick };
+
+  if (normals.length) {
+    const pick = normals[Math.floor(Math.random() * normals.length)];
+    return { enemy_kind: 'virus' as const, virus: pick };
+  }
+
+  // Nothing configured; attach debug details
+  throw Object.assign(
+    new Error(`No encounters for region=${regionId} zone=${zone}`),
+    { __encounterDebug: { inZone: inZone.length, bosses: bosses.length, normals: normals.length } }
+  );
 }
+
+/* ------------------------------ slash ------------------------------ */
 
 export const data = new SlashCommandBuilder()
   .setName('jack_in')
   .setDescription('Jack in → pick a region (dropdown), start at Zone 1, then Encounter or Travel via buttons.');
 
 export async function execute(ix: ChatInputCommandInteraction) {
-  // ensure at least a starter region is valid for the player’s level
   await ensureStartUnlocked(ix.user.id);
 
-  const regionsUnlocked = await listUnlocked(ix.user.id);
+  const regionsUnlocked = await listUnlocked(ix.user.id); // RegionRow[]
   if (!regionsUnlocked.length) {
     await ix.reply({ ephemeral: true, content: '❌ No regions unlocked yet. Level up to unlock your first region.' });
     return;
   }
 
-  // Build dropdown of available regions
   const select = new StringSelectMenuBuilder()
     .setCustomId('jackin:selectRegion')
     .setPlaceholder('Select a region to jack in')
@@ -88,7 +136,9 @@ export async function execute(ix: ChatInputCommandInteraction) {
   });
 }
 
-// --- Region selected -> set region & zone=1, render Encounter + Travel ---
+/* ------------------------------ selects/buttons ------------------------------ */
+
+// Region selected → set region & zone=1, show Encounter/Travel
 export async function onSelectRegion(ix: StringSelectMenuInteraction) {
   const regionId = ix.values[0];
   const userId = ix.user.id;
@@ -122,7 +172,7 @@ export async function onSelectRegion(ix: StringSelectMenuInteraction) {
   });
 }
 
-// --- Travel button -> open zone dropdown for current region ---
+// Travel → open zone dropdown for the current region
 export async function onOpenTravel(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
@@ -151,7 +201,7 @@ export async function onOpenTravel(ix: ButtonInteraction) {
   });
 }
 
-// --- Zone selected -> set zone and re-render Encounter + Travel ---
+// Zone selected → set zone and re-render Encounter + Travel
 export async function onSelectZone(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
   const zone = parseInt(ix.values[0], 10);
@@ -177,23 +227,31 @@ export async function onSelectZone(ix: StringSelectMenuInteraction) {
   });
 }
 
-// --- Encounter button -> immediately create a battle and render pick UI ---
+// Encounter → pick enemy, start battle, show hand selects
 export async function onEncounter(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
   const regionId = p?.region_id;
-  const zone = Number(p?.zone || 1);
+  let zone = Number(p?.zone || 1);
 
   if (!regionId) {
     await ix.reply({ ephemeral: true, content: 'No region set. Use **/jack_in** first.' });
     return;
   }
 
+  const { regions, chips } = getBundle();
+  const reg = regions[regionId];
+
+  // Clamp zone to valid range
+  const maxZone = Math.max(1, Number(reg?.zone_count || 1));
+  if (zone < 1 || zone > maxZone) {
+    zone = 1;
+    await setZone(userId, zone);
+  }
+
   try {
-    // 1) Choose enemy (boss roll, else uniform non-boss)
     const { enemy_kind, virus } = pickEncounter(regionId, zone);
 
-    // 2) Start battle (creates state, draws opening hand, saves to DB)
     const { battleId, state } = startEncounterBattle({
       user_id: userId,
       enemy_kind,
@@ -202,9 +260,7 @@ export async function onEncounter(ix: ButtonInteraction) {
       zone,
     });
 
-    // 3) Build the three pick menus from opening hand
     const hand: string[] = Array.isArray(state?.hand) ? state.hand : [];
-    const chips = getBundle().chips;
 
     const makeSelect = (slot: 1 | 2 | 3) => {
       const select = new StringSelectMenuBuilder()
@@ -231,19 +287,10 @@ export async function onEncounter(ix: ButtonInteraction) {
     const row2 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(2));
     const row3 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(3));
 
-    const lockBtn = new ButtonBuilder()
-      .setCustomId(`lock:${battleId}`)
-      .setStyle(ButtonStyle.Success)
-      .setLabel('Lock');
-
-    const runBtn = new ButtonBuilder()
-      .setCustomId(`run:${battleId}`)
-      .setStyle(ButtonStyle.Danger)
-      .setLabel('Run');
-
+    const lockBtn = new ButtonBuilder().setCustomId(`lock:${battleId}`).setStyle(ButtonStyle.Success).setLabel('Lock');
+    const runBtn  = new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run');
     const row4 = new ActionRowBuilder<ButtonBuilder>().addComponents(lockBtn, runBtn);
 
-    // 4) Ephemeral battle kickoff UI
     const enemyKind = enemy_kind === 'boss' ? 'Boss' : 'Virus';
     await ix.reply({
       ephemeral: true,
@@ -251,10 +298,12 @@ export async function onEncounter(ix: ButtonInteraction) {
       components: [row1, row2, row3, row4],
     });
   } catch (err: any) {
-    console.error('Encounter error:', err);
+    const dbg = err?.__encounterDebug || {};
     await ix.reply({
       ephemeral: true,
-      content: '⚠️ No eligible encounters configured for this zone. Please tell an admin.',
+      content:
+        `⚠️ No eligible encounters configured for **${reg?.name || regionId} / Zone ${zone}**.` +
+        `\nDebug — inZone:${dbg.inZone ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${reg?.zone_count ?? '?'})`,
     });
   }
 }
