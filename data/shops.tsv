@@ -2,9 +2,9 @@ id	region_id	entries
 green_area	green_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,AirShot,Vulcan1,Spread1,Sword,Recover10,Atk+10,RockCube,MiniBomb
 pavillion_comp	pavillion_comp	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,AirShot,Vulcan2,Spread2,WideSwrd,Recover30,EnergyBom
 central_area	central_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,WideBlde,LongBlde,Recover50,Atk+30,BigBomb
-acdc_area	acdc_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,ElecSwrd,BamSwrd,MoonBld,Recover80,MegaEnBom
+acdc_area	acdc_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,ElecSwrd,BamSwrd,MoonBld,Recover80,MegEnBom
 scilab_area	scilab_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,Magnum,Tornado,Recover120,BlkBomb
 seaside_area	seaside_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,GrassSeed,PoisnSeed,Recover150,AntiDmg
-sky_area	sky_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1.Recover200,Guardian
+sky_area	sky_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,Recover200,Guardian
 graveyard	graveyard	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,Recover300,Anubis
 undernet	undernet	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,Muramasa
