@@ -34,7 +34,7 @@ Piranha2	TrnArrw2
 Piranha3	TrnArrw3:50,WidShot:5
 Swordy	LongSwrd:30,StepSwrd:5
 Swordy2	FireSwrd:30,StepSwrd:5
-Swordy3	AquaSwrd:30,Stepswrd:5
+Swordy3	AquaSwrd:30,StepSwrd:5
 OldSTov	FireBrn1
 OldHeatr	FireBrn2
 OldBurnr	FireBrn3
@@ -60,6 +60,9 @@ Handi	TimeBomb1
 Hando	TimeBomb2
 Handum	TimeBomb3
 BlastMan	BlastMan
+Megalian	AquaAura
+Megalian2	FireAura
+Megalian3	WoodAura
 DiveMan	DiveMan
 ProtoMan	ProtoMan
 CircusMan	CircusMan
@@ -68,3 +71,4 @@ ElementMan	ElementMan
 Colonel	Colonel:50,HolyPnls:5
 EraserMan	EraserMan
 Bass	Bass
+Count	Count

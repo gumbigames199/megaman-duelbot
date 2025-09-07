@@ -69,6 +69,9 @@ Magnum	Magnum	Neutral	F,L,W	31	130	3	0.9	Shot		3-shot attack	https://static.wiki
 MachGun1	MachGun1	Neutral	A,B,C	10	20	2	0.95	Shot		2-shot attack	https://static.wikia.nocookie.net/megaman/images/1/10/BN6Chip055.png/revision/latest?cb=20111231222729	1	0	0	0
 MachGun2	MachGun2	Neutral	D,E,F	14	30	3	0.95	Shot		3-shot attack	https://static.wikia.nocookie.net/megaman/images/1/1e/BN6Chip056.png/revision/latest?cb=20111231222737	2	0	0	0
 MachGun3	MachGun3	Neutral	G,H,I	18	40	4	0.95	Shot		5-shot attack	https://static.wikia.nocookie.net/megaman/images/a/a1/BN6Chip057.png/revision/latest?cb=20111231222747	2	0	0	0
+AquaAura	AquaAura	Aqua	A,W,I,M,Q,*	30	—	—	1	Aura	Aura(Aqua)	Blocks Aqua Damage	https://static.wikia.nocookie.net/megaman/images/5/54/MMBNChip124.png/revision/latest?cb=20110813011913	1	0	0	0
+FireAura	FireAura	Fire	B,F,J,N,R,*	36	—	—	1	Aura	Aura(Fire)	Blocks Fire Damage	https://static.wikia.nocookie.net/megaman/images/e/e2/MMBNChip125.png/revision/latest?cb=20110813011932	2	0	0	0
+WoodAura	WoodAura	Wood	C,G,J,O,S,*	42	—	—	1	Aura	Aura(Wood)	Blocks Wood Damage	https://static.wikia.nocookie.net/megaman/images/0/0e/MMBNChip126.png/revision/latest?cb=20110813011949	3	0	0	0
 Lance	Lance	Wood	O,P,Q	22	150	1	0.95	Other		Lance attack	https://static.wikia.nocookie.net/megaman/images/b/b7/BN6Chip122.png/revision/latest?cb=20111231224324	1	0	0	0
 Tornado	Tornado	Neutral	E,F,G	12	20	8	0.95	Other	Blind(2t)	8-hit Blnds enemy 2 turns	https://static.wikia.nocookie.net/megaman/images/3/34/BN6Chip053.png/revision/latest?cb=20111231222709	1	7500	1	0
 Sensor1	Sensor1	Elec	G,O,W	28	100	1	0.95	Other	Paralyze(1t)	Paralyze eneny 1 turns	https://static.wikia.nocookie.net/megaman/images/f/f1/BN6Chip116.png/revision/latest?cb=20111231224233	1	0	0	0
@@ -130,4 +133,5 @@ JudgeMan	JudgeMan	Elec	J,*	52	100	1	0.9	Mega	Paralyze(3t)	Paralyzes enermy for 3
 ElementMan	ElementMan	Neutral	E,*	50	100	1	0.9	Mega	Aura (Neutral)	Blocks all elemental damage	https://static.wikia.nocookie.net/megaman/images/8/83/BN6MChip034.png/revision/latest?cb=20111231235918	4	0	0	0
 Colonel	Colonel	Neutral	C	39	300	1	0.9	Mega		Sword attack	https://static.wikia.nocookie.net/megaman/images/4/4c/BN5TCMChip022.png/revision/latest?cb=20111231082327	4	0	0	0
 EraserMan	EraserMan	Wood	K,*	51	120	1	0.9	Mega		Wood attack	https://static.wikia.nocookie.net/megaman/images/8/8b/BN6GMChip016.png/revision/latest?cb=20120101125401	4	0	0	0
-Bass	Bass	Neutral	F	95	60	6	0.9	Mega		6-hit attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6GGChip001.png/revision/latest?cb=20120101125738	4	0	0	0
+Bass	Bass	Neutral	F,*	95	60	6	0.9	Mega		6-hit attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6GGChip001.png/revision/latest?cb=20120101125738	4	0	0	0
+Count	Count	Neutral	H,*	60	20	9	0.9	Mega	Blind(3t)	9-hit attack Blinds enemy	https://static.wikia.nocookie.net/megaman/images/b/b8/BN6MJChip040.png/revision/latest?cb=20120106101550	4	0	0	0
