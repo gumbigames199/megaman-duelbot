@@ -14,6 +14,12 @@ export function effectiveness(attacker: Element, defender: Element): number {
   return 1.0;
 }
 
+export interface ChipRow {
+  // ...existing...
+  is_upgrade: number;
+  max_copies?: number; // NEW
+}
+
 /** Loader/report shape used by /reload_data */
 export interface LoadReport {
   ok: boolean;

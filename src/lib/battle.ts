@@ -1,3 +1,4 @@
+// src/lib/battle.ts
 import { RNG } from './rng';
 import { getBundle } from './data';
 import { db, getPlayer, markSeenVirus } from './db';
@@ -105,13 +106,17 @@ export function createBattle(
     eva: p?.evasion ?? 10,
   };
 
-  // Build deck from folder or fallback to first 30 chips
-  const { chips } = getBundle();
+  // Build deck from player's folder ONLY (no global fallback)
   const folder = (db.prepare(`SELECT chip_id FROM folder WHERE user_id=? ORDER BY slot`).all(userId) as any[])
     .map(r => r.chip_id)
     .filter(Boolean);
-  const fallback = Object.keys(chips).slice(0, 30);
-  const deck = (folder.length ? folder : fallback).slice();
+
+  if (folder.length === 0) {
+    const err: any = new Error('EMPTY_FOLDER');
+    err.code = 'EMPTY_FOLDER';
+    throw err;
+  }
+  const deck = folder.slice();
 
   // Shuffle
   for (let i = deck.length - 1; i > 0; i--) {
@@ -244,6 +249,21 @@ export function resolveTurn(
   const { chips } = getBundle();
   let seq = chosenIds.slice();
 
+  // Server-side guard: allow only chips actually in current hand (multiset)
+  if (seq.length) {
+    const bag = new Map<string, number>();
+    for (const id of s.hand) bag.set(id, (bag.get(id) || 0) + 1);
+    const filtered: string[] = [];
+    for (const id of seq) {
+      const have = bag.get(id) || 0;
+      if (have > 0) {
+        filtered.push(id);
+        bag.set(id, have - 1);
+      }
+    }
+    seq = filtered;
+  }
+
   // Program Advance collapse (single-turn replacement)
   const paResult = detectPA(seq);
   if (paResult) seq = [paResult];
@@ -309,7 +329,8 @@ export function resolveTurn(
 
   // ----- ENEMY ACTION -----
   if (!(s.enemy_status.freeze) && !(s.enemy_status.paralyze && Math.random() < 0.5)) {
-    const basePow = Math.max(10, em?.atk ?? 10) * (s.enemy_kind === 'boss' ? 5 : 4);
+    // toned-down base power to avoid wipeouts
+    const basePow = Math.max(1, em?.atk ?? 10);
     const ctx = {
       chip_pow: basePow,
       hits: 1,
@@ -381,15 +402,10 @@ export type StartBattleInit = {
   user_id: string;
   enemy_kind: EnemyKind;
   enemy_id: string;
-  // Accepted for future use / parity with caller; currently not stored in BattleState
   region_id?: string;
   zone?: number;
 };
 
-/**
- * Creates and saves a new battle, returning its id and initial state.
- * Determines the player's element automatically from the DB; defaults to 'Neutral'.
- */
 export function startEncounterBattle(init: StartBattleInit): { battleId: string; state: BattleState } {
   const p = getPlayer(init.user_id) as any;
   const playerElement: Element | 'Neutral' = (p?.element as Element) || 'Neutral';

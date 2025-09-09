@@ -8,7 +8,7 @@ import {
   DataBundle, LoadReport
 } from './types';
 
-// --- keep: helper to parse "1,2,4-6" into [1,2,4,5,6] ---
+/** Parse a zone list string like "1,2,4-6" into [1,2,4,5,6] */
 export const parseZoneList = (raw: string): number[] => {
   if (!raw) return [];
   return raw
@@ -58,6 +58,8 @@ const chipSchema = z.object({
   zenny_cost: z.string().optional().default('0'),
   stock: z.string().optional().default('1'),
   is_upgrade: z.string().optional().default('0'),
+  // NEW: allow per-chip copy cap
+  max_copies: z.string().optional().default(''),
 });
 
 const virusSchema = z.object({
@@ -115,6 +117,8 @@ function toChip(r: z.infer<typeof chipSchema>): ChipRow {
     category: r.category as any, effects: r.effects || '', description: r.description || '',
     image_url: r.image_url || '', rarity: n(r.rarity || '1'),
     zenny_cost: n(r.zenny_cost || '0'), stock: n(r.stock || '1'), is_upgrade: b01(r.is_upgrade || '0'),
+    // NEW: 0/blank means "use default (4, or 1 for boss chips)"; keep undefined to avoid forcing downstream behavior
+    max_copies: n(r.max_copies || '', 0) || undefined,
   };
 }
 

@@ -9,7 +9,7 @@ import loadTSVBundle from './lib/tsv';
 import { invalidateBundleCache, getBundle } from './lib/data';
 import { validateLetterRule } from './lib/rules';
 import { battleEmbed } from './lib/render';
-import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end } from './lib/battle';
+import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end, save } from './lib/battle';
 import { rollRewards, rollBossRewards } from './lib/rewards';
 import { progressDefeat } from './lib/missions';
 import { diffNewlyUnlockedRegions } from './lib/unlock'; // <- only this
@@ -120,17 +120,16 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:encounter')    { await JackIn.onEncounter(ix);    return; }
     }
 
-    // --- Battle pick menus: pick1/pick2/pick3 ---
+    // --- Battle pick menus: pick1/pick2/pick3 (silent, persisted) ---
     if (ix.isStringSelectMenu()) {
       const [kind, battleId] = ix.customId.split(':'); // e.g. pick1:abc
-      if (!kind?.startsWith('pick')) return;
+      if (!/^pick[123]$/.test(kind)) return;
 
       const s = loadBattle(battleId);
-      if (!s || s.user_id !== ix.user.id) return;
+      if (!s || s.user_id !== ix.user.id) { await ix.deferUpdate(); return; }
 
-      // which index?
       const slotIdx = ({ pick1: 0, pick2: 1, pick3: 2 } as any)[kind] ?? 0;
-      const chosenId = ix.values[0]; // may be undefined if they cleared selection
+      const chosenId = ix.values[0] || ''; // allow clearing if min=0
 
       // ensure arrays sized
       while (s.locked.length < 3) s.locked.push('');
@@ -140,22 +139,24 @@ client.on('interactionCreate', async (ix) => {
         await ix.reply({ ephemeral: true, content: '⚠️ Already selected that chip in another slot.' });
         return;
       }
-      s.locked[slotIdx] = chosenId || '';
+
+      const prev = s.locked[slotIdx];
+      s.locked[slotIdx] = chosenId;
 
       // Validate letter rule on non-empty picks
       const chosen = s.locked.filter(Boolean);
-      const chipRows = chosen.map(id => ({ id, letters: getBundle().chips[id]?.letters || '' }));
-      if (chosen.length && !validateLetterRule(chipRows)) {
-        // revert this pick
-        s.locked[slotIdx] = '';
-        await ix.reply({ ephemeral: true, content: '❌ Invalid combo. Chips must share a letter, exact name, or include *.' });
-        return;
+      if (chosen.length) {
+        const chipRows = chosen.map(id => ({ id, letters: getBundle().chips[id]?.letters || '' }));
+        if (!validateLetterRule(chipRows)) {
+          s.locked[slotIdx] = prev; // revert
+          await ix.reply({ ephemeral: true, content: '❌ Invalid combo. Chips must share a letter, exact name, or include *.' });
+          return;
+        }
       }
 
-      await ix.reply({
-        ephemeral: true,
-        content: `Current order: ${s.locked.filter(Boolean).join(' → ') || '—'}`,
-      });
+      // persist silently; no clutter
+      save(s);
+      await ix.deferUpdate();
       return;
     }
 
