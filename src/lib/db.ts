@@ -37,7 +37,6 @@ const LVL_MAX = Number(process.env.LEVEL_MAX || 40);
 
 // XP needed to go from level L -> L+1
 function levelThreshold(lvl: number) {
-  // 1→2 needs 1000, 2→3 needs 2000, … (lvl * 1000)
   return Math.max(0, lvl * 1000);
 }
 
@@ -130,7 +129,6 @@ export function addXP(userId: string, delta: number): { level: number; exp: numb
   let exp   = Math.max(0, Number(row.exp || 0) + Math.max(0, delta));
   let ups   = 0;
 
-  // level up while we can (cap at LVL_MAX)
   while (level < LVL_MAX) {
     const need = levelThreshold(level);
     if (exp < need) break;
@@ -221,6 +219,12 @@ export function setRegion(userId: string, regionId: string): void {
 export function listInventory(userId: string): Array<{ chip_id: string; qty: number }> {
   return getInv.all(userId) as Array<{ chip_id: string; qty: number }>;
 }
+
+/** Simple helper used by the folder command. Returns [{chip_id, qty}] */
+export function getInventory(userId: string): Array<{ chip_id: string; qty: number }> {
+  return getInv.all(userId) as Array<{ chip_id: string; qty: number }>;
+}
+
 export function grantChip(userId: string, chipId: string, qty = 1) {
   const row = db.prepare(`SELECT qty FROM inventory WHERE user_id=? AND chip_id=?`)
                 .get(userId, chipId) as { qty?: number } | undefined;

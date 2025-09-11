@@ -6,14 +6,14 @@ import {
 } from 'discord.js';
 
 import loadTSVBundle from './lib/tsv';
-import { invalidateBundleCache, getBundle } from './lib/data';
+import { invalidateBundleCache } from './lib/data';
 import { validateLetterRule } from './lib/rules';
 import { battleEmbed } from './lib/render';
 import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end, save } from './lib/battle';
 import { rollRewards, rollBossRewards } from './lib/rewards';
 import { progressDefeat } from './lib/missions';
-import { diffNewlyUnlockedRegions } from './lib/unlock'; // <- only this
-import { getRegion, getZone, getPlayer } from './lib/db';
+import { diffNewlyUnlockedRegions } from './lib/unlock';
+import { getRegion, getPlayer } from './lib/db'; // <- getZone removed
 import { wantDmg } from './lib/settings-util';
 
 import * as Start from './commands/start';
@@ -22,11 +22,10 @@ import * as Folder from './commands/folder';
 import * as Shop from './commands/shop';
 import * as Mission from './commands/mission';
 import * as Leaderboard from './commands/leaderboard';
-// import * as Boss from './commands/boss'; // removed
 import * as Settings from './commands/settings';
 import * as Chip from './commands/chip';
 import * as VirusDex from './commands/virusdex';
-import * as JackIn from './commands/jack_in'; // now exports explicit handlers
+import * as JackIn from './commands/jack_in';
 
 // ---- Env checks ----
 const TOKEN    = process.env.DISCORD_TOKEN!;
@@ -50,7 +49,7 @@ const commands = [
     .setDescription('Reload TSV bundle from /data (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   Start.data, Profile.data, Folder.data, Shop.data,
-  Mission.data, /* Boss.data, */ Leaderboard.data, // Boss removed
+  Mission.data, Leaderboard.data,
   Settings.data, Chip.data, VirusDex.data, JackIn.data,
 ].map((c: any) => c.toJSON());
 
@@ -89,8 +88,7 @@ client.on('interactionCreate', async (ix) => {
         const warnings = report.warnings.length ? `\n⚠️ Warnings:\n- ${report.warnings.join('\n- ')}` : '';
         const errors = report.errors.length ? `\n❌ Errors:\n- ${report.errors.join('\n- ')}` : '';
 
-        // refresh in-memory cache so gameplay uses new data immediately
-        invalidateBundleCache();
+        invalidateBundleCache(); // refresh in-memory bundle
 
         await ix.editReply(`📦 TSV load: **${report.ok ? 'OK' : 'ISSUES'}**\nCounts: ${counts}${warnings}${errors}`);
         return;
@@ -101,7 +99,6 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'folder')       { await Folder.execute(ix); return; }
       if (ix.commandName === 'shop')         { await Shop.execute(ix); return; }
       if (ix.commandName === 'mission')      { await Mission.execute(ix); return; }
-      // if (ix.commandName === 'boss')      { /* removed */ return; }
       if (ix.commandName === 'leaderboard')  { await Leaderboard.execute(ix); return; }
       if (ix.commandName === 'settings')     { await Settings.execute(ix); return; }
       if (ix.commandName === 'chip')         { await Chip.execute(ix); return; }
@@ -110,7 +107,19 @@ client.on('interactionCreate', async (ix) => {
       return;
     }
 
-    // --- Jack-In component routing (before other components) ---
+    /* ---------- Folder UI routing ---------- */
+    if (ix.isButton()) {
+      if (ix.customId === 'folder:edit')        { await Folder.onEdit(ix);        return; }
+      if (ix.customId === 'folder:save')        { await Folder.onSave(ix);        return; }
+      if (ix.customId === 'folder:addOpen')     { await Folder.onOpenAdd(ix);     return; }
+      if (ix.customId === 'folder:removeOpen')  { await Folder.onOpenRemove(ix);  return; }
+    }
+    if (ix.isStringSelectMenu()) {
+      if (ix.customId === 'folder:addSelect')    { await Folder.onAddSelect(ix);    return; }
+      if (ix.customId === 'folder:removeSelect') { await Folder.onRemoveSelect(ix); return; }
+    }
+
+    /* ---------- Jack-In routing ---------- */
     if (ix.isStringSelectMenu()) {
       if (ix.customId === 'jackin:selectRegion') { await JackIn.onSelectRegion(ix); return; }
       if (ix.customId === 'jackin:selectZone')   { await JackIn.onSelectZone(ix);   return; }
@@ -120,7 +129,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:encounter')    { await JackIn.onEncounter(ix);    return; }
     }
 
-    // --- Battle pick menus: pick1/pick2/pick3 (silent, persisted) ---
+    /* ---------- Battle pick menus: silent + persisted ---------- */
     if (ix.isStringSelectMenu()) {
       const [kind, battleId] = ix.customId.split(':'); // e.g. pick1:abc
       if (!/^pick[123]$/.test(kind)) return;
@@ -129,12 +138,10 @@ client.on('interactionCreate', async (ix) => {
       if (!s || s.user_id !== ix.user.id) { await ix.deferUpdate(); return; }
 
       const slotIdx = ({ pick1: 0, pick2: 1, pick3: 2 } as any)[kind] ?? 0;
-      const chosenId = ix.values[0] || ''; // allow clearing if min=0
+      const chosenId = ix.values[0] || ''; // allow clearing (min=0)
 
-      // ensure arrays sized
       while (s.locked.length < 3) s.locked.push('');
 
-      // prevent duplicates
       if (chosenId && s.locked.includes(chosenId)) {
         await ix.reply({ ephemeral: true, content: '⚠️ Already selected that chip in another slot.' });
         return;
@@ -143,10 +150,9 @@ client.on('interactionCreate', async (ix) => {
       const prev = s.locked[slotIdx];
       s.locked[slotIdx] = chosenId;
 
-      // Validate letter rule on non-empty picks
       const chosen = s.locked.filter(Boolean);
       if (chosen.length) {
-        const chipRows = chosen.map(id => ({ id, letters: getBundle().chips[id]?.letters || '' }));
+        const chipRows = chosen.map(id => ({ id, letters: (getBundle().chips as any)[id]?.letters || '' }));
         if (!validateLetterRule(chipRows)) {
           s.locked[slotIdx] = prev; // revert
           await ix.reply({ ephemeral: true, content: '❌ Invalid combo. Chips must share a letter, exact name, or include *.' });
@@ -154,13 +160,12 @@ client.on('interactionCreate', async (ix) => {
         }
       }
 
-      // persist silently; no clutter
-      save(s);
-      await ix.deferUpdate();
+      save(s);               // persist the pick
+      await ix.deferUpdate(); // no message clutter
       return;
     }
 
-    // --- Battle buttons: lock or run ---
+    /* ---------- Battle buttons: lock or run ---------- */
     if (ix.isButton()) {
       const [kind, battleId] = ix.customId.split(':');
       const s = loadBattle(battleId); if (!s || s.user_id !== ix.user.id) return;
@@ -180,9 +185,7 @@ client.on('interactionCreate', async (ix) => {
         const res = resolveBattleTurn(s, s.locked);
 
         const regionObj = getRegion(s.user_id);
-        const regionId  = regionObj?.region_id
-          || process.env.START_REGION_ID
-          || 'den_city';
+        const regionId  = regionObj?.region_id || process.env.START_REGION_ID || 'den_city';
 
         const embed = battleEmbed(s, {
           playerName: ix.user.username,
@@ -194,7 +197,6 @@ client.on('interactionCreate', async (ix) => {
         const extra = wantDmg(s.user_id) ? `\n${res.log}` : '';
 
         if (res.outcome === 'victory') {
-          // Capture old level BEFORE rewards
           const before = await getPlayer(s.user_id);
           const oldLevel = Number(before?.level ?? 1);
 
@@ -216,16 +218,13 @@ client.on('interactionCreate', async (ix) => {
               (vr.leveledUp ? `\n🆙 Level Up x${vr.leveledUp}` : '');
           }
 
-          // Check for newly unlocked regions AFTER rewards (level may have changed)
           const after = await getPlayer(s.user_id);
           const newLevel = Number(after?.level ?? oldLevel);
           if (newLevel > oldLevel) {
             const newly = diffNewlyUnlockedRegions(s.user_id);
             if (newly.length) {
               const msg = `🔓 New region${newly.length > 1 ? 's' : ''} unlocked: ${newly.join(', ')}\nUse **/jack_in** to enter.`;
-              // DM (best-effort)
               try { await ix.user.send(msg); } catch {}
-              // Ephemeral notice
               await ix.followUp({ content: msg, ephemeral: true });
             }
           }
