@@ -211,7 +211,7 @@ function buildShopMessage(
 }
 
 // -------------------------------
-— Purchases
+// Purchases
 // -------------------------------
 
 async function handleBuy(ix: ButtonInteraction, regionId: string, chipId: string | undefined) {
