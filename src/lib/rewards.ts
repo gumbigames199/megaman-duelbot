@@ -1,124 +1,210 @@
-// src/lib/rewards.ts
-import { getBundle } from './data';
-import { db, getPlayer, addZenny, grantChip } from './db';
+// rewards.ts
+// Battle/mission rewards: Zenny, XP, and item drops.
+// - Pulls drop tables from data bundle
+// - Uses rng.ts for probability rolls
+// - Writes to DB via db.ts (zenny, xp, inventory)
+// - Returns a rich RewardsResult for UI rendering
 
-// ENV
-const DROP_PCT = parseFloat(process.env.VIRUS_CHIP_DROP_PCT || '0.33'); // non-boss drop chance
-const BOSS_DROP_PCT = parseFloat(process.env.BOSS_DROP_PCT || '1.0');   // boss drop chance (default guaranteed)
+import { getBundle, getVirusById } from "./data";
+import { grantChip, addZenny, addXP, type Player } from "./db";
+import { rngInt, rngFloat } from "./rng";
 
-/** What callers expect back (index.ts shows these fields) */
-export type RewardResult = {
-  zenny: number;
-  xp?: number;
-  drops?: string[];    // chip display names
-  leveledUp?: number;  // how many levels gained this grant
+// -------------------------------
+// Env & Tunables (with defaults)
+// -------------------------------
+
+// Base XP per virus; scaled lightly by virus stats if available
+const VIRUS_BASE_XP = envInt("VIRUS_BASE_XP", 20);
+const BOSS_XP_MULTIPLIER = envFloat("BOSS_XP_MULTIPLIER", 4.0);
+
+// Zenny ranges (virus/boss). We roll uniformly between [min, max].
+const VIRUS_ZENNY_MIN = envInt("VIRUS_ZENNY_MIN", 20);
+const VIRUS_ZENNY_MAX = envInt("VIRUS_ZENNY_MAX", 60);
+
+const BOSS_ZENNY_MIN = envInt("BOSS_ZENNY_MIN", 150);
+const BOSS_ZENNY_MAX = envInt("BOSS_ZENNY_MAX", 300);
+
+// Optional global drop rate modifier (e.g., for events)
+const GLOBAL_DROP_RATE_MULT = envFloat("GLOBAL_DROP_RATE_MULT", 1.0);
+
+// -------------------------------
+// Types
+// -------------------------------
+
+export type DropGrant = {
+  item_id: string;
+  qty: number;          // always 1 for now, but typed for future stacking
 };
 
-/** Simple XP curve: next level requirement grows gently with level */
-function xpForNext(level: number): number {
-  // Tunable: start 100, add linear + mild superlinear growth
-  return Math.max(50, Math.floor(100 + 40 * (level - 1) + Math.pow(level, 1.35) * 8));
-}
+export type RewardsResult = {
+  xp_gained: number;
+  xp_total_after: number;
+  level_after: number;
+  next_threshold: number;
 
-/** Apply XP and handle level-ups. Returns { xpGained, leveledUp } */
-function applyXp(userId: string, gain: number): { xpGained: number; leveledUp: number } {
-  if (!Number.isFinite(gain) || gain <= 0) return { xpGained: 0, leveledUp: 0 };
+  zenny_gained: number;
+  zenny_balance_after?: number; // not fetched here; left for caller if needed
 
-  const p: any = getPlayer(userId) || {};
-  let level = Number(p.level ?? 1);
-  let xp = Number(p.xp ?? 0) + gain;
-  let ups = 0;
+  drops: DropGrant[];
+};
 
-  while (xp >= xpForNext(level)) {
-    xp -= xpForNext(level);
-    level += 1;
-    ups += 1;
+// -------------------------------
+// Public API
+// -------------------------------
+
+/**
+ * Grant rewards for defeating a virus. Uses:
+ * - Virus metadata (to detect boss)
+ * - Drop tables (source_kind='virus' & source_id match)
+ * Returns a RewardsResult for UI.
+ */
+export function grantVirusRewards(user_id: string, virus_id: string): RewardsResult {
+  // Resolve the virus; tolerate missing
+  const virus = getVirusById(virus_id);
+  const isBoss = !!virus?.is_boss;
+
+  const xp = computeXPForVirus(virus);
+  const zenny = computeZennyForVirus(isBoss);
+
+  // Apply currency first
+  if (zenny > 0) addZenny(user_id, zenny);
+
+  // Apply XP (handles level-ups internally)
+  const xpRes = addXP(user_id, xp);
+
+  // Roll drops
+  const drops = rollVirusDrops(virus_id);
+
+  // Grant chip items
+  for (const d of drops) {
+    grantChip(user_id, d.item_id, d.qty);
   }
 
-  // Persist (be tolerant if schema lacks xp/level; SQLite will error silently in dev logs if cols don't exist)
-  try {
-    db.prepare(`UPDATE players SET xp=?, level=? WHERE user_id=?`).run(xp, level, userId);
-  } catch (e) {
-    // If schema doesn't include xp/level yet, just ignore; caller checks level via getPlayer later.
-    // console.warn('applyXp: xp/level columns missing', e);
+  return {
+    xp_gained: xpRes ? xp : 0,
+    xp_total_after: xpRes.xp_total,
+    level_after: xpRes.level,
+    next_threshold: xpRes.next_threshold,
+    zenny_gained: zenny,
+    zenny_balance_after: undefined, // caller can fetch if they want to show
+    drops,
+  };
+}
+
+/**
+ * Grant mission rewards (zenny + specific chips). This is a simple helper
+ * you can call from missions.ts after you mark completion.
+ */
+export function grantMissionRewards(user_id: string, opts: {
+  zenny?: number;
+  chip_ids?: string[];
+}): RewardsResult {
+  const z = Math.max(0, opts.zenny ?? 0);
+  if (z > 0) addZenny(user_id, z);
+
+  const drops: DropGrant[] = [];
+  for (const id of opts.chip_ids ?? []) {
+    grantChip(user_id, id, 1);
+    drops.push({ item_id: id, qty: 1 });
   }
-  return { xpGained: gain, leveledUp: ups };
+
+  // Missions typically don’t grant XP by default, keep it 0
+  return {
+    xp_gained: 0,
+    xp_total_after: 0,
+    level_after: 0,
+    next_threshold: 0,
+    zenny_gained: z,
+    zenny_balance_after: undefined,
+    drops,
+  };
 }
 
-/** Roll a chip from a CSV list of ids; return the chosen chip id or null */
-function rollFromEntriesCSV(csv: string | undefined, rng: () => number = Math.random): string | null {
-  if (!csv) return null;
-  const ids = csv.split(',').map(s => s.trim()).filter(Boolean);
-  if (!ids.length) return null;
-  const idx = Math.floor(rng() * ids.length);
-  return ids[idx] || null;
+// -------------------------------
+// Internals: XP, Zenny, Drops
+// -------------------------------
+
+function computeXPForVirus(virus: ReturnType<typeof getVirusById>): number {
+  if (!virus) return VIRUS_BASE_XP;
+
+  // Light stat-scaling: hp/atk/def/spd average shapes difficulty; optional fields tolerated
+  const stats = [
+    num(virus.hp),
+    num(virus.atk),
+    num(virus.def),
+    num(virus.spd),
+  ].filter((n) => n > 0);
+
+  const avg = stats.length ? stats.reduce((a, b) => a + b, 0) / stats.length : 0;
+  let xp = VIRUS_BASE_XP + Math.round(avg * 0.25);
+
+  if (virus.is_boss) xp = Math.round(xp * BOSS_XP_MULTIPLIER);
+  return Math.max(1, xp);
 }
 
-function computeZenny(virus: any, boss: boolean): number {
-  // Derive a value if not explicitly provided: based on stats with boss multiplier
-  const hp = Number(virus?.hp ?? 80);
-  const atk = Number(virus?.atk ?? 10);
-  const def = Number(virus?.def ?? 6);
-  const base = Math.max(20, Math.floor(hp / 4 + atk * 2 + def * 1.5));
-  return boss ? Math.floor(base * 2.5) : base;
+function computeZennyForVirus(isBoss: boolean): number {
+  const lo = isBoss ? BOSS_ZENNY_MIN : VIRUS_ZENNY_MIN;
+  const hi = isBoss ? BOSS_ZENNY_MAX : VIRUS_ZENNY_MAX;
+  if (hi <= lo) return Math.max(0, lo);
+  return rngInt(lo, hi);
 }
 
-function computeXP(virus: any, boss: boolean): number {
-  const hp = Number(virus?.hp ?? 80);
-  const atk = Number(virus?.atk ?? 10);
-  const def = Number(virus?.def ?? 6);
-  const base = Math.max(10, Math.floor(hp / 6 + atk * 1.5 + def));
-  return boss ? Math.floor(base * 2) : base;
-}
+function rollVirusDrops(virus_id: string): DropGrant[] {
+  const b = getBundle();
+  const drops: DropGrant[] = [];
 
-/** Core drop logic for a given virus row and drop probability */
-function rollDropsForVirus(userId: string, virus: any, pct: number): string[] {
-  const { dropTables, chips } = getBundle() as any;
-  const out: string[] = [];
+  for (const row of b.drop_tables) {
+    // Expect either source_kind omitted/“virus”, but be tolerant
+    const kind = (row.source_kind ?? "virus").toLowerCase();
+    if (kind !== "virus") continue;
+    if ((row.source_id ?? "") !== virus_id) continue;
 
-  // Only roll if a drop table is linked and chance succeeds
-  const dt = virus?.drop_table_id ? dropTables?.[virus.drop_table_id] : null;
-  if (!dt) return out;
-
-  if (Math.random() < pct) {
-    const chosenId = rollFromEntriesCSV(dt.entries);
-    if (chosenId && chips[chosenId]) {
-      grantChip(userId, chosenId);
-      const name = chips[chosenId]?.name || chosenId;
-      out.push(name);
+    const rate = clamp01((row.rate ?? 0) * GLOBAL_DROP_RATE_MULT);
+    if (rate <= 0) continue;
+    const r = rngFloat(0, 1);
+    if (r <= rate) {
+      const item = row.item_id ?? "";
+      if (item) drops.push({ item_id: item, qty: 1 });
     }
   }
-  return out;
+
+  return groupDrops(drops);
 }
 
-/** Non-boss rewards: uniform drop chance (DROP_PCT), moderate zenny/xp */
-export function rollRewards(userId: string, enemyVirusId: string): RewardResult {
-  const { viruses } = getBundle() as any;
-  const virus = viruses?.[enemyVirusId];
+// -------------------------------
+// Helpers
+// -------------------------------
 
-  const zenny = computeZenny(virus, false);
-  addZenny(userId, zenny);
-
-  const xpGain = computeXP(virus, false);
-  const { leveledUp } = applyXp(userId, xpGain);
-
-  const drops = rollDropsForVirus(userId, virus, DROP_PCT);
-
-  return { zenny, xp: xpGain, drops, leveledUp };
+function envInt(key: string, d: number): number {
+  const v = process.env[key];
+  if (v === undefined) return d;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : d;
 }
 
-/** Boss rewards: bigger zenny/xp, default guaranteed drop (BOSS_DROP_PCT) */
-export function rollBossRewards(userId: string, enemyVirusId: string): RewardResult {
-  const { viruses } = getBundle() as any;
-  const virus = viruses?.[enemyVirusId];
+function envFloat(key: string, d: number): number {
+  const v = process.env[key];
+  if (v === undefined) return d;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
 
-  const zenny = computeZenny(virus, true);
-  addZenny(userId, zenny);
+function num(v: any): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
-  const xpGain = computeXP(virus, true);
-  const { leveledUp } = applyXp(userId, xpGain);
+function clamp01(x: number): number {
+  if (x < 0) return 0;
+  if (x > 1) return 1;
+  return x;
+}
 
-  const drops = rollDropsForVirus(userId, virus, BOSS_DROP_PCT);
-
-  return { zenny, xp: xpGain, drops, leveledUp };
+function groupDrops(drops: DropGrant[]): DropGrant[] {
+  if (drops.length <= 1) return drops;
+  const map = new Map<string, number>();
+  for (const d of drops) {
+    map.set(d.item_id, (map.get(d.item_id) ?? 0) + d.qty);
+  }
+  return [...map.entries()].map(([item_id, qty]) => ({ item_id, qty }));
 }

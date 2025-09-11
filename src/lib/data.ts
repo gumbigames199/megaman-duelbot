@@ -1,145 +1,226 @@
-// src/lib/data.ts
-import loadTSVBundle from './tsv';
-import { DataBundle } from './types';
+// data.ts
+// Thin data access layer on top of tsv.ts
+// - Re-exports getBundle/invalidateBundleCache
+// - Provides indexed lookups (chips/viruses/regions)
+// - Region/zone-aware virus queries
+// - Shop inventory resolution with correct pricing:
+//     price = price_override ?? chip.zenny_cost
+//
+// NOTE: Boss rarity / encounter selection logic should live in encounter.ts.
+//       Here we only expose clean, typed data access helpers.
 
-let cache: { ts: number; bundle: DataBundle } | null = null;
-const FRESH_MS = 5 * 60 * 1000;
+import {
+  getBundle as _getBundle,
+  invalidateBundleCache as _invalidate,
+  type DataBundle,
+  type ChipRow,
+  type VirusRow,
+  type RegionRow,
+  type ShopRow,
+} from "./tsv";
 
-function emptyBundle(): DataBundle {
-  return {
-    chips: {},
-    viruses: {},
-    regions: {},
-    dropTables: {},
-    missions: {},
-    programAdvances: {},
-    shops: {},
-  };
-}
+// -------------------------------
+// Re-exports
+// -------------------------------
 
 export function invalidateBundleCache() {
-  cache = null;
-}
-
-function parseZoneList(raw: string): number[] {
-  if (!raw) return [];
-  return raw
-    .split(',')
-    .flatMap((part) => {
-      const trimmed = part.trim();
-      if (!trimmed) return [];
-      const m = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
-      if (m) {
-        const a = parseInt(m[1], 10),
-          b = parseInt(m[2], 10);
-        const [lo, hi] = a <= b ? [a, b] : [b, a];
-        return Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
-      }
-      return [parseInt(trimmed, 10)];
-    })
-    .filter((n) => Number.isFinite(n));
+  // clearing local indices too
+  _indices = null;
+  _invalidate();
 }
 
 export function getBundle(): DataBundle {
-  const now = Date.now();
-  if (!cache || now - cache.ts > FRESH_MS) {
-    try {
-      const { data } = loadTSVBundle(process.env.DATA_DIR || './data');
+  return _getBundle();
+}
 
-      // regions
-      const regions: any = {};
-      for (const r of Object.values<any>(data.regions || {})) {
-        regions[r.id] = {
-          ...r,
-          zone_count: parseInt(String(r.zone_count ?? 1), 10),
-          min_level: parseInt(String(r.min_level ?? 1), 10),
-        };
-      }
+// -------------------------------
+// Local indices (lazy)
+// -------------------------------
 
-      // viruses
-      const viruses: any = {};
-      for (const v of Object.values<any>(data.viruses || {})) {
-        viruses[v.id] = {
-          ...v,
-          zones: parseZoneList(v.zone),
-          boss: v.boss === '1' || v.boss === 1 || v.boss === true,
-        };
-      }
+type Indices = {
+  chipById: Map<string, ChipRow>;
+  virusById: Map<string, VirusRow>;
+  regionById: Map<string, RegionRow>;
+  shopsByRegion: Map<string, ShopRow[]>;
+};
 
-      // --- validators ---
-      const warn = console.warn;
-      // unknown regions
-      for (const v of Object.values<any>(viruses)) {
-        if (!regions[v.region]) warn(`viruses.tsv: unknown region "${v.region}" for ${v.id}`);
-        const rc = regions[v.region]?.zone_count ?? 0;
-        for (const z of v.zones) {
-          if (z < 1 || z > rc)
-            warn(`viruses.tsv: zone ${z} out of 1..${rc} for ${v.id} in region ${v.region}`);
-        }
-      }
-      // bosses / non-boss per zone
-      const bossKey = (r: string, z: number) => `${r}#${z}`;
-      const bossSeen = new Map<string, string>();
-      const nonBossByZone = new Map<string, number>();
-      for (const v of Object.values<any>(viruses)) {
-        for (const z of v.zones) {
-          const key = bossKey(v.region, z);
-          if (v.boss) {
-            if (bossSeen.has(key))
-              warn(
-                `viruses.tsv: multiple bosses for ${key}: ${bossSeen.get(key)} and ${v.id}`,
-              );
-            else bossSeen.set(key, v.id);
-          } else {
-            nonBossByZone.set(key, (nonBossByZone.get(key) ?? 0) + 1);
-          }
-        }
-      }
-      for (const r of Object.values<any>(regions)) {
-        for (let z = 1; z <= r.zone_count; z++) {
-          const key = bossKey(r.id, z);
-          if (!nonBossByZone.get(key))
-            warn(`viruses.tsv: no non-boss viruses for ${key}`);
-        }
-      }
+let _indices: Indices | null = null;
 
-      cache = {
-        ts: now,
-        bundle: {
-          ...data,
-          regions,
-          viruses,
-          // removed bosses & virusPools
-        } as DataBundle,
-      };
-    } catch (e) {
-      console.error('Error loading TSV bundle', e);
-      cache = cache ? cache : { ts: now, bundle: emptyBundle() };
-    }
+function buildIndices(bundle: DataBundle): Indices {
+  const chipById = new Map<string, ChipRow>();
+  for (const c of bundle.chips) chipById.set(c.id, c);
+
+  const virusById = new Map<string, VirusRow>();
+  for (const v of bundle.viruses) virusById.set(v.id, v);
+
+  const regionById = new Map<string, RegionRow>();
+  for (const r of bundle.regions) regionById.set(r.id, r);
+
+  const shopsByRegion = new Map<string, ShopRow[]>();
+  for (const s of bundle.shops) {
+    const arr = shopsByRegion.get(s.region_id) ?? [];
+    arr.push(s);
+    shopsByRegion.set(s.region_id, arr);
   }
-  return cache.bundle;
+
+  return { chipById, virusById, regionById, shopsByRegion };
 }
 
-// helpers
-export function getChipById(id: string) {
-  return getBundle().chips[id];
+function indices(): Indices {
+  if (_indices) return _indices;
+  _indices = buildIndices(getBundle());
+  return _indices;
 }
 
-export function listShopStock() {
-  // expose all chips with stock=1 and zenny_cost>0 (ignore upgrades)
-  return Object.values(getBundle().chips)
-    .filter(
-      (c: any) =>
-        Number(c.stock) === 1 &&
-        Number(c.zenny_cost || 0) > 0 &&
-        !c.is_upgrade,
-    )
-    .sort((a: any, b: any) => {
-      const az = Number(a.zenny_cost || 0),
-        bz = Number(b.zenny_cost || 0);
-      return (
-        az - bz ||
-        String(a.name || '').localeCompare(String(b.name || ''))
-      );
+// -------------------------------
+// Public getters
+// -------------------------------
+
+export function getChipById(id: string): ChipRow | undefined {
+  return indices().chipById.get(id);
+}
+
+export function getVirusById(id: string): VirusRow | undefined {
+  return indices().virusById.get(id);
+}
+
+export function getRegionById(id: string): RegionRow | undefined {
+  return indices().regionById.get(id);
+}
+
+export function listRegions(): RegionRow[] {
+  return getBundle().regions;
+}
+
+export function listChips(): ChipRow[] {
+  return getBundle().chips;
+}
+
+export function listViruses(): VirusRow[] {
+  return getBundle().viruses;
+}
+
+// -------------------------------
+// Region / Zone helpers
+// -------------------------------
+
+/**
+ * Returns all viruses eligible for the given region/zone.
+ * - If virus.zones is empty, treat it as eligible for all zones in that region.
+ * - You can filter bosses/normals via flags.
+ */
+export function listVirusesForRegionZone(opts: {
+  region_id: string;
+  zone: number;
+  includeNormals?: boolean; // default true
+  includeBosses?: boolean; // default true
+}): VirusRow[] {
+  const { region_id, zone, includeNormals = true, includeBosses = true } = opts;
+  const all = getBundle().viruses;
+
+  return all.filter((v) => {
+    if (v.region_id && v.region_id !== region_id) return false;
+
+    const isBoss = !!v.is_boss;
+    if (!includeBosses && isBoss) return false;
+    if (!includeNormals && !isBoss) return false;
+
+    // zone gating: empty zones means "all zones"
+    const z = v.zones ?? [];
+    if (z.length === 0) return true;
+    return z.includes(zone);
+  });
+}
+
+// -------------------------------
+// Shop helpers (pricing, inventory)
+// -------------------------------
+
+export type ResolvedShopItem = {
+  region_id: string;
+  item_id: string;               // chip id
+  name: string;
+  zenny_price: number;           // price_override ?? chip.zenny_cost
+  is_upgrade: boolean;           // passthrough from chip
+  chip: ChipRow;                 // full chip row
+  shop_row: ShopRow;             // original shop row (for stock/rotation if used)
+};
+
+export function getShopsForRegion(region_id: string): ShopRow[] {
+  return indices().shopsByRegion.get(region_id) ?? [];
+}
+
+export function resolveShopInventory(region_id: string): ResolvedShopItem[] {
+  const { chipById } = indices();
+  const rows = getShopsForRegion(region_id);
+  const out: ResolvedShopItem[] = [];
+
+  for (const s of rows) {
+    const chipId = s.item_id;
+    if (!chipId) continue;
+    const chip = chipById.get(chipId);
+    if (!chip) continue;
+
+    const price = priceForShopItem(s, chip);
+    out.push({
+      region_id,
+      item_id: chip.id,
+      name: chip.name,
+      zenny_price: price,
+      is_upgrade: !!chip.is_upgrade,
+      chip,
+      shop_row: s,
     });
+  }
+
+  // Optional: stable by name then id for nice UI display
+  out.sort((a, b) => (a.name.localeCompare(b.name) || a.item_id.localeCompare(b.item_id)));
+  return out;
+}
+
+export function priceForShopItem(s: ShopRow, c: ChipRow): number {
+  // Respect explicit override first; otherwise chip.zenny_cost.
+  const override = Number.isFinite(s.price_override) ? s.price_override! : 0;
+  if (override && override > 0) return override;
+  return Number.isFinite(c.zenny_cost) ? c.zenny_cost : 0;
+}
+
+// -------------------------------
+// Convenience queries for UI
+// -------------------------------
+
+export type BattleHeaderArt = {
+  image?: string | undefined;
+  sprite?: string | undefined;
+  fallbackEmoji?: string; // UI can use this if no art present
+};
+
+/**
+ * Returns art fields for a given virus to render in headers.
+ * UI can decide which field to prefer (image/sprite) and fallback accordingly.
+ */
+export function getVirusArt(virusId: string): BattleHeaderArt {
+  const v = getVirusById(virusId);
+  if (!v) return { fallbackEmoji: "⚔️" };
+  // Allow either image or sprite, depending on what your TSV provides
+  return {
+    image: (v as any).image,
+    sprite: (v as any).sprite,
+    fallbackEmoji: "⚔️",
+  };
+}
+
+// -------------------------------
+// Reload helper
+// -------------------------------
+
+/**
+ * Force reload data from disk and rebuild indices.
+ * Useful for your /reload_data command.
+ */
+export function reloadDataFromDisk(): DataBundle {
+  invalidateBundleCache();
+  const b = getBundle();
+  _indices = buildIndices(b);
+  return b;
 }
