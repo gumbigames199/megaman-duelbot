@@ -6,7 +6,7 @@ import {
 } from 'discord.js';
 
 import loadTSVBundle from './lib/tsv';
-import { invalidateBundleCache } from './lib/data';
+import { invalidateBundleCache, getBundle } from './lib/data';
 import { validateLetterRule } from './lib/rules';
 import { battleEmbed } from './lib/render';
 import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end, save } from './lib/battle';
