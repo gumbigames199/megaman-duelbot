@@ -1,210 +1,86 @@
-// rewards.ts
-// Battle/mission rewards: Zenny, XP, and item drops.
-// - Pulls drop tables from data bundle
-// - Uses rng.ts for probability rolls
-// - Writes to DB via db.ts (zenny, xp, inventory)
-// - Returns a rich RewardsResult for UI rendering
-
+// lib/rewards.ts
 import { getBundle, getVirusById } from "./data";
-import { grantChip, addZenny, addXP, type Player } from "./db";
-import { rngInt, rngFloat } from "./rng";
+import { grantChip, addZenny, addXP } from "./db";
 
-// -------------------------------
-// Env & Tunables (with defaults)
-// -------------------------------
-
-// Base XP per virus; scaled lightly by virus stats if available
 const VIRUS_BASE_XP = envInt("VIRUS_BASE_XP", 20);
 const BOSS_XP_MULTIPLIER = envFloat("BOSS_XP_MULTIPLIER", 4.0);
-
-// Zenny ranges (virus/boss). We roll uniformly between [min, max].
 const VIRUS_ZENNY_MIN = envInt("VIRUS_ZENNY_MIN", 20);
 const VIRUS_ZENNY_MAX = envInt("VIRUS_ZENNY_MAX", 60);
-
 const BOSS_ZENNY_MIN = envInt("BOSS_ZENNY_MIN", 150);
 const BOSS_ZENNY_MAX = envInt("BOSS_ZENNY_MAX", 300);
-
-// Optional global drop rate modifier (e.g., for events)
 const GLOBAL_DROP_RATE_MULT = envFloat("GLOBAL_DROP_RATE_MULT", 1.0);
 
-// -------------------------------
-// Types
-// -------------------------------
-
-export type DropGrant = {
-  item_id: string;
-  qty: number;          // always 1 for now, but typed for future stacking
-};
-
+export type DropGrant = { item_id: string; qty: number };
 export type RewardsResult = {
-  xp_gained: number;
-  xp_total_after: number;
-  level_after: number;
-  next_threshold: number;
-
-  zenny_gained: number;
-  zenny_balance_after?: number; // not fetched here; left for caller if needed
-
+  xp_gained: number; xp_total_after: number; level_after: number; next_threshold: number;
+  zenny_gained: number; zenny_balance_after?: number;
   drops: DropGrant[];
 };
 
-// -------------------------------
-// Public API
-// -------------------------------
-
-/**
- * Grant rewards for defeating a virus. Uses:
- * - Virus metadata (to detect boss)
- * - Drop tables (source_kind='virus' & source_id match)
- * Returns a RewardsResult for UI.
- */
 export function grantVirusRewards(user_id: string, virus_id: string): RewardsResult {
-  // Resolve the virus; tolerate missing
   const virus = getVirusById(virus_id);
   const isBoss = !!virus?.is_boss;
 
   const xp = computeXPForVirus(virus);
   const zenny = computeZennyForVirus(isBoss);
 
-  // Apply currency first
   if (zenny > 0) addZenny(user_id, zenny);
-
-  // Apply XP (handles level-ups internally)
   const xpRes = addXP(user_id, xp);
 
-  // Roll drops
   const drops = rollVirusDrops(virus_id);
-
-  // Grant chip items
-  for (const d of drops) {
-    grantChip(user_id, d.item_id, d.qty);
-  }
+  for (const d of drops) grantChip(user_id, d.item_id, d.qty);
 
   return {
-    xp_gained: xpRes ? xp : 0,
-    xp_total_after: xpRes.xp_total,
-    level_after: xpRes.level,
-    next_threshold: xpRes.next_threshold,
-    zenny_gained: zenny,
-    zenny_balance_after: undefined, // caller can fetch if they want to show
-    drops,
+    xp_gained: xp, xp_total_after: xpRes.xp_total, level_after: xpRes.level, next_threshold: xpRes.next_threshold,
+    zenny_gained: zenny, drops,
   };
 }
 
-/**
- * Grant mission rewards (zenny + specific chips). This is a simple helper
- * you can call from missions.ts after you mark completion.
- */
-export function grantMissionRewards(user_id: string, opts: {
-  zenny?: number;
-  chip_ids?: string[];
-}): RewardsResult {
+export function grantMissionRewards(user_id: string, opts: { zenny?: number; chip_ids?: string[]; }): RewardsResult {
   const z = Math.max(0, opts.zenny ?? 0);
   if (z > 0) addZenny(user_id, z);
-
   const drops: DropGrant[] = [];
-  for (const id of opts.chip_ids ?? []) {
-    grantChip(user_id, id, 1);
-    drops.push({ item_id: id, qty: 1 });
-  }
-
-  // Missions typically don’t grant XP by default, keep it 0
-  return {
-    xp_gained: 0,
-    xp_total_after: 0,
-    level_after: 0,
-    next_threshold: 0,
-    zenny_gained: z,
-    zenny_balance_after: undefined,
-    drops,
-  };
+  for (const id of opts.chip_ids ?? []) { grantChip(user_id, id, 1); drops.push({ item_id: id, qty: 1 }); }
+  return { xp_gained: 0, xp_total_after: 0, level_after: 0, next_threshold: 0, zenny_gained: z, drops };
 }
-
-// -------------------------------
-// Internals: XP, Zenny, Drops
-// -------------------------------
 
 function computeXPForVirus(virus: ReturnType<typeof getVirusById>): number {
   if (!virus) return VIRUS_BASE_XP;
-
-  // Light stat-scaling: hp/atk/def/spd average shapes difficulty; optional fields tolerated
-  const stats = [
-    num(virus.hp),
-    num(virus.atk),
-    num(virus.def),
-    num(virus.spd),
-  ].filter((n) => n > 0);
-
-  const avg = stats.length ? stats.reduce((a, b) => a + b, 0) / stats.length : 0;
+  const stats = [num((virus as any).hp), num((virus as any).atk), num((virus as any).def), num((virus as any).spd)].filter(n => n > 0);
+  const avg = stats.length ? stats.reduce((a,b)=>a+b,0)/stats.length : 0;
   let xp = VIRUS_BASE_XP + Math.round(avg * 0.25);
-
-  if (virus.is_boss) xp = Math.round(xp * BOSS_XP_MULTIPLIER);
+  if ((virus as any).is_boss) xp = Math.round(xp * BOSS_XP_MULTIPLIER);
   return Math.max(1, xp);
 }
-
 function computeZennyForVirus(isBoss: boolean): number {
   const lo = isBoss ? BOSS_ZENNY_MIN : VIRUS_ZENNY_MIN;
   const hi = isBoss ? BOSS_ZENNY_MAX : VIRUS_ZENNY_MAX;
   if (hi <= lo) return Math.max(0, lo);
-  return rngInt(lo, hi);
+  return randInt(lo, hi);
 }
-
 function rollVirusDrops(virus_id: string): DropGrant[] {
   const b = getBundle();
-  const drops: DropGrant[] = [];
-
+  const out: DropGrant[] = [];
   for (const row of b.drop_tables) {
-    // Expect either source_kind omitted/“virus”, but be tolerant
-    const kind = (row.source_kind ?? "virus").toLowerCase();
+    const kind = String(row.source_kind ?? "virus").toLowerCase();
     if (kind !== "virus") continue;
-    if ((row.source_id ?? "") !== virus_id) continue;
-
-    const rate = clamp01((row.rate ?? 0) * GLOBAL_DROP_RATE_MULT);
+    if (String(row.source_id ?? "") !== virus_id) continue;
+    const rate = clamp01((Number(row.rate ?? 0)) * GLOBAL_DROP_RATE_MULT);
     if (rate <= 0) continue;
-    const r = rngFloat(0, 1);
-    if (r <= rate) {
-      const item = row.item_id ?? "";
-      if (item) drops.push({ item_id: item, qty: 1 });
+    if (randFloat() <= rate) {
+      const item = String(row.item_id ?? "");
+      if (item) out.push({ item_id: item, qty: 1 });
     }
   }
-
-  return groupDrops(drops);
+  return groupDrops(out);
 }
 
-// -------------------------------
-// Helpers
-// -------------------------------
+function envInt(k:string,d:number){const v=process.env[k];const n=Number(v);return Number.isFinite(n)?Math.trunc(n):d;}
+function envFloat(k:string,d:number){const v=process.env[k];const n=Number(v);return Number.isFinite(n)?n:d;}
+function num(v:any){const n=Number(v);return Number.isFinite(n)?n:0;}
+function clamp01(x:number){return x<0?0:x>1?1:x;}
+function groupDrops(ds:DropGrant[]){if(ds.length<=1) return ds; const m=new Map<string,number>(); for(const d of ds){m.set(d.item_id,(m.get(d.item_id)||0)+d.qty);} return [...m].map(([item_id,qty])=>({item_id,qty}));}
 
-function envInt(key: string, d: number): number {
-  const v = process.env[key];
-  if (v === undefined) return d;
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.trunc(n) : d;
-}
-
-function envFloat(key: string, d: number): number {
-  const v = process.env[key];
-  if (v === undefined) return d;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-}
-
-function num(v: any): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function clamp01(x: number): number {
-  if (x < 0) return 0;
-  if (x > 1) return 1;
-  return x;
-}
-
-function groupDrops(drops: DropGrant[]): DropGrant[] {
-  if (drops.length <= 1) return drops;
-  const map = new Map<string, number>();
-  for (const d of drops) {
-    map.set(d.item_id, (map.get(d.item_id) ?? 0) + d.qty);
-  }
-  return [...map.entries()].map(([item_id, qty]) => ({ item_id, qty }));
-}
+// tiny RNG
+function randFloat(){return Math.random();}
+function randInt(a:number,b:number){return a + Math.floor(randFloat()*(b-a+1));}
