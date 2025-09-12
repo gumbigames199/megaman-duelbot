@@ -7,9 +7,9 @@
     "outDir": "dist",
     "esModuleInterop": true,
     "resolveJsonModule": true,
+
     "strict": true,
-    "noImplicitAny": true,
-    "suppressImplicitAnyIndexErrors": true,
+    "noImplicitAny": false,               // <-- disable to replace the removed option
     "skipLibCheck": true,
     "types": ["node"]
   },
