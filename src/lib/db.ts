@@ -2,6 +2,7 @@
 // SQLite data layer (better-sqlite3) with safe migrations.
 // Adds: XP/Level, stat caps, atomic spendZenny, instant upgrade support,
 // name/element fields, and compatibility aliases (db, getInventory, etc).
+// NEW: missions_state.counter column (compat) kept in sync with progress.
 
 import Database from "better-sqlite3";
 import fs from "node:fs";
@@ -88,6 +89,7 @@ CREATE TABLE IF NOT EXISTS missions_state (
   mission_id TEXT NOT NULL,
   state TEXT NOT NULL,
   progress INTEGER NOT NULL DEFAULT 0,
+  counter INTEGER NOT NULL DEFAULT 0, -- compat
   UNIQUE(user_id, mission_id)
 );
 `);
@@ -98,6 +100,8 @@ safeAddColumn("players", "level", "INTEGER NOT NULL DEFAULT 1");
 safeAddColumn("players", "crit", "INTEGER NOT NULL DEFAULT 0");
 safeAddColumn("players", "name", "TEXT DEFAULT NULL");
 safeAddColumn("players", "element", "TEXT DEFAULT NULL");
+safeAddColumn("missions_state", "progress", "INTEGER NOT NULL DEFAULT 0");
+safeAddColumn("missions_state", "counter", "INTEGER NOT NULL DEFAULT 0"); // <-- compat column
 
 // Indexes
 db.exec(`
@@ -303,25 +307,36 @@ export function setSetting(user_id: string, key: string, value: string) {
   `).run(user_id, key, value);
 }
 
-// Missions helpers (compat)
+// Missions helpers (compat with both progress & counter)
 export type MissionState = "Available" | "Accepted" | "Completed" | "TurnedIn";
+
 export function upsertMissionState(user_id: string, mission_id: string, state: MissionState, progress = 0) {
   ensurePlayer(user_id);
   db.prepare(`
-    INSERT INTO missions_state (user_id, mission_id, state, progress)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(user_id, mission_id) DO UPDATE SET state = excluded.state, progress = excluded.progress
-  `).run(user_id, mission_id, state, progress);
+    INSERT INTO missions_state (user_id, mission_id, state, progress, counter)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, mission_id)
+    DO UPDATE SET state = excluded.state, progress = excluded.progress, counter = excluded.counter
+  `).run(user_id, mission_id, state, progress, progress);
 }
+
 export function getMissionState(user_id: string, mission_id: string) {
-  const row = db.prepare(`SELECT state, progress FROM missions_state WHERE user_id = ? AND mission_id = ?`)
-    .get(user_id, mission_id) as { state: MissionState; progress: number } | undefined;
+  const row = db.prepare(`
+    SELECT state, COALESCE(progress, counter, 0) AS progress
+    FROM missions_state WHERE user_id = ? AND mission_id = ?
+  `).get(user_id, mission_id) as { state: MissionState; progress: number } | undefined;
   return row ?? null;
 }
+
 export function addMissionProgress(user_id: string, mission_id: string, delta: number) {
   const cur = getMissionState(user_id, mission_id);
   const next = Math.max(0, (cur?.progress ?? 0) + Math.max(0, delta));
-  upsertMissionState(user_id, mission_id, (cur?.state ?? "Accepted") as MissionState, next);
+  db.prepare(`
+    INSERT INTO missions_state (user_id, mission_id, state, progress, counter)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, mission_id)
+    DO UPDATE SET progress = excluded.progress, counter = excluded.counter
+  `).run(user_id, mission_id, (cur?.state ?? "Accepted") as MissionState, next, next);
 }
 
 // -------------------------------
