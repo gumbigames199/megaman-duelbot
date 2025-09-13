@@ -1,260 +1,180 @@
-// src/commands/folder.ts
 import {
-  SlashCommandBuilder,
-  ChatInputCommandInteraction,
-  ButtonBuilder,
-  ButtonInteraction,
-  ButtonStyle,
-  ActionRowBuilder,
-  StringSelectMenuBuilder,
-  StringSelectMenuInteraction,
-  EmbedBuilder,
+  SlashCommandBuilder, ChatInputCommandInteraction,
+  EmbedBuilder, ButtonBuilder, ButtonStyle, ButtonInteraction,
+  StringSelectMenuBuilder, StringSelectMenuInteraction, ActionRowBuilder,
 } from 'discord.js';
-
-import { db, getInventory } from '../lib/db';
+import { getFolder, setFolder, validateFolder, MAX_FOLDER, maxCopiesForChip } from '../lib/folder';
+import { getInventory } from '../lib/db';
 import { getBundle } from '../lib/data';
 
-const MAX_FOLDER = 30;
-const DEFAULT_MAX_COPIES = 4;
+export const data = new SlashCommandBuilder()
+  .setName('folder')
+  .setDescription('View and edit your chip folder');
 
-const SINGLE_COPY_IDS = new Set(
-  String(process.env.SINGLE_COPY_CHIPS || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-);
-
-// ---------------- DB helpers ----------------
-function readFolder(userId: string): string[] {
-  const rows = db
-    .prepare(`SELECT slot, chip_id FROM folder WHERE user_id=? ORDER BY slot ASC`)
-    .all(userId) as any[];
-  return rows.map(r => r.chip_id).filter(Boolean);
-}
-
-function writeFolder(userId: string, chips: string[]) {
-  const tx = db.transaction(() => {
-    db.prepare(`DELETE FROM folder WHERE user_id=?`).run(userId);
-    const ins = db.prepare(`INSERT INTO folder (user_id, slot, chip_id) VALUES (?,?,?)`);
-    chips.slice(0, MAX_FOLDER).forEach((id: string, i: number) => ins.run(userId, i + 1, id));
-  });
-  tx();
-}
-
-// ---------------- Rules ----------------
-function maxCopiesForChip(chipId: string): number {
-  const c: any = getBundle().chips[chipId] || {};
-  // Prefer explicit max_copies if present in TSV
-  const tsvMax = Number(c.max_copies);
-  if (Number.isFinite(tsvMax) && tsvMax > 0) return Math.min(4, Math.max(1, tsvMax));
-
-  // Heuristics
-  const cat = String(c.category || '').toLowerCase();
-  if (cat.includes('boss')) return 1;
-  if (SINGLE_COPY_IDS.has(chipId)) return 1;
-
-  return DEFAULT_MAX_COPIES;
-}
-
-// ---------------- UI helpers ----------------
-function renderFolderList(ids: string[]): string {
-  const chips = getBundle().chips;
+function formatFolder(chips: string[]) {
+  const b = getBundle();
+  if (!chips.length) return '— (empty)';
+  const counts = new Map<string, number>();
+  for (const id of chips) counts.set(id, (counts.get(id) || 0) + 1);
   const lines: string[] = [];
-  for (let i = 0; i < MAX_FOLDER; i++) {
-    const cid = ids[i];
-    if (!cid) {
-      lines.push(`${String(i + 1).padStart(2, ' ')}. —`);
-      continue;
-    }
-    const c: any = chips[cid] || {};
-    const name = c.name || cid;
-    const code = c.letters || c.code || '';
-    const pow  = c.power ? ` ${c.power}${c.hits && c.hits > 1 ? `×${c.hits}` : ''}` : '';
-    lines.push(`${String(i + 1).padStart(2, ' ')}. ${name}${code ? ` [${code}]` : ''}${pow}`);
+  for (const [id, qty] of counts) {
+    const c: any = b.chips[id] || {};
+    lines.push(`• ${c.name || id} ×${qty}`);
   }
   return lines.join('\n');
 }
 
-function folderEmbed(userId: string, editMode = false): EmbedBuilder {
-  const ids = readFolder(userId);
-  return new EmbedBuilder()
-    .setTitle(`📁 Folder (${ids.length}/${MAX_FOLDER})${editMode ? ' — Edit' : ''}`)
-    .setDescription(renderFolderList(ids));
-}
-
-function viewButtons(): ActionRowBuilder<ButtonBuilder> {
-  const edit = new ButtonBuilder().setCustomId('folder:edit').setLabel('Edit').setStyle(ButtonStyle.Primary);
-  const save = new ButtonBuilder().setCustomId('folder:save').setLabel('Save').setStyle(ButtonStyle.Success).setDisabled(true);
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(edit, save);
-}
-
-function editButtons(): ActionRowBuilder<ButtonBuilder> {
-  const add = new ButtonBuilder().setCustomId('folder:addOpen').setLabel('Add From Inventory').setStyle(ButtonStyle.Secondary);
-  const remove = new ButtonBuilder().setCustomId('folder:removeOpen').setLabel('Remove From Folder').setStyle(ButtonStyle.Secondary);
-  const save = new ButtonBuilder().setCustomId('folder:save').setLabel('Save').setStyle(ButtonStyle.Success);
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(add, remove, save);
-}
-
-function backToEditButtons(): ActionRowBuilder<ButtonBuilder> {
-  const back = new ButtonBuilder().setCustomId('folder:edit').setLabel('⬅ Back').setStyle(ButtonStyle.Secondary);
-  const save = new ButtonBuilder().setCustomId('folder:save').setLabel('Save').setStyle(ButtonStyle.Success);
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(back, save);
-}
-
-// ---------------- Slash ----------------
-export const data = new SlashCommandBuilder()
-  .setName('folder')
-  .setDescription('View and edit your Navi folder (up to 30 chips).');
-
 export async function execute(ix: ChatInputCommandInteraction) {
-  const embed = folderEmbed(ix.user.id, false);
-  await ix.reply({ embeds: [embed], components: [viewButtons()], ephemeral: true });
+  const folder = getFolder(ix.user.id);
+  const e = new EmbedBuilder()
+    .setTitle('🗂️ Your Folder')
+    .setDescription(formatFolder(folder))
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER}` });
+
+  const editBtn = new ButtonBuilder().setCustomId('folder:edit').setStyle(ButtonStyle.Primary).setLabel('Edit');
+
+  await ix.reply({ ephemeral: true, embeds: [e], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(editBtn)] });
 }
 
-// ---------------- Buttons ----------------
 export async function onEdit(ix: ButtonInteraction) {
-  const embed = folderEmbed(ix.user.id, true);
-  await ix.update({ embeds: [embed], components: [editButtons()] });
-}
+  const folder = getFolder(ix.user.id);
+  const e = new EmbedBuilder()
+    .setTitle('🗂️ Edit Folder')
+    .setDescription(formatFolder(folder))
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} — Add or remove chips, then Save.` });
 
-export async function onSave(ix: ButtonInteraction) {
-  const embed = folderEmbed(ix.user.id, false);
-  await ix.update({ embeds: [embed], components: [viewButtons()] });
+  const addBtn = new ButtonBuilder().setCustomId('folder:addOpen').setStyle(ButtonStyle.Secondary).setLabel('Add chips');
+  const remBtn = new ButtonBuilder().setCustomId('folder:removeOpen').setStyle(ButtonStyle.Secondary).setLabel('Remove chips');
+  const saveBtn = new ButtonBuilder().setCustomId('folder:save').setStyle(ButtonStyle.Success).setLabel('Save');
+
+  await ix.reply({ ephemeral: true, embeds: [e],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(addBtn, remBtn, saveBtn)] });
 }
 
 export async function onOpenAdd(ix: ButtonInteraction) {
-  const userId = ix.user.id;
-  const bundle = getBundle();
-  const folderIds = readFolder(userId);
-  const curCounts = countBy(folderIds);
-  const remainSlots = Math.max(0, MAX_FOLDER - folderIds.length);
+  const inv = getInventory(ix.user.id);
+  const b = getBundle();
+  const options = inv
+    .filter(row => !(b.chips[row.chip_id]?.is_upgrade)) // cannot add upgrades
+    .map(row => {
+      const c: any = b.chips[row.chip_id] || {};
+      const name = c.name || row.chip_id;
+      const cap = maxCopiesForChip(row.chip_id);
+      return {
+        label: `${name} (own ${row.qty}, cap ${cap})`,
+        value: row.chip_id,
+      };
+    })
+    .slice(0, 25);
 
-  // Inventory map: chip_id -> qty
-  const invRows = getInventory(userId) as any[]; // expect [{chip_id, qty}]
-  const invMap = new Map<string, number>();
-  for (const r of invRows) invMap.set(r.chip_id, (invMap.get(r.chip_id) || 0) + (Number(r.qty) || 0));
-
-  type Opt = { id: string; canAdd: number; label: string };
-  const opts: Opt[] = [];
-  for (const [id, qty] of invMap.entries()) {
-    const have = curCounts.get(id) || 0;
-    const cap = maxCopiesForChip(id);
-    const byCap = Math.max(0, cap - have);
-    const byInv = Math.max(0, qty - have);
-    const canAdd = Math.min(byCap, byInv, remainSlots);
-    if (canAdd <= 0) continue;
-
-    const c: any = bundle.chips[id] || {};
-    const name = c.name || id;
-    const code = c.letters || c.code || '';
-    const label = `${name}${code ? ` [${code}]` : ''} ×${canAdd}`;
-    opts.push({ id, canAdd, label: label.slice(0, 100) });
+  if (!options.length) {
+    await ix.reply({ ephemeral: true, content: 'You have no chips to add.' });
+    return;
   }
-
-  opts.sort((a, b) => a.label.localeCompare(b.label));
 
   const select = new StringSelectMenuBuilder()
     .setCustomId('folder:addSelect')
-    .setPlaceholder(opts.length ? 'Select chips to add (adds up to shown ×N)' : 'No eligible chips to add')
-    .setMinValues(0)
-    .setMaxValues(Math.min(25, opts.length));
-  if (opts.length) {
-    select.addOptions(
-      opts.slice(0, 25).map((o: Opt) => ({ label: o.label, value: `${o.id}|${o.canAdd}` }))
-    );
-  }
+    .setMinValues(1)
+    .setMaxValues(Math.min(10, options.length))
+    .setPlaceholder('Select chips to add')
+    .addOptions(options);
 
-  const embed = folderEmbed(userId, true);
-  await ix.update({
-    embeds: [embed],
-    components: [
-      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
-      backToEditButtons(),
-    ],
+  await ix.reply({
+    ephemeral: true,
+    content: 'Pick chips to add:',
+    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
   });
 }
 
 export async function onOpenRemove(ix: ButtonInteraction) {
-  const userId = ix.user.id;
-  const bundle = getBundle();
-  const ids = readFolder(userId);
-
-  const options = ids.map((cid: string, i: number) => {
-    const c: any = bundle.chips[cid] || {};
-    const label = `${String(i + 1).padStart(2, ' ')}. ${c.name || cid}${c.letters ? ` [${c.letters}]` : ''}`.slice(0, 100);
-    return { label, value: String(i + 1) };
-  }).slice(0, 25);
-
-  const sel = new StringSelectMenuBuilder()
-    .setCustomId('folder:removeSelect')
-    .setPlaceholder(options.length ? 'Select chip(s) to remove' : 'Folder is empty')
-    .setMinValues(0)
-    .setMaxValues(options.length || 1);
-  if (options.length) sel.addOptions(options);
-
-  const embed = folderEmbed(userId, true);
-  await ix.update({
-    embeds: [embed],
-    components: [
-      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(sel),
-      backToEditButtons(),
-    ],
-  });
-}
-
-// ---------------- Select handlers ----------------
-export async function onAddSelect(ix: StringSelectMenuInteraction) {
-  const userId = ix.user.id;
-  const selections = (ix.values || []).slice(0, 25);
-  if (!selections.length) {
-    await onEdit(ix as unknown as ButtonInteraction);
+  const folder = getFolder(ix.user.id);
+  const b = getBundle();
+  if (!folder.length) {
+    await ix.reply({ ephemeral: true, content: 'Folder is empty.' });
     return;
   }
 
-  const invRows = getInventory(userId) as any[];
-  const invMap = new Map<string, number>();
-  for (const r of invRows) invMap.set(r.chip_id, (invMap.get(r.chip_id) || 0) + (Number(r.qty) || 0));
+  // Present first 25 entries (with duplicates)
+  const options = folder.slice(0, 25).map((id, i) => {
+    const c: any = b.chips[id] || {};
+    const name = c.name || id;
+    return { label: `${i+1}. ${name}`, value: `${i}:${id}` };
+  });
 
-  let next = readFolder(userId);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('folder:removeSelect')
+    .setMinValues(1)
+    .setMaxValues(Math.min(10, options.length))
+    .setPlaceholder('Select chips to remove (by slot)')
+    .addOptions(options);
 
-  for (const raw of selections) {
-    const [id, countStr] = String(raw).split('|');
-    let req = Math.max(1, parseInt(countStr, 10) || 1);
+  await ix.reply({
+    ephemeral: true,
+    content: 'Pick entries to remove:',
+    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
+  });
+}
 
-    while (req > 0 && next.length < MAX_FOLDER) {
-      const invQty = invMap.get(id) || 0;
-      const haveNow = next.filter(x => x === id).length;
-      const cap = maxCopiesForChip(id);
-      if (haveNow >= cap) break;
-      if (haveNow >= invQty) break;
-      next.push(id);
-      req -= 1;
-    }
+export async function onAddSelect(ix: StringSelectMenuInteraction) {
+  const userId = ix.user.id;
+  const b = getBundle();
+  let folder = getFolder(userId);
+
+  // Apply additions
+  for (const id of ix.values) {
+    // Only add if not upgrade and within caps + inventory
+    const c: any = b.chips[id] || {};
+    if (c?.is_upgrade) continue;
+    folder = [...folder, id];
   }
 
-  writeFolder(userId, next);
-  const embed = folderEmbed(userId, true);
-  await ix.update({ embeds: [embed], components: [editButtons()] });
+  const v = validateFolder(userId, folder);
+  if (!v.ok) {
+    await ix.reply({ ephemeral: true, content: `❌ ${v.error}` });
+    return;
+  }
+
+  setFolder(userId, folder);
+  const e = new EmbedBuilder()
+    .setTitle('🗂️ Folder updated')
+    .setDescription(formatFolder(folder))
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER}` });
+  await ix.reply({ ephemeral: true, embeds: [e] });
 }
 
 export async function onRemoveSelect(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
-  const slots = (ix.values || []).map(v => parseInt(v, 10)).filter(n => Number.isFinite(n));
-  const cur = readFolder(userId);
-  if (!slots.length || !cur.length) {
-    await onEdit(ix as unknown as ButtonInteraction);
+  let folder = getFolder(userId);
+
+  // values are like "12:heatshot"
+  const indexes = ix.values
+    .map(v => parseInt(v.split(':')[0], 10))
+    .filter(n => Number.isFinite(n))
+    .sort((a,b)=>b-a); // remove from end first
+
+  for (const idx of indexes) {
+    if (idx >= 0 && idx < folder.length) folder.splice(idx, 1);
+  }
+
+  const v = validateFolder(userId, folder);
+  if (!v.ok) {
+    await ix.reply({ ephemeral: true, content: `❌ ${v.error}` });
     return;
   }
-  const toRemove = new Set(slots);
-  const next = cur.filter((_cid, idx) => !toRemove.has(idx + 1));
-  writeFolder(userId, next);
-  const embed = folderEmbed(userId, true);
-  await ix.update({ embeds: [embed], components: [editButtons()] });
+
+  setFolder(userId, folder);
+  const e = new EmbedBuilder()
+    .setTitle('🗂️ Folder updated')
+    .setDescription(formatFolder(folder))
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER}` });
+  await ix.reply({ ephemeral: true, embeds: [e] });
 }
 
-// ---------------- util ----------------
-function countBy(ids: string[]): Map<string, number> {
-  const m = new Map<string, number>();
-  for (const id of ids) m.set(id, (m.get(id) || 0) + 1);
-  return m;
+export async function onSave(ix: ButtonInteraction) {
+  const folder = getFolder(ix.user.id);
+  const e = new EmbedBuilder()
+    .setTitle('✅ Folder saved')
+    .setDescription(formatFolder(folder))
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER}` });
+  await ix.reply({ ephemeral: true, embeds: [e] });
 }

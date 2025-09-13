@@ -1,202 +1,294 @@
-// jack_in.ts
-// Jack-in hub with Encounter / Travel / Shop buttons.
-// - Uses render.renderJackInHub() for the hub
-// - Encounter: chooseEncounterForPlayer() → startBattle()
-// - Shop: inline region-scoped shop view (dropdown + Buy/Exit)
-// - Travel: prompts user to run /travel (keeps this module decoupled)
-
+// src/commands/jack_in.ts
 import {
   SlashCommandBuilder,
-  type ChatInputCommandInteraction,
-  type ButtonInteraction,
+  ChatInputCommandInteraction,
+  StringSelectMenuBuilder,
+  StringSelectMenuInteraction,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder,
-  type StringSelectMenuInteraction,
+  ButtonInteraction,
   EmbedBuilder,
-  inlineCode,
 } from 'discord.js';
 
-import { ensurePlayer, getPlayer } from '../lib/db';
-import { getRegionById, resolveShopInventory, priceForShopItem, getChipById } from '../lib/data';
-import { renderJackInHub, HUB_IDS } from '../lib/render';
-import { chooseEncounterForPlayer } from '../lib/encounter';
-import { startBattle, handlePick as battleHandlePick, handleLock as battleHandleLock, handleRun as battleHandleRun } from '../lib/battle';
+import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
+import { getBundle } from '../lib/data';
+import { getPlayer, setRegion, setZone } from '../lib/db';
+import { startEncounterBattle } from '../lib/battle';
+import { battleEmbed } from '../lib/render';
 
-// Reuse the shop handlers/model so ID contracts stay consistent.
-import { handleShopButton as shopHandleButton, handleShopSelect as shopHandleSelect } from '../commands/shop';
+// region background (supports both env names)
+const JACK_GIF =
+  process.env.JACK_IN_GIF_URL ||
+  process.env.JACKIN_GIF_URL ||
+  undefined;
 
-// -------------------------------
-// Slash command
-// -------------------------------
+const BOSS_ENCOUNTER = parseFloat(process.env.BOSS_ENCOUNTER || '0.10');
+
+/* ------------------------------ helpers ------------------------------ */
+
+// parse "1,2,4-6" → [1,2,4,5,6]
+function parseZones(raw: unknown): number[] {
+  if (Array.isArray(raw)) return raw.map(Number).filter(Number.isFinite);
+  if (typeof raw === 'number') return Number.isFinite(raw) ? [raw] : [];
+
+  const s = String(raw ?? '').trim();
+  if (!s) return [];
+  const out: number[] = [];
+  for (const part of s.split(',')) {
+    const p = part.trim();
+    const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      let a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+      if (a > b) [a, b] = [b, a];
+      for (let x = a; x <= b; x++) out.push(x);
+    } else {
+      const n = parseInt(p, 10);
+      if (!Number.isNaN(n)) out.push(n);
+    }
+  }
+  return out;
+}
+
+const isBoss = (v: any) => String(v?.category || '').toLowerCase().includes('boss');
+const zonesMatch = (v: any, zone: number) => {
+  const list = parseZones(v?.zones);
+  return list.length === 0 ? true : list.includes(zone);
+};
+
+function pickEncounter(regionId: string, zone: number) {
+  const { viruses } = getBundle();
+  const normRegion = String(regionId || '').trim();
+  const inRegion = (v: any) => String(v?.region || '').trim() === normRegion && zonesMatch(v, zone);
+
+  const inZone = Object.values(viruses).filter(inRegion);
+  const bosses = inZone.filter(isBoss);
+  const normals = inZone.filter(v => !isBoss(v));
+
+  if (normals.length === 0 && bosses.length > 0) {
+    return { enemy_kind: 'boss' as const, virus: bosses[0] };
+  }
+  if (bosses.length && Math.random() < BOSS_ENCOUNTER) {
+    return { enemy_kind: 'boss' as const, virus: bosses[0] };
+  }
+  if (normals.length) {
+    const pick = normals[Math.floor(Math.random() * normals.length)];
+    return { enemy_kind: 'virus' as const, virus: pick };
+  }
+
+  throw new Error(`NO_ENCOUNTERS`);
+}
+
+/* ------------------------------ slash ------------------------------ */
 
 export const data = new SlashCommandBuilder()
   .setName('jack_in')
-  .setDescription('Jack into the network and choose your next action');
+  .setDescription('Jack in to a region, travel zones, and start encounters');
 
-export async function execute(interaction: ChatInputCommandInteraction) {
-  const userId = interaction.user.id;
-  const p = ensurePlayer(userId);
-  const regionId = p.region_id ?? (process.env.START_REGION_ID || 'den_city');
-  const regionLabel = getRegionById(regionId)?.label ?? regionId;
+export async function execute(ix: ChatInputCommandInteraction) {
+  ensureStartUnlocked(ix.user.id);
+  const unlocked = listUnlocked(ix.user.id);
+  const { regions } = getBundle();
 
-  const hub = renderJackInHub(regionLabel);
-  await interaction.reply({
-    embeds: [hub.embed],
-    components: hub.components,
-    ephemeral: true,
+  const options = unlocked
+    .map(id => ({ id, name: regions[id]?.name || id }))
+    .map(r => ({ label: r.name, value: r.id }))
+    .slice(0, 25);
+
+  if (!options.length) {
+    await ix.reply({ ephemeral: true, content: 'No regions unlocked yet.' });
+    return;
+  }
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('jackin:selectRegion')
+    .setPlaceholder('Select a region')
+    .addOptions(options);
+
+  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+
+  const embed = new EmbedBuilder()
+    .setTitle('Jack-In')
+    .setDescription('Pick a region to enter.')
+    .setImage(JACK_GIF || null);
+
+  await ix.reply({ ephemeral: false, embeds: [embed], components: [row] });
+}
+
+export async function onSelectRegion(ix: StringSelectMenuInteraction) {
+  const regionId = ix.values[0];
+  const userId = ix.user.id;
+
+  await setRegion(userId, regionId);
+  await setZone(userId, 1);
+
+  const { regions } = getBundle();
+  const region = regions[regionId];
+
+  const embed = new EmbedBuilder()
+    .setTitle('✅ Jacked In')
+    .setDescription(`Region: **${region?.name || regionId}**, Zone: **1**`)
+    .setImage(JACK_GIF || region?.background_url || null)
+    .setFooter({ text: 'You can Encounter or Travel.' });
+
+  const encounterBtn = new ButtonBuilder()
+    .setCustomId('jackin:encounter')
+    .setStyle(ButtonStyle.Primary)
+    .setLabel('Encounter');
+
+  const travelBtn = new ButtonBuilder()
+    .setCustomId('jackin:openTravel')
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel('Travel');
+
+  await ix.update({
+    content: '',
+    embeds: [embed],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(encounterBtn, travelBtn)],
   });
 }
 
-// -------------------------------
-// Button router for hub actions
-// -------------------------------
+export async function onOpenTravel(ix: ButtonInteraction) {
+  const userId = ix.user.id;
+  const p: any = await getPlayer(userId);
+  const { regions } = getBundle();
 
-export async function handleHubButton(ix: ButtonInteraction) {
-  const id = ix.customId;
-
-  // ENCOUNTER → pick virus & launch battle
-  if (id === HUB_IDS.ENCOUNTER) {
-    try {
-      const pick = await chooseEncounterForPlayer(ix.user.id);
-      const view = startBattle(ix.user.id, pick.virus_id);
-      await ix.update({ embeds: [view.embed], components: view.components });
-    } catch (e) {
-      // Stay silent to user; render hub again if something odd happened.
-      const p = getPlayer(ix.user.id)!;
-      const regionLabel = p.region_id ? (getRegionById(p.region_id)?.label ?? p.region_id) : '—';
-      const hub = renderJackInHub(regionLabel);
-      await ix.update({ embeds: [hub.embed], components: hub.components });
-    }
+  const region = regions[p?.region_id];
+  if (!region) {
+    await ix.reply({ ephemeral: true, content: 'No region set. Use **/jack_in** first.' });
     return;
   }
 
-  // TRAVEL → suggest running /travel
-  if (id === HUB_IDS.TRAVEL) {
-    await ix.update({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle('🧭 Travel')
-          .setDescription('Use the `/travel` command to move to a new region.')
-      ],
-      components: [
-        new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder().setCustomId(HUB_IDS.ENCOUNTER).setStyle(ButtonStyle.Primary).setLabel('Encounter'),
-          new ButtonBuilder().setCustomId(HUB_IDS.SHOP).setStyle(ButtonStyle.Secondary).setLabel('Shop'),
-        )
-      ],
-    });
-    return;
-  }
+  const zoneSelect = new StringSelectMenuBuilder()
+    .setCustomId('jackin:selectZone')
+    .setPlaceholder(`Select a zone in ${region.name}`)
+    .addOptions(
+      Array.from({ length: region.zone_count || 1 }, (_, i) => {
+        const z = String(i + 1);
+        return { label: `Zone ${z}`, value: z };
+      })
+    );
 
-  // SHOP → open region shop view directly (no extra click)
-  if (id === HUB_IDS.SHOP) {
-    const p = getPlayer(ix.user.id)!;
-    const regionId = p.region_id ?? (process.env.START_REGION_ID || 'den_city');
-    const message = buildInlineShopMessage(ix.user.id, regionId, null);
-    await ix.update({ embeds: [message.embed], components: message.components });
-    return;
-  }
-
-  // Pass-through for the battle and shop custom IDs (useful if index.ts routes everything here)
-  if (id.startsWith('lock:')) return battleHandleLock(ix);
-  if (id.startsWith('run:')) return battleHandleRun(ix);
-  if (id.startsWith('shop:')) return shopHandleButton(ix);
+  await ix.reply({
+    ephemeral: true,
+    content: `Travel within **${region.name}**: choose a zone.`,
+    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(zoneSelect)],
+  });
 }
 
-// If your index.ts routes select menus here too:
-export async function handleSelect(ix: StringSelectMenuInteraction) {
-  if (ix.customId.startsWith('pick:')) return battleHandlePick(ix);
-  if (ix.customId === 'shop:select') return shopHandleSelect(ix);
-}
+export async function onSelectZone(ix: StringSelectMenuInteraction) {
+  const userId = ix.user.id;
+  const zone = parseInt(ix.values[0], 10);
+  await setZone(userId, zone);
 
-// -------------------------------
-// Inline Shop View (same UX as /shop, but opened from Jack-in)
-// -------------------------------
+  const p: any = await getPlayer(userId);
+  const { regions } = getBundle();
+  const region = regions[p?.region_id];
 
-function buildInlineShopMessage(
-  userId: string,
-  regionId: string,
-  selectedChipId: string | null
-): { embed: EmbedBuilder; components: any[] } {
-  const p = getPlayer(userId)!;
-  const regionLabel = getRegionById(regionId)?.label ?? regionId;
+  const encounterBtn = new ButtonBuilder()
+    .setCustomId('jackin:encounter')
+    .setStyle(ButtonStyle.Primary)
+    .setLabel('Encounter');
 
-  const items = resolveShopInventory(regionId);
-  const options = items.map((it) => ({
-    label: truncate(`${it.name}`, 75),
-    description: truncate(`Price: ${it.zenny_price}z${it.is_upgrade ? ' • Upgrade' : ''}`, 100),
-    value: it.item_id,
-  }));
-
-  let selected = selectedChipId
-    ? items.find((x) => x.item_id === selectedChipId) ?? null
-    : (items[0] ?? null);
+  const travelBtn = new ButtonBuilder()
+    .setCustomId('jackin:openTravel')
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel('Travel');
 
   const embed = new EmbedBuilder()
-    .setTitle('🛒 Net Shop')
-    .setDescription(
-      [
-        `**Region:** ${inlineCode(regionLabel)}`,
-        `**Your Zenny:** ${inlineCode(String(p.zenny))}`,
-        '',
-        items.length
-          ? 'Select an item from the dropdown, then press **Buy**.'
-          : 'No items are available in this region.',
-      ].join('\n')
-    );
+    .setTitle('🗺️ Travelled')
+    .setDescription(`Region: **${region?.name || p?.region_id}**, Zone: **${zone}**`)
+    .setImage(JACK_GIF || region?.background_url || null);
 
-  if (selected) {
-    const chip = selected.chip;
-    const details: string[] = [];
-    if ((chip as any).element) details.push(`Element: ${inlineCode(String((chip as any).element))}`);
-    if ((chip as any).power) details.push(`Power: ${inlineCode(String((chip as any).power))}`);
-    if ((chip as any).hits) details.push(`Hits: ${inlineCode(String((chip as any).hits))}`);
-    if ((chip as any).effects) details.push(`Effects: ${inlineCode(String((chip as any).effects))}`);
-    if ((chip as any).description) details.push(String((chip as any).description));
-
-    embed.addFields({
-      name: `${selected.name} ${selected.is_upgrade ? '• Upgrade' : ''}`,
-      value: [
-        `Price: ${inlineCode(`${selected.zenny_price}z`)}`,
-        details.length ? details.join(' • ') : '—',
-      ].join('\n'),
-    });
-  }
-
-  const rowSelect =
-    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId('shop:select')
-        .setPlaceholder('Choose an item...')
-        .setMinValues(1)
-        .setMaxValues(1)
-        .addOptions(options)
-    );
-
-  // Reuse the purchase and exit IDs from commands/shop.ts:
-  const buyCustomId = selected ? `shop:buy:${regionId}:${selected.item_id}` : `shop:buy:${regionId}:_`;
-  const rowButtons =
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(buyCustomId)
-        .setStyle(ButtonStyle.Primary)
-        .setLabel(selected ? `Buy (${selected.zenny_price}z)` : 'Buy')
-        .setDisabled(!selected || items.length === 0),
-      new ButtonBuilder()
-        .setCustomId('shop:exit')
-        .setStyle(ButtonStyle.Secondary)
-        .setLabel('Exit')
-    );
-
-  return { embed, components: [rowSelect, rowButtons] };
+  await ix.update({
+    content: '',
+    embeds: [embed],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(encounterBtn, travelBtn)],
+  });
 }
 
-// -------------------------------
-// Small helpers
-// -------------------------------
+// Encounter → start battle and show pick UI with virus art & region background
+export async function onEncounter(ix: ButtonInteraction) {
+  const userId = ix.user.id;
+  const p: any = await getPlayer(userId);
+  const regionId = p?.region_id;
+  let zone = Number(p?.region_zone || p?.zone || 1);
 
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+  if (!regionId) {
+    await ix.reply({ ephemeral: true, content: 'No region set. Use **/jack_in** first.' });
+    return;
+  }
+
+  const { regions, chips } = getBundle();
+  const reg = regions[regionId];
+  const maxZone = Math.max(1, Number(reg?.zone_count || 1));
+  if (zone < 1 || zone > maxZone) { zone = 1; await setZone(userId, zone); }
+
+  // Strict region+zone search; retry a handful of times to avoid flukes; never spill to other zones/regions.
+  let enemy_kind: 'virus' | 'boss' = 'virus';
+  let virus: any = null;
+  for (let i = 0; i < 10; i++) {
+    try {
+      const res = pickEncounter(regionId, zone);
+      enemy_kind = res.enemy_kind;
+      virus = res.virus;
+      break;
+    } catch {}
+  }
+  if (!virus) {
+    // As requested: do not emit ephemeral debug; just quietly no-op.
+    await ix.deferUpdate();
+    return;
+  }
+
+  const { battleId, state } = startEncounterBattle({
+    user_id: userId,
+    enemy_kind,
+    enemy_id: virus.id,
+    region_id: regionId,
+    zone,
+  });
+
+  const hand: string[] = Array.isArray(state?.hand) ? state.hand : [];
+
+  const makeSelect = (slot: 1 | 2 | 3) => {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(`pick${slot}:${battleId}`)
+      .setPlaceholder(`Pick ${slot}`)
+      .setMinValues(0)
+      .setMaxValues(1);
+
+    const opts = hand.map((cid) => {
+      const c: any = chips[cid] || {};
+      const name = c.name || cid;
+      const code = c.code || c.letters || '';
+      const pwr  = c.power || c.power_total || '';
+      const hits = c.hits || 1;
+      const label = `${name}${code ? ` [${code}]` : ''}${pwr ? ` ${pwr}×${hits}` : ''}`;
+      return { label, value: cid };
+    });
+    if (opts.length) select.addOptions(opts);
+    return select;
+  };
+
+  const row1 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(1));
+  const row2 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(2));
+  const row3 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(3));
+
+  const lockBtn = new ButtonBuilder().setCustomId(`lock:${battleId}`).setStyle(ButtonStyle.Success).setLabel('Lock Turn');
+  const runBtn  = new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Secondary).setLabel('Run');
+
+  const row4 = new ActionRowBuilder<ButtonBuilder>().addComponents(lockBtn, runBtn);
+
+  const embed = battleEmbed(state, {
+    playerName: ix.user.username,
+    playerAvatar: ix.user.displayAvatarURL(),
+    regionId,
+  });
+
+  await ix.reply({
+    ephemeral: false,
+    embeds: [embed],
+    components: [row1, row2, row3, row4],
+  });
 }

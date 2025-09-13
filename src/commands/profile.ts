@@ -1,79 +1,28 @@
-// profile.ts
-// Slash command: /profile
-// - Shows live stats (including upgrades applied instantly via db.ts)
-// - Displays XP progress as current/next (e.g., 100/1000)
-// - Shows Zenny, Level, Region, and core combat stats
-// - Provides a reusable renderProfileEmbed() for other modules
-
-import {
-  SlashCommandBuilder,
-  type ChatInputCommandInteraction,
-  EmbedBuilder,
-  inlineCode,
-} from 'discord.js';
-import {
-  ensurePlayer,
-  getPlayer,
-  getRegion as dbGetRegion,
-  getXPProgress,
-  type Player,
-} from '../lib/db'; // adjust relative path if needed in your project
-import { getRegionById } from '../lib/data'; // region label lookup
-
-// -------------------------------
-// Command definition & handler
-// -------------------------------
+import { SlashCommandBuilder, ChatInputCommandInteraction, EmbedBuilder } from 'discord.js';
+import { getPlayer, listInventory } from '../lib/db';
 
 export const data = new SlashCommandBuilder()
   .setName('profile')
-  .setDescription('View your Net Battler profile');
+  .setDescription('View your Navi profile')
+  .addUserOption(o => o.setName('user').setDescription('View another user').setRequired(false));
 
-// Main entry for index.ts to call
-export async function execute(interaction: ChatInputCommandInteraction) {
-  const userId = interaction.user.id;
+export async function execute(ix: ChatInputCommandInteraction) {
+  const user = ix.options.getUser('user') ?? ix.user;
+  const p = getPlayer(user.id);
+  if (!p) { await ix.reply({ ephemeral: true, content: '❌ No profile. Run **/start** first.' }); return; }
 
-  // Ensure the player exists, then fetch fresh data
-  ensurePlayer(userId);
-  const p = getPlayer(userId)!;
-
-  const embed = renderProfileEmbed(userId, p);
-  await interaction.reply({ embeds: [embed], ephemeral: true });
-}
-
-// -------------------------------
-// Rendering
-// -------------------------------
-
-export function renderProfileEmbed(userId: string, p?: Player): EmbedBuilder {
-  const player = p ?? getPlayer(userId)!;
-  const xp = getXPProgress(userId);
-
-  // Region label
-  const regionId = player.region_id ?? null;
-  const regionLabel = regionId ? (getRegionById(regionId)?.label ?? regionId) : '—';
-
-  // XP display
-  const xpLine = `${xp.xp_total}/${xp.next_threshold}`;
-
-  // Build a clean, compact profile embed
+  const inv = listInventory(user.id).slice(0, 12).map(x => `${x.chip_id} ×${x.qty}`).join(' • ') || '—';
   const embed = new EmbedBuilder()
-    .setTitle('📇 Net Battler — Profile')
-    .setDescription(
-      [
-        `**User:** <@${userId}>`,
-        `**Region:** ${inlineCode(regionLabel)}`,
-        `**Level:** ${inlineCode(String(xp.level))}`,
-        `**XP:** ${inlineCode(xpLine)}`,
-        `**Zenny:** ${inlineCode(String(player.zenny))}`,
-        '',
-        `**Stats**`,
-        `HP Max: ${inlineCode(String(player.hp_max))}`,
-        `ATK: ${inlineCode(String(player.atk))}   DEF: ${inlineCode(String(player.def))}`,
-        `SPD: ${inlineCode(String(player.spd))}   ACC: ${inlineCode(String(player.acc))}`,
-        `EVA: ${inlineCode(String(player.evasion))}   CRIT: ${inlineCode(String(player.crit))}`,
-      ].join('\n')
-    )
-    .setFooter({ text: 'Use /travel to move regions, /jack-in to explore, or /folder to manage battle chips.' });
-
-  return embed;
+    .setAuthor({ name: `${user.username}.EXE`, iconURL: user.displayAvatarURL() })
+    .setTitle('Navi Profile')
+    .setThumbnail(user.displayAvatarURL())
+    .addFields(
+      { name: 'Element', value: String(p.element), inline: true },
+      { name: 'Level', value: String(p.level), inline: true },
+      { name: 'HP', value: String(p.hp_max), inline: true },
+      { name: 'Stats', value: `ATK ${p.atk} • DEF ${p.def} • SPD ${p.spd}\nACC ${p.acc}% • EVA ${p.evasion}%`, inline: false },
+      { name: 'Zenny', value: String(p.zenny), inline: true },
+      { name: 'Inventory (top)', value: inv, inline: false },
+    );
+  await ix.reply({ ephemeral: true, embeds: [embed] });
 }
