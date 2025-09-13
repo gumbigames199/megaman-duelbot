@@ -99,8 +99,11 @@ export async function renderJackInHUD(ix: ButtonInteraction | StringSelectMenuIn
   const embed = new EmbedBuilder()
     .setTitle('✅ Jacked In')
     .setDescription(`Region: **${region?.name || p?.region_id || '—'}**, Zone: **${zone}**`)
-    .setImage(JACK_GIF || region?.background_url || null)
     .setFooter({ text: 'You can Encounter, Travel, or Shop.' });
+
+  // Prefer jack-in GIF; fall back to region background if present
+  const imageUrl = JACK_GIF || region?.background_url || '';
+  if (imageUrl) embed.setImage(imageUrl);
 
   const encounterBtn = new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter');
   const travelBtn    = new ButtonBuilder().setCustomId('jackin:openTravel').setStyle(ButtonStyle.Secondary).setLabel('Travel');
@@ -149,8 +152,10 @@ export async function execute(ix: ChatInputCommandInteraction) {
   const embed = new EmbedBuilder()
     .setTitle('🔌 Jack In')
     .setDescription('Pick a region to enter. You will start at **Zone 1**.')
-    .setImage(JACK_GIF || regionsUnlocked[0]?.background_url || null)
     .setFooter({ text: 'Step 1 — Region' });
+
+  const splash = JACK_GIF || regionsUnlocked[0]?.background_url || '';
+  if (splash) embed.setImage(splash);
 
   await ix.reply({
     ephemeral: true,
@@ -237,9 +242,11 @@ export async function onEncounter(ix: ButtonInteraction) {
     // encounter header embed with virus image
     const header = new EmbedBuilder()
       .setTitle(`${virus.name}`)
-      .setDescription(`Enemy HP: **${virus.hp ?? 0}** • Kind: **${enemy_kind === 'boss' ? 'Boss' : 'Virus'}**`)
-      .setThumbnail(virus.image_url || virus.anim_url || null)
-      .setImage(reg?.background_url || null);
+      .setDescription(`Enemy HP: **${virus.hp ?? 0}** • Kind: **${enemy_kind === 'boss' ? 'Boss' : 'Virus'}**`);
+    const thumb = virus.image_url || virus.anim_url || '';
+    if (thumb) header.setThumbnail(thumb);
+    const bg = reg?.background_url || '';
+    if (bg) header.setImage(bg);
 
     // build 3 pickers from opening hand
     const hand: string[] = Array.isArray(state?.hand) ? state.hand : [];
@@ -310,7 +317,7 @@ function applyUpgradeImmediate(userId: string, chip: any): string {
     const m = text.match(rx);
     return m ? parseInt(m[1], 10) : 0;
   };
-  // very forgiving patterns like "HP+50", "atk +2", etc.
+  // forgiving patterns like "HP+50", "atk +2", etc.
   const dHP  = apply(/(?:hp_max|max\s*hp|hp)\s*([+-]?\d+)/i);
   const dATK = apply(/atk\s*([+-]?\d+)/i);
   const dDEF = apply(/def\s*([+-]?\d+)/i);
@@ -369,8 +376,9 @@ export async function onOpenShop(ix: ButtonInteraction) {
 
   const embed = new EmbedBuilder()
     .setTitle(`🛒 ${region.name} Shop`)
-    .setDescription('Pick an item, then **Buy**.\nPrices reflect chip `zenny_cost` from your TSV.')
-    .setImage(region.background_url || null);
+    .setDescription('Pick an item, then **Buy**.\nPrices reflect chip `zenny_cost` from your TSV.');
+  const bg = region.background_url || '';
+  if (bg) embed.setImage(bg);
 
   await ix.reply({
     ephemeral: true,
@@ -389,8 +397,9 @@ export async function onShopSelect(ix: StringSelectMenuInteraction) {
   const price = chipPrice(id);
   const embed = new EmbedBuilder()
     .setTitle(c.name || id)
-    .setDescription(`${c.description || '—'}\n\nPrice: **${price}z**`)
-    .setThumbnail(c.image_url || null);
+    .setDescription(`${c.description || '—'}\n\nPrice: **${price}z**`);
+  const thumb = c.image_url || '';
+  if (thumb) embed.setThumbnail(thumb);
 
   const buy  = new ButtonBuilder().setCustomId(`jackin:shopBuy:${id}`).setStyle(ButtonStyle.Success).setLabel(`Buy for ${price}z`);
   const exit = new ButtonBuilder().setCustomId('jackin:shopExit').setStyle(ButtonStyle.Secondary).setLabel('Exit');
