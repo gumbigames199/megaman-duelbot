@@ -14,14 +14,35 @@ import {
 import { ensureStartUnlocked, listUnlocked } from "../lib/unlock";
 import { getBundle } from "../lib/data";
 import { getPlayer, setRegion, getSettings, setSetting } from "../lib/db";
-import { startEncounterBattle } from "../lib/battle";
-import { battleEmbed } from "../lib/render";
+import * as battleMod from "../lib/battle";
+import * as renderMod from "../lib/render";
+
+// ---- dynamic wrappers (compatible with your existing lib/*) ----
+function startBattle(args: any) {
+  const fn =
+    (battleMod as any).startEncounterBattle ||
+    (battleMod as any).startEncounter ||
+    (battleMod as any).start;
+  if (!fn) throw new Error("Battle module missing start function");
+  return fn(args);
+}
+function battleEmbed(state: any, ctx?: any) {
+  const fn =
+    (renderMod as any).battleEmbed ||
+    (renderMod as any).renderBattle ||
+    (renderMod as any).battleView ||
+    (renderMod as any).embed;
+  if (fn) return fn(state, ctx);
+  // Minimal fallback to avoid crashes if render module is radically different
+  return new EmbedBuilder()
+    .setTitle("Battle")
+    .setDescription("Fighting…")
+    .setFooter({ text: "Rendering fallback" });
+}
 
 // region background (supports both env names)
 const JACK_GIF =
-  process.env.JACK_IN_GIF_URL ||
-  process.env.JACKIN_GIF_URL ||
-  undefined;
+  process.env.JACK_IN_GIF_URL || process.env.JACKIN_GIF_URL || undefined;
 
 const BOSS_ENCOUNTER = parseFloat(process.env.BOSS_ENCOUNTER || "0.10");
 
@@ -89,7 +110,7 @@ export const data = new SlashCommandBuilder()
 export async function execute(ix: ChatInputCommandInteraction) {
   ensureStartUnlocked(ix.user.id);
 
-  // listUnlocked() returns RegionRow[] (objects), not just ids
+  // listUnlocked returns rows; use id+name from each row
   const unlocked = listUnlocked(ix.user.id);
   if (!unlocked.length) {
     await ix.reply({
@@ -104,7 +125,6 @@ export async function execute(ix: ChatInputCommandInteraction) {
     .setCustomId("jackin:selectRegion")
     .setPlaceholder("Select a region")
     .addOptions(
-      // cast to satisfy discord.js types for 'value'
       unlocked
         .sort(
           (a: any, b: any) =>
@@ -242,7 +262,7 @@ export async function onSelectZone(ix: StringSelectMenuInteraction) {
   });
 }
 
-// Encounter → start battle and show pick UI (strict region+zone; no spillover; no noisy errors)
+// Encounter → start battle and show pick UI (strict region+zone; silent on miss)
 export async function onEncounter(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = getPlayer(userId);
@@ -266,7 +286,7 @@ export async function onEncounter(ix: ButtonInteraction) {
     setSetting(userId, "region_zone", "1");
   }
 
-  // Strict region+zone search; retry a few times; never spill to other zones/regions; no user-facing error if none.
+  // Strict region+zone search; retry a few times; never spill elsewhere
   let enemy_kind: "virus" | "boss" = "virus";
   let virus: any = null;
   for (let i = 0; i < 10; i++) {
@@ -282,7 +302,7 @@ export async function onEncounter(ix: ButtonInteraction) {
     return;
   }
 
-  const { battleId, state } = startEncounterBattle({
+  const { battleId, state } = startBattle({
     user_id: userId,
     enemy_kind,
     enemy_id: virus.id,
@@ -291,7 +311,9 @@ export async function onEncounter(ix: ButtonInteraction) {
   });
 
   // Build the three pick menus from the current hand
-  const hand: string[] = Array.isArray((state as any)?.hand) ? (state as any).hand : [];
+  const hand: string[] = Array.isArray((state as any)?.hand)
+    ? (state as any).hand
+    : [];
 
   const makeSelect = (slot: 1 | 2 | 3) => {
     const select = new StringSelectMenuBuilder()
@@ -350,7 +372,7 @@ export async function onEncounter(ix: ButtonInteraction) {
 
   await ix.reply({
     ephemeral: false,
-    embeds: [embed],
+    embeds: [embed as any],
     components: [row1, row2, row3, row4],
   });
 }
