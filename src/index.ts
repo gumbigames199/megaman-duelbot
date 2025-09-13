@@ -13,21 +13,19 @@ import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end, save
 import { rollRewards, rollBossRewards } from './lib/rewards';
 import { progressDefeat } from './lib/missions';
 import { diffNewlyUnlockedRegions } from './lib/unlock';
-import { getRegion, getPlayer } from './lib/db'; // <- getZone removed
+import { getRegion, getPlayer } from './lib/db';
 import { wantDmg } from './lib/settings-util';
 
 import * as Start from './commands/start';
 import * as Profile from './commands/profile';
 import * as Folder from './commands/folder';
-import * as Shop from './commands/shop';
+import * as ShopCmd from './commands/shop'; // (optional legacy slash, kept if you still want it)
 import * as Mission from './commands/mission';
 import * as Leaderboard from './commands/leaderboard';
-import * as Settings from './commands/settings';
 import * as Chip from './commands/chip';
 import * as VirusDex from './commands/virusdex';
 import * as JackIn from './commands/jack_in';
 
-// ---- Env checks ----
 const TOKEN    = process.env.DISCORD_TOKEN!;
 const APP_ID   = process.env.CLIENT_ID || process.env.APPLICATION_ID!;
 const GUILD_ID = process.env.GUILD_ID!;
@@ -35,25 +33,21 @@ if (!TOKEN)   throw new Error('Missing DISCORD_TOKEN');
 if (!APP_ID)  throw new Error('Missing CLIENT_ID/APPLICATION_ID');
 if (!GUILD_ID) console.warn('⚠️ Missing GUILD_ID (commands will not register guild-scoped)');
 
-// ---- Client ----
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
-  partials: [Partials.Channel],
-});
+const client = new Client({ intents: [GatewayIntentBits.Guilds], partials: [Partials.Channel] });
 
 // ---- Slash commands (guild-scoped) ----
+// Removed /health and all /settings subcommands per request.
 const commands = [
-  new SlashCommandBuilder().setName('health').setDescription('Bot status (ephemeral)'),
   new SlashCommandBuilder()
     .setName('reload_data')
     .setDescription('Reload TSV bundle from /data (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-  Start.data, Profile.data, Folder.data, Shop.data,
+  Start.data, Profile.data, Folder.data,
+  ShopCmd.data,          // keep if you still want /shop; otherwise remove this line
   Mission.data, Leaderboard.data,
-  Settings.data, Chip.data, VirusDex.data, JackIn.data,
+  Chip.data, VirusDex.data, JackIn.data,
 ].map((c: any) => c.toJSON());
 
-// ---- Register (guild) ----
 async function registerCommands() {
   if (!GUILD_ID) return;
   const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -61,7 +55,6 @@ async function registerCommands() {
   console.log(`✅ Registered ${commands.length} guild commands to ${GUILD_ID}`);
 }
 
-// ---- Helpers ----
 function isAdmin(ix: Interaction): boolean {
   const anyIx = ix as any;
   return Boolean(
@@ -70,26 +63,53 @@ function isAdmin(ix: Interaction): boolean {
   );
 }
 
-// ---- Interaction handler (slash + components) ----
+/* ---------- small helpers ---------- */
+function buildPickRows(battleId: string, hand: string[]) {
+  const { chips } = getBundle();
+
+  const makeSelect = (slot: 1 | 2 | 3) => {
+    const sel = new (require('discord.js').StringSelectMenuBuilder)()
+      .setCustomId(`pick${slot}:${battleId}`)
+      .setPlaceholder(`Pick ${slot}`)
+      .setMinValues(0)
+      .setMaxValues(1);
+    const opts = (hand || []).map((cid) => {
+      const c: any = chips[cid] || {};
+      const name = c.name || cid;
+      const code = c.code || c.letters || '';
+      const pwr  = c.power || c.power_total || '';
+      const hits = c.hits || 1;
+      const label = `${name}${code ? ` [${code}]` : ''}${pwr ? ` ${pwr}×${hits}` : ''}`;
+      return { label: label.slice(0, 100), value: cid };
+    });
+    if (opts.length) sel.addOptions(opts);
+    return sel;
+  };
+
+  const row1 = new (require('discord.js').ActionRowBuilder)().addComponents(makeSelect(1));
+  const row2 = new (require('discord.js').ActionRowBuilder)().addComponents(makeSelect(2));
+  const row3 = new (require('discord.js').ActionRowBuilder)().addComponents(makeSelect(3));
+
+  const lockBtn = new (require('discord.js').ButtonBuilder)().setCustomId(`lock:${battleId}`).setStyle(3).setLabel('Lock');
+  const runBtn  = new (require('discord.js').ButtonBuilder)().setCustomId(`run:${battleId}`).setStyle(4).setLabel('Run');
+  const row4 = new (require('discord.js').ActionRowBuilder)().addComponents(lockBtn, runBtn);
+
+  return [row1, row2, row3, row4];
+}
+
+/* ---------- router ---------- */
 client.on('interactionCreate', async (ix) => {
   try {
-    // Slash commands
+    // Slash
     if (ix.isChatInputCommand()) {
-      if (ix.commandName === 'health') {
-        await ix.reply({ content: '✅ Alive. Data path ready. Use /reload_data to validate TSVs.', ephemeral: true });
-        return;
-      }
       if (ix.commandName === 'reload_data') {
         if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', ephemeral: true }); return; }
         await ix.deferReply({ ephemeral: true });
-
         const { report } = loadTSVBundle(process.env.DATA_DIR || './data');
         const counts = Object.entries(report.counts).map(([k, v]) => `${k}:${v}`).join(' • ') || 'none';
         const warnings = report.warnings.length ? `\n⚠️ Warnings:\n- ${report.warnings.join('\n- ')}` : '';
         const errors = report.errors.length ? `\n❌ Errors:\n- ${report.errors.join('\n- ')}` : '';
-
-        invalidateBundleCache(); // refresh in-memory bundle
-
+        invalidateBundleCache();
         await ix.editReply(`📦 TSV load: **${report.ok ? 'OK' : 'ISSUES'}**\nCounts: ${counts}${warnings}${errors}`);
         return;
       }
@@ -97,48 +117,43 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'start')        { await Start.execute(ix); return; }
       if (ix.commandName === 'profile')      { await Profile.execute(ix); return; }
       if (ix.commandName === 'folder')       { await Folder.execute(ix); return; }
-      if (ix.commandName === 'shop')         { await Shop.execute(ix); return; }
+      if (ix.commandName === 'shop')         { await ShopCmd.execute(ix); return; } // optional
       if (ix.commandName === 'mission')      { await Mission.execute(ix); return; }
       if (ix.commandName === 'leaderboard')  { await Leaderboard.execute(ix); return; }
-      if (ix.commandName === 'settings')     { await Settings.execute(ix); return; }
       if (ix.commandName === 'chip')         { await Chip.execute(ix); return; }
       if (ix.commandName === 'virusdex')     { await VirusDex.execute(ix); return; }
       if (ix.commandName === 'jack_in')      { await JackIn.execute(ix); return; }
       return;
     }
 
-    /* ---------- Folder UI routing ---------- */
-    if (ix.isButton()) {
-      if (ix.customId === 'folder:edit')        { await Folder.onEdit(ix);        return; }
-      if (ix.customId === 'folder:save')        { await Folder.onSave(ix);        return; }
-      if (ix.customId === 'folder:addOpen')     { await Folder.onOpenAdd(ix);     return; }
-      if (ix.customId === 'folder:removeOpen')  { await Folder.onOpenRemove(ix);  return; }
-    }
-    if (ix.isStringSelectMenu()) {
-      if (ix.customId === 'folder:addSelect')    { await Folder.onAddSelect(ix);    return; }
-      if (ix.customId === 'folder:removeSelect') { await Folder.onRemoveSelect(ix); return; }
-    }
-
-    /* ---------- Jack-In routing ---------- */
+    // Jack-In routing
     if (ix.isStringSelectMenu()) {
       if (ix.customId === 'jackin:selectRegion') { await JackIn.onSelectRegion(ix); return; }
       if (ix.customId === 'jackin:selectZone')   { await JackIn.onSelectZone(ix);   return; }
+      if (ix.customId === 'jackin:shopSelect')   { await JackIn.onShopSelect(ix);   return; }
     }
     if (ix.isButton()) {
       if (ix.customId === 'jackin:openTravel')   { await JackIn.onOpenTravel(ix);   return; }
       if (ix.customId === 'jackin:encounter')    { await JackIn.onEncounter(ix);    return; }
+      if (ix.customId === 'jackin:openShop')     { await JackIn.onOpenShop(ix);     return; }
+      if (ix.customId === 'jackin:shopExit')     { await JackIn.onShopExit(ix);     return; }
+      if (ix.customId.startsWith('jackin:shopBuy:')) {
+        const chipId = ix.customId.split(':')[2];
+        await JackIn.onShopBuy(ix, chipId);
+        return;
+      }
     }
 
-    /* ---------- Battle pick menus: silent + persisted ---------- */
+    // Battle pick menus (silent & persisted)
     if (ix.isStringSelectMenu()) {
-      const [kind, battleId] = ix.customId.split(':'); // e.g. pick1:abc
+      const [kind, battleId] = ix.customId.split(':');
       if (!/^pick[123]$/.test(kind)) return;
 
       const s = loadBattle(battleId);
       if (!s || s.user_id !== ix.user.id) { await ix.deferUpdate(); return; }
 
       const slotIdx = ({ pick1: 0, pick2: 1, pick3: 2 } as any)[kind] ?? 0;
-      const chosenId = ix.values[0] || ''; // allow clearing (min=0)
+      const chosenId = ix.values[0] || '';
 
       while (s.locked.length < 3) s.locked.push('');
 
@@ -152,32 +167,30 @@ client.on('interactionCreate', async (ix) => {
 
       const chosen = s.locked.filter(Boolean);
       if (chosen.length) {
-        const chipRows = chosen.map(id => ({ id, letters: (getBundle().chips as any)[id]?.letters || '' }));
+        const chipRows = chosen.map(id => ({ id, letters: getBundle().chips[id]?.letters || '' }));
         if (!validateLetterRule(chipRows)) {
-          s.locked[slotIdx] = prev; // revert
+          s.locked[slotIdx] = prev;
           await ix.reply({ ephemeral: true, content: '❌ Invalid combo. Chips must share a letter, exact name, or include *.' });
           return;
         }
       }
 
-      save(s);               // persist the pick
-      await ix.deferUpdate(); // no message clutter
+      save(s);
+      await ix.deferUpdate();
       return;
     }
 
-    /* ---------- Battle buttons: lock or run ---------- */
+    // Battle buttons
     if (ix.isButton()) {
       const [kind, battleId] = ix.customId.split(':');
       const s = loadBattle(battleId); if (!s || s.user_id !== ix.user.id) return;
 
       if (kind === 'run') {
         const ok = tryRun(s);
-        if (ok) {
-          end(battleId);
-          await ix.reply({ content: '🏃 You escaped!', ephemeral: false });
-        } else {
-          await ix.reply({ content: '❌ Could not escape!', ephemeral: true });
-        }
+        if (ok) { end(battleId); await ix.reply({ content: '🏃 You escaped!', ephemeral: false }); }
+        else    { await ix.reply({ content: '❌ Could not escape!', ephemeral: true }); }
+        // after escape, bounce to HUD
+        await JackIn.renderJackInHUD(ix);
         return;
       }
 
@@ -187,6 +200,7 @@ client.on('interactionCreate', async (ix) => {
         const regionObj = getRegion(s.user_id);
         const regionId  = regionObj?.region_id || process.env.START_REGION_ID || 'den_city';
 
+        // public combat screen (shows virus image via render)
         const embed = battleEmbed(s, {
           playerName: ix.user.username,
           playerAvatar: ix.user.displayAvatarURL?.() || undefined,
@@ -231,11 +245,20 @@ client.on('interactionCreate', async (ix) => {
 
           end(battleId);
           await ix.followUp({ content: `✅ Victory!${extra ? ` ${extra}` : ''}\n${rewardText}`, ephemeral: false });
+
+          // Return to Jack-In HUD so they can continue exploring
+          await JackIn.renderJackInHUD(ix);
         } else if (res.outcome === 'defeat') {
           end(battleId);
           await ix.followUp({ content: `💀 Defeat…${extra ? ` ${extra}` : ''}`, ephemeral: false });
+
+          // Return to Jack-In HUD
+          await JackIn.renderJackInHUD(ix);
         } else {
-          await ix.followUp({ content: `Select next turn via the ephemeral menu.${extra ? `\n${extra}` : ''}`, ephemeral: true });
+          // Ongoing: show fresh ephemeral pickers built from the NEW hand
+          const rows = buildPickRows(battleId, s.hand);
+          await ix.followUp({ ephemeral: true, components: rows });
+          if (extra) await ix.followUp({ ephemeral: true, content: extra });
         }
         return;
       }
@@ -248,7 +271,6 @@ client.on('interactionCreate', async (ix) => {
   }
 });
 
-// ---- Boot ----
 client.once('ready', async () => {
   console.log(`🤖 Logged in as ${client.user?.tag}`);
   await registerCommands().catch(e => console.error('registerCommands', e));

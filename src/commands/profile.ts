@@ -15,6 +15,7 @@ export async function execute(ix: ChatInputCommandInteraction) {
   const embed = new EmbedBuilder()
     .setAuthor({ name: `${user.username}.EXE`, iconURL: user.displayAvatarURL() })
     .setTitle('Navi Profile')
+    .setThumbnail(user.displayAvatarURL())
     .addFields(
       { name: 'Element', value: String(p.element), inline: true },
       { name: 'Level', value: String(p.level), inline: true },
