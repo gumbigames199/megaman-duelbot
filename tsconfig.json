@@ -7,12 +7,8 @@
     "outDir": "dist",
     "esModuleInterop": true,
     "resolveJsonModule": true,
-
     "strict": true,
-    "noImplicitAny": false,               // <-- disable to replace the removed option
-    "skipLibCheck": true,
-    "types": ["node"]
+    "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*.ts"]
 }
