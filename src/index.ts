@@ -1,7 +1,14 @@
+// src/index.ts
 import "dotenv/config";
 import {
-  Client, GatewayIntentBits, REST, Routes,
-  Interaction, ChatInputCommandInteraction, ButtonInteraction, StringSelectMenuInteraction,
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes,
+  Interaction,
+  ChatInputCommandInteraction,
+  ButtonInteraction,
+  StringSelectMenuInteraction,
 } from "discord.js";
 
 import * as start from "./commands/start";
@@ -14,14 +21,34 @@ import * as virusdex from "./commands/virusdex";
 import * as chip from "./commands/chip";
 import * as jackIn from "./commands/jack_in";
 
-const TOKEN = must("DISCORD_TOKEN");
-const CLIENT_ID = must("CLIENT_ID");
-const GUILD_ID = process.env.GUILD_ID || "";
+// -------- env helpers --------
+function must(k: string): string {
+  const v = process.env[k];
+  if (!v || !v.trim()) {
+    console.error(`Missing env ${k}`);
+    process.exit(1);
+  }
+  return v.trim();
+}
 
+const TOKEN = must("DISCORD_TOKEN");
+const APPLICATION_ID = must("APPLICATION_ID"); // use Application ID only (Discord Client ID)
+const GUILD_ID = (process.env.GUILD_ID || "").trim(); // optional – if set, registers to that guild
+
+// -------- client --------
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+// Only register commands we actually ship (NO /health, NO /settings)
 const commandModules = [
-  start, profile, folder, shop, mission, leaderboard, virusdex, chip, jackIn,
+  start,
+  profile,
+  folder,
+  shop,
+  mission,
+  leaderboard,
+  virusdex,
+  chip,
+  jackIn,
 ];
 const commandsJSON = commandModules
   .filter((m) => m?.data && typeof m.data.toJSON === "function")
@@ -30,15 +57,21 @@ const commandsJSON = commandModules
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 
 async function registerCommands() {
-  if (GUILD_ID) await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commandsJSON });
-  else await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commandsJSON });
+  if (GUILD_ID) {
+    console.log(`🔧 Registering guild commands to ${GUILD_ID} (app ${APPLICATION_ID})…`);
+    await rest.put(Routes.applicationGuildCommands(APPLICATION_ID, GUILD_ID), {
+      body: commandsJSON,
+    });
+  } else {
+    console.log(`🌐 Registering global commands (app ${APPLICATION_ID})…`);
+    await rest.put(Routes.applicationCommands(APPLICATION_ID), {
+      body: commandsJSON,
+    });
+  }
+  console.log("✅ Commands registered.");
 }
 
-client.once("ready", async () => {
-  console.log(`🤖 Logged in as ${client.user?.tag}`);
-  try { await registerCommands(); } catch (e) { console.error("register err:", e); }
-});
-
+// -------- interaction routing --------
 client.on("interactionCreate", async (interaction: Interaction) => {
   try {
     if (interaction.isChatInputCommand()) return routeSlash(interaction);
@@ -63,17 +96,19 @@ async function routeSlash(ix: ChatInputCommandInteraction) {
     case "virusdex": return virusdex.execute(ix);
     case "jack_in": return jackIn.execute(ix);
     case "chip": {
+      // support either single /chip or subcommand /chip index
       const sub = ix.options.getSubcommand(false) || "index";
       if (typeof (chip as any).execute === "function") return (chip as any).execute(ix, sub);
       if (sub === "index" && typeof (chip as any).executeIndex === "function") return (chip as any).executeIndex(ix);
       return ix.reply({ content: "Unknown subcommand.", ephemeral: true });
     }
-    default: return ix.reply({ content: "Unknown command.", ephemeral: true });
+    default:
+      return ix.reply({ content: "Unknown command.", ephemeral: true });
   }
 }
 
 async function routeButton(ix: ButtonInteraction) {
-  // jack_in handles hub + passes battle/shop IDs through
+  // hub + battle/shop/jack-in buttons are centralized in jack_in
   await jackIn.handleHubButton(ix);
 }
 
@@ -81,6 +116,10 @@ async function routeSelect(ix: StringSelectMenuInteraction) {
   await jackIn.handleSelect(ix);
 }
 
-function must(k: string) { const v = process.env[k]; if (!v) { console.error(`Missing env ${k}`); process.exit(1); } return v; }
+// -------- boot --------
+client.once("ready", async () => {
+  console.log(`🤖 Logged in as ${client.user?.tag}`);
+  try { await registerCommands(); } catch (e) { console.error("Failed to register commands:", e); }
+});
 
 client.login(TOKEN);
