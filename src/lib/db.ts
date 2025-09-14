@@ -1,4 +1,4 @@
-// lib/db.ts
+// src/lib/db.ts
 // SQLite data layer (better-sqlite3) with safe migrations.
 // Adds: XP/Level, stat caps, atomic spendZenny, instant upgrade support,
 // name/element fields, and compatibility aliases (db, getInventory, etc).
@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS players (
   crit INTEGER NOT NULL DEFAULT 0,
   zenny INTEGER NOT NULL DEFAULT 0,
   region_id TEXT DEFAULT NULL,
+  region_zone INTEGER NOT NULL DEFAULT 1,
   xp_total INTEGER NOT NULL DEFAULT 0,
   level INTEGER NOT NULL DEFAULT 1
 );
@@ -100,6 +101,7 @@ safeAddColumn("players", "level", "INTEGER NOT NULL DEFAULT 1");
 safeAddColumn("players", "crit", "INTEGER NOT NULL DEFAULT 0");
 safeAddColumn("players", "name", "TEXT DEFAULT NULL");
 safeAddColumn("players", "element", "TEXT DEFAULT NULL");
+safeAddColumn("players", "region_zone", "INTEGER NOT NULL DEFAULT 1");
 safeAddColumn("missions_state", "progress", "INTEGER NOT NULL DEFAULT 0");
 safeAddColumn("missions_state", "counter", "INTEGER NOT NULL DEFAULT 0"); // <-- compat column
 
@@ -155,6 +157,7 @@ export type Player = {
   crit: number;
   zenny: number;
   region_id: string | null;
+  region_zone: number;
   xp_total: number;
   level: number;
 };
@@ -162,24 +165,40 @@ export type Player = {
 export function ensurePlayer(user_id: string): Player {
   const existing = getPlayer(user_id);
   if (existing) return existing;
-  db.prepare(`INSERT INTO players (user_id, zenny) VALUES (?, ?)`)
+  db.prepare(`INSERT INTO players (user_id, zenny, region_zone) VALUES (?, ?, 1)`)
     .run(user_id, STARTER_ZENNY);
   return getPlayer(user_id)!;
 }
 
 export function getPlayer(user_id: string): Player | null {
   const row = db.prepare(`
-    SELECT user_id, name, element, hp_max, atk, def, spd, acc, evasion, crit, zenny, region_id, xp_total, level
+    SELECT user_id, name, element, hp_max, atk, def, spd, acc, evasion, crit, zenny, region_id, region_zone, xp_total, level
     FROM players WHERE user_id = ?`).get(user_id);
   return (row as Player) || null;
 }
 
 export function setRegion(user_id: string, region_id: string | null) {
-  db.prepare(`UPDATE players SET region_id = ? WHERE user_id = ?`).run(region_id, user_id);
+  ensurePlayer(user_id);
+  // also reset zone to 1 on region change
+  db.prepare(`UPDATE players SET region_id = ?, region_zone = 1 WHERE user_id = ?`).run(region_id, user_id);
 }
-export function getRegion(user_id: string): string | null {
-  const row = db.prepare(`SELECT region_id FROM players WHERE user_id = ?`).get(user_id) as any;
-  return row?.region_id ?? null;
+
+// NOTE: signature matches usage in index.ts (expects {region_id, region_zone})
+export function getRegion(user_id: string): { region_id?: string | null; region_zone?: number } | undefined {
+  const row = db.prepare(`SELECT region_id, region_zone FROM players WHERE user_id = ?`).get(user_id) as any;
+  if (!row) return undefined;
+  return { region_id: row.region_id ?? null, region_zone: toInt(row.region_zone ?? 1, 1) };
+}
+
+// Zone helpers required by jack_in.ts
+export function setZone(user_id: string, zone: number) {
+  ensurePlayer(user_id);
+  const z = Math.max(1, toInt(zone, 1));
+  db.prepare(`UPDATE players SET region_zone = ? WHERE user_id = ?`).run(z, user_id);
+}
+export function getZone(user_id: string): number {
+  const row = db.prepare(`SELECT region_zone FROM players WHERE user_id = ?`).get(user_id) as any;
+  return toInt(row?.region_zone ?? 1, 1);
 }
 
 // Added for /start flow
@@ -247,6 +266,8 @@ export function addDEF(u: string, n: number)   { applyStatDeltas(u, { def: n });
 export function addSPD(u: string, n: number)   { applyStatDeltas(u, { spd: n }); }
 export function addACC(u: string, n: number)   { applyStatDeltas(u, { acc: n }); }
 export function addEVA(u: string, n: number)   { applyStatDeltas(u, { evasion: n }); }
+// alias required by jack_in.ts
+export function addEvasion(u: string, n: number) { return addEVA(u, n); }
 export function addCRIT(u: string, n: number)  { applyStatDeltas(u, { crit: n }); }
 
 // Inventory & folder
@@ -343,7 +364,7 @@ export function addMissionProgress(user_id: string, mission_id: string, delta: n
 // Compatibility exports
 // -------------------------------
 
-export { db };                     // many files do: import { db } from '../lib/db'
+export { db };                           // many files do: import { db } from '../lib/db'
 export const getInventory = listInventory; // alias for older imports
 
 export default db;

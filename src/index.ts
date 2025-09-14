@@ -2,24 +2,25 @@
 import 'dotenv/config';
 import {
   Client, GatewayIntentBits, Partials, REST, Routes,
-  SlashCommandBuilder, PermissionFlagsBits, Interaction
+  SlashCommandBuilder, PermissionFlagsBits, Interaction,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
 } from 'discord.js';
 
 import loadTSVBundle from './lib/tsv';
 import { invalidateBundleCache, getBundle } from './lib/data';
 import { validateLetterRule } from './lib/rules';
-import { battleEmbed } from './lib/render';
+import { buildBattleHeaderEmbed } from './lib/render';
 import { load as loadBattle, resolveTurn as resolveBattleTurn, tryRun, end, save } from './lib/battle';
 import { rollRewards, rollBossRewards } from './lib/rewards';
 import { progressDefeat } from './lib/missions';
 import { diffNewlyUnlockedRegions } from './lib/unlock';
-import { getRegion, getPlayer } from './lib/db';
+import { getPlayer } from './lib/db';
 import { wantDmg } from './lib/settings-util';
 
 import * as Start from './commands/start';
 import * as Profile from './commands/profile';
 import * as Folder from './commands/folder';
-import * as ShopCmd from './commands/shop'; // (optional legacy slash, kept if you still want it)
+import * as ShopCmd from './commands/shop'; // keep if you still want /shop
 import * as Mission from './commands/mission';
 import * as Leaderboard from './commands/leaderboard';
 import * as Chip from './commands/chip';
@@ -35,15 +36,15 @@ if (!GUILD_ID) console.warn('⚠️ Missing GUILD_ID (commands will not register
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds], partials: [Partials.Channel] });
 
-// ---- Slash commands (guild-scoped) ----
-// Removed /health and all /settings subcommands per request.
+/* ---------- slash (guild-scoped) ----------
+   Removed /health and all /settings subcommands per request. */
 const commands = [
   new SlashCommandBuilder()
     .setName('reload_data')
     .setDescription('Reload TSV bundle from /data (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   Start.data, Profile.data, Folder.data,
-  ShopCmd.data,          // keep if you still want /shop; otherwise remove this line
+  ShopCmd.data,          // remove this line if you no longer want /shop as a slash command
   Mission.data, Leaderboard.data,
   Chip.data, VirusDex.data, JackIn.data,
 ].map((c: any) => c.toJSON());
@@ -63,12 +64,12 @@ function isAdmin(ix: Interaction): boolean {
   );
 }
 
-/* ---------- small helpers ---------- */
+/* ---------- helpers ---------- */
 function buildPickRows(battleId: string, hand: string[]) {
   const { chips } = getBundle();
 
   const makeSelect = (slot: 1 | 2 | 3) => {
-    const sel = new (require('discord.js').StringSelectMenuBuilder)()
+    const sel = new StringSelectMenuBuilder()
       .setCustomId(`pick${slot}:${battleId}`)
       .setPlaceholder(`Pick ${slot}`)
       .setMinValues(0)
@@ -86,15 +87,15 @@ function buildPickRows(battleId: string, hand: string[]) {
     return sel;
   };
 
-  const row1 = new (require('discord.js').ActionRowBuilder)().addComponents(makeSelect(1));
-  const row2 = new (require('discord.js').ActionRowBuilder)().addComponents(makeSelect(2));
-  const row3 = new (require('discord.js').ActionRowBuilder)().addComponents(makeSelect(3));
+  const row1 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(1));
+  const row2 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(2));
+  const row3 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(3));
 
-  const lockBtn = new (require('discord.js').ButtonBuilder)().setCustomId(`lock:${battleId}`).setStyle(3).setLabel('Lock');
-  const runBtn  = new (require('discord.js').ButtonBuilder)().setCustomId(`run:${battleId}`).setStyle(4).setLabel('Run');
-  const row4 = new (require('discord.js').ActionRowBuilder)().addComponents(lockBtn, runBtn);
+  const lockBtn = new ButtonBuilder().setCustomId(`lock:${battleId}`).setStyle(ButtonStyle.Success).setLabel('Lock');
+  const runBtn  = new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run');
+  const row4 = new ActionRowBuilder<ButtonBuilder>().addComponents(lockBtn, runBtn);
 
-  return [row1, row2, row3, row4];
+  return [row1, row2, row3, row4] as const;
 }
 
 /* ---------- router ---------- */
@@ -117,7 +118,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'start')        { await Start.execute(ix); return; }
       if (ix.commandName === 'profile')      { await Profile.execute(ix); return; }
       if (ix.commandName === 'folder')       { await Folder.execute(ix); return; }
-      if (ix.commandName === 'shop')         { await ShopCmd.execute(ix); return; } // optional
+      if (ix.commandName === 'shop')         { await ShopCmd.execute(ix); return; } // optional slash
       if (ix.commandName === 'mission')      { await Mission.execute(ix); return; }
       if (ix.commandName === 'leaderboard')  { await Leaderboard.execute(ix); return; }
       if (ix.commandName === 'chip')         { await Chip.execute(ix); return; }
@@ -187,26 +188,27 @@ client.on('interactionCreate', async (ix) => {
 
       if (kind === 'run') {
         const ok = tryRun(s);
-        if (ok) { end(battleId); await ix.reply({ content: '🏃 You escaped!', ephemeral: false }); }
-        else    { await ix.reply({ content: '❌ Could not escape!', ephemeral: true }); }
-        // after escape, bounce to HUD
-        await JackIn.renderJackInHUD(ix);
+        if (ok) {
+          end(battleId);
+          await ix.reply({ content: '🏃 You escaped!', ephemeral: false });
+          await JackIn.renderJackInHUD(ix);
+        } else {
+          await ix.reply({ content: '❌ Could not escape!', ephemeral: true });
+        }
         return;
       }
 
       if (kind === 'lock') {
         const res = resolveBattleTurn(s, s.locked);
 
-        const regionObj = getRegion(s.user_id);
-        const regionId  = regionObj?.region_id || process.env.START_REGION_ID || 'den_city';
-
-        // public combat screen (shows virus image via render)
-        const embed = battleEmbed(s, {
-          playerName: ix.user.username,
-          playerAvatar: ix.user.displayAvatarURL?.() || undefined,
-          regionId,
-        });
-        await ix.reply({ embeds: [embed], ephemeral: false });
+        // Public battle header with virus art (no ⚔️)
+        const virus = getBundle().viruses[s.enemy_id] || { name: s.enemy_id };
+        const header = buildBattleHeaderEmbed({ virusId: s.enemy_id, displayName: virus.name || s.enemy_id })
+          .setDescription([
+            `**Your HP:** ${s.player_hp}/${s.player_hp_max}`,
+            `**Enemy HP:** ${s.enemy_hp}/` + (virus.hp ?? '—'),
+          ].join('\n'));
+        await ix.reply({ embeds: [header], ephemeral: false });
 
         const extra = wantDmg(s.user_id) ? `\n${res.log}` : '';
 
@@ -245,15 +247,11 @@ client.on('interactionCreate', async (ix) => {
 
           end(battleId);
           await ix.followUp({ content: `✅ Victory!${extra ? ` ${extra}` : ''}\n${rewardText}`, ephemeral: false });
-
-          // Return to Jack-In HUD so they can continue exploring
-          await JackIn.renderJackInHUD(ix);
+          await JackIn.renderJackInHUD(ix); // back to Encounter / Travel / Shop
         } else if (res.outcome === 'defeat') {
           end(battleId);
           await ix.followUp({ content: `💀 Defeat…${extra ? ` ${extra}` : ''}`, ephemeral: false });
-
-          // Return to Jack-In HUD
-          await JackIn.renderJackInHUD(ix);
+          await JackIn.renderJackInHUD(ix); // back to hub
         } else {
           // Ongoing: show fresh ephemeral pickers built from the NEW hand
           const rows = buildPickRows(battleId, s.hand);

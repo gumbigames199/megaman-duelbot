@@ -1,15 +1,14 @@
-// render.ts
+// src/lib/render.ts
 // Centralized UI builders for Discord embeds & components.
 // Adds:
-//  - Virus art in battle headers (image/thumbnail) via data.getVirusArt()
+//  - Virus art in battle headers (thumbnail) via data.getVirusArt()
 //  - Round result screen that also shows next chip-selection UI (3 of 5)
 //  - Victory screen that returns players to Encounter / Travel / Shop hub
+//  - battleEmbed(state, opts) compatibility helper used by index.ts
 //
 // Conventions respected from project notes:
 //  - Battle interaction customIds:   pick:<battleId>, lock:<battleId>, run:<battleId>
 //  - Jack-in hub buttons (exported IDs below): encounter, travel, shop
-//
-// Other modules (battle.ts, jack_in.ts, shop.ts, index.ts) can import these helpers.
 
 import {
   ActionRowBuilder,
@@ -20,7 +19,7 @@ import {
   inlineCode,
 } from 'discord.js';
 
-import { getVirusArt } from './data';
+import { getVirusArt, getVirusById, getBundle } from './data';
 
 // -------------------------------
 // Public Custom ID constants
@@ -84,18 +83,14 @@ export type VictorySummary = {
 
 export function buildBattleHeaderEmbed(enemy: EnemyHeader): EmbedBuilder {
   const art = getVirusArt(enemy.virusId);
-  const embed = new EmbedBuilder()
-    .setTitle(`${enemy.displayName} — VS — You`);
+  const embed = new EmbedBuilder().setTitle(`${enemy.displayName} — VS — You`);
 
-  // Prefer image over thumbnail if provided
+  // Show virus art as THUMBNAIL so we can still use .setImage for region bg
   if (art.image) {
-    embed.setImage(art.image);
+    embed.setThumbnail(art.image);
   } else if (art.sprite) {
-    embed.setImage(art.sprite);
-  } else {
-    // No art — keep a minimal header (no ⚔️ icon in title per requirement)
+    embed.setThumbnail(art.sprite);
   }
-
   return embed;
 }
 
@@ -282,6 +277,55 @@ export function renderJackInHub(regionLabel: string) {
   );
 
   return { embed, components: [row] };
+}
+
+// -------------------------------
+// Compatibility: battleEmbed(state, opts)
+// -------------------------------
+
+/**
+ * Minimal embed builder used by index.ts after a /lock turn.
+ * Shows virus art (thumbnail), HP totals and uses the region background
+ * as the large image if provided via opts.regionId.
+ */
+export function battleEmbed(
+  state: any,
+  opts: { playerName?: string; playerAvatar?: string; regionId?: string } = {}
+): EmbedBuilder {
+  const virusId = String(state?.enemy_id || state?.virus_id || '');
+  const virus = getVirusById(virusId);
+  const enemy = { virusId, displayName: virus?.name || virusId };
+
+  const embed = buildBattleHeaderEmbed(enemy);
+
+  // Region background as the large image (keeps virus art in thumbnail)
+  const regionId = opts.regionId || '';
+  if (regionId) {
+    const bundle = getBundle();
+    const bg = (bundle as any)?.regions?.[regionId]?.background_url;
+    if (bg) embed.setImage(bg);
+  }
+
+  if (opts.playerName) {
+    embed.setAuthor({ name: opts.playerName, iconURL: opts.playerAvatar || undefined });
+  }
+
+  const playerHP = Number(state?.player_hp ?? 0);
+  const playerHPMax = Number(state?.player_hp_max ?? playerHP || 1);
+  const enemyHP = Number(state?.enemy_hp ?? 0);
+  const enemyHPMax = Number((virus as any)?.hp ?? enemyHP || 1);
+  const turn = Number(state?.turn ?? 1);
+
+  embed.setDescription(
+    [
+      `**Your HP:** ${inlineCode(formatHP(playerHP, playerHPMax))}`,
+      `**Enemy HP:** ${inlineCode(formatHP(enemyHP, enemyHPMax))}`,
+      '',
+      `**Turn ${turn}**`,
+    ].join('\n')
+  );
+
+  return embed;
 }
 
 // -------------------------------
