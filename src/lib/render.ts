@@ -1,15 +1,3 @@
-// src/lib/render.ts
-// Centralized UI builders for Discord embeds & components.
-// Adds:
-//  - Virus art in battle headers (thumbnail) via data.getVirusArt()
-//  - Round result screen that also shows next chip-selection UI (3 of 5)
-//  - Victory screen that returns players to Encounter / Travel / Shop hub
-//  - battleEmbed(state, opts) compatibility helper used by index.ts
-//
-// Conventions respected from project notes:
-//  - Battle interaction customIds:   pick:<battleId>, lock:<battleId>, run:<battleId>
-//  - Jack-in hub buttons (exported IDs below): encounter, travel, shop
-
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -18,12 +6,7 @@ import {
   EmbedBuilder,
   inlineCode,
 } from 'discord.js';
-
-import { getVirusArt, getVirusById, getBundle } from './data';
-
-// -------------------------------
-// Public Custom ID constants
-// -------------------------------
+import { getVirusArt } from './data';
 
 export const HUB_IDS = {
   ENCOUNTER: 'hub:encounter',
@@ -31,23 +14,13 @@ export const HUB_IDS = {
   SHOP: 'hub:shop',
 } as const;
 
-/**
- * Battle IDs (reuse existing protocol noted in project docs)
- * - pick:<battleId>     → select chips (string select)
- * - lock:<battleId>     → lock in selections
- * - run:<battleId>      → attempt to escape
- */
 export function battlePickId(battleId: string) { return `pick:${battleId}`; }
 export function battleLockId(battleId: string) { return `lock:${battleId}`; }
 export function battleRunId(battleId: string)  { return `run:${battleId}`; }
 
-// -------------------------------
-// Types used by render helpers
-// -------------------------------
-
 export type ChipHandItem = {
-  id: string;          // chip id (from chips.tsv)
-  name: string;        // display name
+  id: string;
+  name: string;
   power?: number;
   hits?: number;
   element?: string;
@@ -68,35 +41,25 @@ export type EnemyHeader = {
 };
 
 export type RoundSummary = {
-  playerLogLines: string[]; // lines describing player actions
-  enemyLogLines: string[];  // lines describing enemy actions
+  playerLogLines: string[];
+  enemyLogLines: string[];
 };
 
 export type VictorySummary = {
-  title?: string;          // e.g., "Victory!"
-  rewardLines: string[];   // e.g., "+120z", "+45 XP", "Drops: Cannon A"
+  title?: string;
+  rewardLines: string[];
 };
-
-// -------------------------------
-// Battle: Header with virus art
-// -------------------------------
 
 export function buildBattleHeaderEmbed(enemy: EnemyHeader): EmbedBuilder {
   const art = getVirusArt(enemy.virusId);
   const embed = new EmbedBuilder().setTitle(`${enemy.displayName} — VS — You`);
-
-  // Show virus art as THUMBNAIL so we can still use .setImage for region bg
   if (art.image) {
-    embed.setThumbnail(art.image);
+    embed.setImage(art.image);
   } else if (art.sprite) {
-    embed.setThumbnail(art.sprite);
+    embed.setImage(art.sprite);
   }
   return embed;
 }
-
-// -------------------------------
-// Battle: HP block
-// -------------------------------
 
 export function formatHP(hp: number, max: number): string {
   const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
@@ -104,16 +67,11 @@ export function formatHP(hp: number, max: number): string {
   return `${h}/${max}`;
 }
 
-// -------------------------------
-// Battle: Chip selection (3 from 5)
-// -------------------------------
-
 export function buildChipSelectionRows(
   battleId: string,
   hand: ChipHandItem[],
   selectedIds: string[] = []
 ) {
-  // Dropdown allows selecting up to 3 chips from the current 5-card hand.
   const select = new StringSelectMenuBuilder()
     .setCustomId(battlePickId(battleId))
     .setPlaceholder('Select up to 3 chips…')
@@ -141,7 +99,7 @@ export function buildChipSelectionRows(
       .setLabel('Run')
   );
 
-  return [rowSelect, rowButtons];
+  return [rowSelect, rowButtons] as const;
 }
 
 function describeChipBrief(c: ChipHandItem): string {
@@ -157,10 +115,6 @@ function cleanOneLine(s?: string) {
   if (!s) return '';
   return s.replace(/\s+/g, ' ').trim();
 }
-
-// -------------------------------
-// Battle: Full screen (HP + Hand)
-// -------------------------------
 
 export function renderBattleScreen(opts: {
   battleId: string;
@@ -184,10 +138,6 @@ export function renderBattleScreen(opts: {
   const rows = buildChipSelectionRows(battleId, hand, selectedIds);
   return { embed: header, components: rows };
 }
-
-// -------------------------------
-// Battle: Round result + immediately show next hand
-// -------------------------------
 
 export function renderRoundResultWithNextHand(opts: {
   battleId: string;
@@ -225,10 +175,6 @@ export function renderRoundResultWithNextHand(opts: {
   return { embed: header, components: rows };
 }
 
-// -------------------------------
-// Battle: Victory + Hub buttons
-// -------------------------------
-
 export function renderVictoryToHub(opts: {
   enemy: EnemyHeader;
   victory: VictorySummary;
@@ -237,14 +183,11 @@ export function renderVictoryToHub(opts: {
 
   const header = buildBattleHeaderEmbed(enemy);
 
-  const title = victory.title ?? '🏆 Victory!';
-  const desc = [ `**${title}**`, '' ];
+  const title = victory.title !== undefined ? victory.title : '🏆 Victory!';
+  const desc: string[] = [ `**${title}**`, '' ];
   for (const l of victory.rewardLines) desc.push(`• ${l}`);
-
-  // Below the rewards, present hub buttons so the player can continue immediately.
   desc.push('');
   desc.push('What next? Choose an option below.');
-
   header.setDescription(desc.join('\n'));
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -255,10 +198,6 @@ export function renderVictoryToHub(opts: {
 
   return { embed: header, components: [row] };
 }
-
-// -------------------------------
-// Hub only (Jack-in screen)
-// -------------------------------
 
 export function renderJackInHub(regionLabel: string) {
   const embed = new EmbedBuilder()
@@ -278,59 +217,6 @@ export function renderJackInHub(regionLabel: string) {
 
   return { embed, components: [row] };
 }
-
-// -------------------------------
-// Compatibility: battleEmbed(state, opts)
-// -------------------------------
-
-/**
- * Minimal embed builder used by index.ts after a /lock turn.
- * Shows virus art (thumbnail), HP totals and uses the region background
- * as the large image if provided via opts.regionId.
- */
-export function battleEmbed(
-  state: any,
-  opts: { playerName?: string; playerAvatar?: string; regionId?: string } = {}
-): EmbedBuilder {
-  const virusId = String(state?.enemy_id || state?.virus_id || '');
-  const virus = getVirusById(virusId);
-  const enemy = { virusId, displayName: virus?.name || virusId };
-
-  const embed = buildBattleHeaderEmbed(enemy);
-
-  // Region background as the large image (keeps virus art in thumbnail)
-  const regionId = opts.regionId || '';
-  if (regionId) {
-    const bundle = getBundle();
-    const bg = (bundle as any)?.regions?.[regionId]?.background_url;
-    if (bg) embed.setImage(bg);
-  }
-
-  if (opts.playerName) {
-    embed.setAuthor({ name: opts.playerName, iconURL: opts.playerAvatar || undefined });
-  }
-
-  const playerHP = Number(state?.player_hp ?? 0);
-  const playerHPMax = Number(state?.player_hp_max ?? playerHP || 1);
-  const enemyHP = Number(state?.enemy_hp ?? 0);
-  const enemyHPMax = Number((virus as any)?.hp ?? enemyHP || 1);
-  const turn = Number(state?.turn ?? 1);
-
-  embed.setDescription(
-    [
-      `**Your HP:** ${inlineCode(formatHP(playerHP, playerHPMax))}`,
-      `**Enemy HP:** ${inlineCode(formatHP(enemyHP, enemyHPMax))}`,
-      '',
-      `**Turn ${turn}**`,
-    ].join('\n')
-  );
-
-  return embed;
-}
-
-// -------------------------------
-// Small helpers
-// -------------------------------
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
