@@ -1,3 +1,4 @@
+// src/index.ts
 import 'dotenv/config';
 import {
   Client, GatewayIntentBits, Partials, REST, Routes,
@@ -5,7 +6,7 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
 } from 'discord.js';
 
-import { loadTSVBundle as reloadTSVBundle } from './lib/tsv';
+import loadTSVBundle from './lib/tsv';
 import { invalidateBundleCache, getBundle } from './lib/data';
 import { validateLetterRule } from './lib/rules';
 import { buildBattleHeaderEmbed } from './lib/render';
@@ -19,7 +20,7 @@ import { wantDmg } from './lib/settings-util';
 import * as Start from './commands/start';
 import * as Profile from './commands/profile';
 import * as Folder from './commands/folder';
-import * as ShopCmd from './commands/shop';
+import * as ShopCmd from './commands/shop'; // keep if you still want /shop
 import * as Mission from './commands/mission';
 import * as Leaderboard from './commands/leaderboard';
 import * as Chip from './commands/chip';
@@ -35,14 +36,15 @@ if (!GUILD_ID) console.warn('⚠️ Missing GUILD_ID (commands will not register
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds], partials: [Partials.Channel] });
 
-// No /health; no /settings.
+/* ---------- slash (guild-scoped) ----------
+   Removed /health and all /settings subcommands per request. */
 const commands = [
   new SlashCommandBuilder()
     .setName('reload_data')
     .setDescription('Reload TSV bundle from /data (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   Start.data, Profile.data, Folder.data,
-  ShopCmd.data,
+  ShopCmd.data,          // remove this line if you no longer want /shop as a slash command
   Mission.data, Leaderboard.data,
   Chip.data, VirusDex.data, JackIn.data,
 ].map((c: any) => c.toJSON());
@@ -104,17 +106,19 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'reload_data') {
         if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', ephemeral: true }); return; }
         await ix.deferReply({ ephemeral: true });
-        // The loader in this codebase is a 0-arg function and doesn’t return a `.report`.
-        reloadTSVBundle();
+        const { report } = loadTSVBundle(process.env.DATA_DIR || './data');
+        const counts = Object.entries(report.counts).map(([k, v]) => `${k}:${v}`).join(' • ') || 'none';
+        const warnings = report.warnings.length ? `\n⚠️ Warnings:\n- ${report.warnings.join('\n- ')}` : '';
+        const errors = report.errors.length ? `\n❌ Errors:\n- ${report.errors.join('\n- ')}` : '';
         invalidateBundleCache();
-        await ix.editReply('📦 TSV bundle reloaded.');
+        await ix.editReply(`📦 TSV load: **${report.ok ? 'OK' : 'ISSUES'}**\nCounts: ${counts}${warnings}${errors}`);
         return;
       }
 
       if (ix.commandName === 'start')        { await Start.execute(ix); return; }
       if (ix.commandName === 'profile')      { await Profile.execute(ix); return; }
       if (ix.commandName === 'folder')       { await Folder.execute(ix); return; }
-      if (ix.commandName === 'shop')         { await ShopCmd.execute(ix); return; }
+      if (ix.commandName === 'shop')         { await ShopCmd.execute(ix); return; } // optional slash
       if (ix.commandName === 'mission')      { await Mission.execute(ix); return; }
       if (ix.commandName === 'leaderboard')  { await Leaderboard.execute(ix); return; }
       if (ix.commandName === 'chip')         { await Chip.execute(ix); return; }
@@ -197,6 +201,7 @@ client.on('interactionCreate', async (ix) => {
       if (kind === 'lock') {
         const res = resolveBattleTurn(s, s.locked);
 
+        // Public battle header with virus art (no ⚔️)
         const virus = getBundle().viruses[s.enemy_id] || { name: s.enemy_id };
         const header = buildBattleHeaderEmbed({ virusId: s.enemy_id, displayName: virus.name || s.enemy_id })
           .setDescription([
@@ -242,12 +247,13 @@ client.on('interactionCreate', async (ix) => {
 
           end(battleId);
           await ix.followUp({ content: `✅ Victory!${extra ? ` ${extra}` : ''}\n${rewardText}`, ephemeral: false });
-          await JackIn.renderJackInHUD(ix);
+          await JackIn.renderJackInHUD(ix); // back to Encounter / Travel / Shop
         } else if (res.outcome === 'defeat') {
           end(battleId);
           await ix.followUp({ content: `💀 Defeat…${extra ? ` ${extra}` : ''}`, ephemeral: false });
-          await JackIn.renderJackInHUD(ix);
+          await JackIn.renderJackInHUD(ix); // back to hub
         } else {
+          // Ongoing: show fresh ephemeral pickers built from the NEW hand
           const rows = buildPickRows(battleId, s.hand);
           await ix.followUp({ ephemeral: true, components: rows });
           if (extra) await ix.followUp({ ephemeral: true, content: extra });
