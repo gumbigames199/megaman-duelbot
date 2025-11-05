@@ -13,6 +13,7 @@ import {
 } from './render';
 import { ensurePlayer, getPlayer, listFolder as listFolderQty } from './db';
 import { grantVirusRewards } from './rewards';
+import { typeMultiplier } from './rules';
 
 const ROUND_SECONDS = toInt(process.env.ROUND_SECONDS, 60);
 const DEFAULT_PLAYER_HP = 100;
@@ -26,6 +27,13 @@ type BattleHandItem = {
   element?: string;
   effects?: string;
   description?: string;
+};
+
+type DotStatus = { dur: number }; // duration remaining (turns)
+type BattleStatuses = {
+  burn?: DotStatus;   // 5% Max HP each turn start
+  poison?: DotStatus; // 8% Max HP each turn start
+  // scaffolds for future: paralyze, freeze, barrier, aura etc.
 };
 
 type BattleState = {
@@ -46,6 +54,10 @@ type BattleState = {
   selected: string[];
 
   is_over: boolean;
+
+  // NEW: lightweight status containers
+  player_status: BattleStatuses;
+  enemy_status: BattleStatuses;
 };
 
 // ---------------- In-memory store ----------------
@@ -83,12 +95,13 @@ export function startBattle(user_id: string, virus_id: string) {
     hand: [],
     selected: [],
     is_over: false,
+    player_status: {},
+    enemy_status: {},
   };
 
   drawHand(bs);
   battles.set(id, bs);
 
-  // Return the normal view PLUS the battleId so callers that need it can read it.
   const view = renderBattle(bs);
   return { ...view, battleId: id };
 }
@@ -207,7 +220,6 @@ export function startEncounterBattle(init: {
   region_id?: string;
   zone?: number;
 }): { battleId: string; state: any } {
-  // Reuse startBattle and reshape for callers that expect the old shape.
   const { battleId } = startBattle(init.user_id, init.enemy_id);
   const bs = battles.get(battleId)!;
   return { battleId, state: toCompatState(bs, init.enemy_kind) };
@@ -255,14 +267,12 @@ export function resolveTurn(s: any, chosenIds: string[]) {
   if (bs.enemy_hp <= 0 && bs.player_hp > 0) outcome = 'victory';
   else if (bs.player_hp <= 0) outcome = 'defeat';
 
-  // If ongoing, advance to next hand like the UI handler does.
   if (outcome === 'ongoing') {
     drawHand(bs);
     bs.selected = [];
     bs.turn += 1;
   }
 
-  // update compat snapshot that callers may still be holding
   s.enemy_hp = bs.enemy_hp;
   s.player_hp = bs.player_hp;
   s.hand = bs.hand.map((c: ChipRef) => c.id);
@@ -314,7 +324,6 @@ function getVirusName(virus_id: string) {
 
 // ---------------- Deck / hand ----------------
 function buildDeckFromFolder(user_id: string): ChipRef[] {
-  // qty-style folder: [{chip_id, qty}]
   const folder = listFolderQty(user_id);
   const deck: ChipRef[] = [];
   for (const f of folder) {
@@ -349,25 +358,55 @@ function drawHand(bs: BattleState) {
 function _resolveRoundInternal(bs: BattleState) {
   const playerLog: string[] = [];
   const enemyLog: string[] = [];
+
+  // ---- START OF TURN DOT (Burn/Poison) ----
+  if (tickDot('enemy', bs)) {
+    const d = lastTickDamage.enemy ?? 0;
+    if (d > 0) enemyLog.push(`DOT dealt **${d}** to enemy.`);
+  }
+  if (tickDot('player', bs)) {
+    const d = lastTickDamage.player ?? 0;
+    if (d > 0) playerLog.push(`You took **${d}** DOT.`);
+  }
+
   const selected = bs.selected.slice(0, 3);
+  const virus = getVirusById(bs.virus_id) as any;
+  const defenderElem = String(virus?.element || 'Neutral');
 
   for (const chipId of selected) {
-    const chip = getChipById(chipId);
+    const chip = getChipById(chipId) as any;
     if (!chip) {
       playerLog.push(`Used ${chipId} (unknown) — no effect.`);
       continue;
     }
-    const power = asNum((chip as any).power, 0);
-    const hits = Math.max(1, asNum((chip as any).hits, 1));
-    const dmgTotal = Math.max(0, power) * hits;
-    if (dmgTotal > 0) {
-      bs.enemy_hp = Math.max(0, bs.enemy_hp - dmgTotal);
+
+    const power = Math.max(0, asNum(chip.power, 0));
+    const hits = Math.max(1, asNum(chip.hits, 1));
+    const attElem = String(chip.element || 'Neutral');
+
+    // Elemental multiplier
+    const mult = Number(typeMultiplier(attElem, defenderElem) || 1);
+    const dmgPerHit = Math.round(power * Math.max(0.25, mult)); // keep bounded if mult<1
+    const total = Math.max(0, dmgPerHit * hits);
+
+    if (total > 0) {
+      bs.enemy_hp = Math.max(0, bs.enemy_hp - total);
+      const tag =
+        mult > 1 ? ' (super effective!)' :
+        mult < 1 ? ' (not very effective)' : '';
       playerLog.push(
-        `**${chip.name}** dealt **${dmgTotal}** dmg (${hits} hit${hits > 1 ? 's' : ''}).`,
+        `**${chip.name}** dealt **${total}** dmg (${hits} hit${hits > 1 ? 's' : ''})${tag}.`,
       );
-    } else playerLog.push(`**${chip.name}** had no direct damage.`);
-    const eff = (chip as any)?.effects;
-    if (eff) playerLog.push(`Effects: ${eff}`);
+    } else {
+      playerLog.push(`**${chip.name}** had no direct damage.`);
+    }
+
+    // Apply status effects from chip text (Burn/Poison first pass)
+    const effTxt = (chip.effects as string | undefined) || '';
+    const applied: string[] = [];
+    if (tryApplyDotFromText('burn', effTxt, bs.enemy_status)) applied.push('Burn');
+    if (tryApplyDotFromText('poison', effTxt, bs.enemy_status)) applied.push('Poison');
+    if (applied.length) playerLog.push(`Effects applied: ${applied.join(', ')}`);
   }
 
   // move used chips to discard
@@ -379,8 +418,8 @@ function _resolveRoundInternal(bs: BattleState) {
     return { playerLogLines: playerLog, enemyLogLines: enemyLog };
   }
 
-  const virus = getVirusById(bs.virus_id);
-  const enemyAtk = Math.max(0, asNum((virus as any)?.atk, randInt(5, 15)));
+  // Enemy attack (basic)
+  const enemyAtk = Math.max(0, asNum(virus?.atk, randInt(5, 15)));
   const dmgToPlayer = randInt(
     Math.max(1, Math.floor(enemyAtk * 0.6)),
     Math.max(2, Math.floor(enemyAtk * 1.2)),
@@ -388,7 +427,54 @@ function _resolveRoundInternal(bs: BattleState) {
   bs.player_hp = Math.max(0, bs.player_hp - dmgToPlayer);
   enemyLog.push(`${virus?.name ?? 'Virus'} hit you for **${dmgToPlayer}** dmg.`);
 
+  // ---- END OF TURN: decrement DOT durations ----
+  decDot(bs.enemy_status);
+  decDot(bs.player_status);
+
   return { playerLogLines: playerLog, enemyLogLines: enemyLog };
+}
+
+// ---- DOT helpers (Burn/Poison) ----
+const lastTickDamage: { player?: number; enemy?: number } = {};
+function tickDot(who: 'player' | 'enemy', bs: BattleState) {
+  const st = who === 'player' ? bs.player_status : bs.enemy_status;
+  const maxHP = who === 'player' ? bs.player_hp_max : bs.enemy_hp_max;
+  let total = 0;
+
+  if (st.burn?.dur && st.burn.dur > 0) {
+    const d = Math.max(1, Math.floor(maxHP * 0.05));
+    total += d;
+  }
+  if (st.poison?.dur && st.poison.dur > 0) {
+    const d = Math.max(1, Math.floor(maxHP * 0.08));
+    total += d;
+  }
+
+  if (total > 0) {
+    if (who === 'player') bs.player_hp = Math.max(0, bs.player_hp - total);
+    else bs.enemy_hp = Math.max(0, bs.enemy_hp - total);
+  }
+  lastTickDamage[who] = total;
+  return total > 0;
+}
+function decDot(st: BattleStatuses) {
+  if (st.burn?.dur) st.burn.dur = Math.max(0, st.burn.dur - 1);
+  if (st.poison?.dur) st.poison.dur = Math.max(0, st.poison.dur - 1);
+}
+
+// Parse text like "Burn(20%,2t)" / "Poison(100%,3t)"
+function tryApplyDotFromText(kind: 'burn' | 'poison', text: string, target: BattleStatuses) {
+  const re = new RegExp(`${kind}\\((\\d+)%?,\\s*(\\d+)t\\)`, 'i');
+  const m = text.match(re);
+  if (!m) return false;
+  const chance = Number(m[1]) || 0;
+  const dur = Math.max(1, Number(m[2]) || 1);
+  if (randInt(1, 100) <= chance) {
+    if (kind === 'burn') target.burn = { dur };
+    else target.poison = { dur };
+    return true;
+  }
+  return false;
 }
 
 // ---------------- Utils ----------------
@@ -452,13 +538,13 @@ function toCompatState(bs: BattleState, enemy_kind: 'virus' | 'boss') {
     navi_eva: p?.evasion ?? 10,
 
     turn: bs.turn,
-    seed: 0, // not used in this impl
+    seed: 0,
     draw_pile: bs.deck.map((c) => c.id),
     discard_pile: bs.discard.map((c) => c.id),
     hand: bs.hand.map((c) => c.id),
     locked: bs.selected.slice(),
 
-    player_status: {},
-    enemy_status: {},
+    player_status: bs.player_status,
+    enemy_status: bs.enemy_status,
   };
 }

@@ -3,6 +3,7 @@
 // Adds: XP/Level, stat caps, atomic spendZenny, instant upgrade support,
 // name/element fields, and compatibility aliases (db, getInventory, etc).
 // NEW: missions_state.counter column (compat) kept in sync with progress.
+// QOL: Hard folder cap with status-returning tryAddToFolder; addToFolder honors cap.
 
 import Database from "better-sqlite3";
 import fs from "node:fs";
@@ -26,6 +27,9 @@ const MAX_EVA_CAP = toInt(process.env.MAX_EVA_CAP, 50);
 const MAX_CRIT_CAP = toInt(process.env.MAX_CRIT_CAP, 25);
 
 const STARTER_ZENNY = toInt(process.env.STARTER_ZENNY, 0);
+
+// Folder limit (total slots = sum of qty in folder)
+const FOLDER_CAP = toInt(process.env.FOLDER_CAP, 30);
 
 // -------------------------------
 // DB init
@@ -292,14 +296,65 @@ export function removeChip(user_id: string, chip_id: string, qty = 1): boolean {
 export function listInventory(user_id: string): InventoryItem[] {
   return db.prepare(`SELECT chip_id, qty FROM inventory WHERE user_id = ? ORDER BY chip_id`).all(user_id) as InventoryItem[];
 }
+
+// ---- Folder helpers with CAP enforcement ----
 export type FolderItem = { chip_id: string; qty: number };
-export function addToFolder(user_id: string, chip_id: string, qty = 1) {
+
+/** Total used slots (sum of qty across all folder rows). */
+export function getFolderCount(user_id: string): number {
+  const row = db.prepare(`SELECT COALESCE(SUM(qty), 0) AS n FROM folder WHERE user_id = ?`).get(user_id) as any;
+  return toInt(row?.n ?? 0, 0);
+}
+
+/** Remaining slots before hitting FOLDER_CAP. */
+export function getFolderRemaining(user_id: string): number {
+  return Math.max(0, FOLDER_CAP - getFolderCount(user_id));
+}
+
+/** Status-returning add respecting the folder cap. */
+export function tryAddToFolder(
+  user_id: string,
+  chip_id: string,
+  qty = 1
+): { ok: boolean; added: number; remaining: number; cap: number; reason?: string } {
   ensurePlayer(user_id);
+  const want = Math.max(0, toInt(qty, 0));
+  if (want <= 0) return { ok: true, added: 0, remaining: getFolderRemaining(user_id), cap: FOLDER_CAP };
+
+  const remaining = getFolderRemaining(user_id);
+  if (remaining <= 0) {
+    return { ok: false, added: 0, remaining: 0, cap: FOLDER_CAP, reason: `Folder is full (${FOLDER_CAP}/${FOLDER_CAP}).` };
+  }
+
+  const addNow = Math.min(remaining, want);
+
   const row = db.prepare(`SELECT id, qty FROM folder WHERE user_id = ? AND chip_id = ?`)
     .get(user_id, chip_id) as { id: number; qty: number } | undefined;
-  if (row) db.prepare(`UPDATE folder SET qty = ? WHERE id = ?`).run(Math.max(0, row.qty + qty), row.id);
-  else db.prepare(`INSERT INTO folder (user_id, chip_id, qty) VALUES (?, ?, ?)`).run(user_id, chip_id, Math.max(0, qty));
+
+  if (row) {
+    db.prepare(`UPDATE folder SET qty = ? WHERE id = ?`).run(Math.max(0, row.qty + addNow), row.id);
+  } else {
+    db.prepare(`INSERT INTO folder (user_id, chip_id, qty) VALUES (?, ?, ?)`).run(user_id, chip_id, addNow);
+  }
+
+  const remAfter = getFolderRemaining(user_id);
+  return {
+    ok: addNow > 0,
+    added: addNow,
+    remaining: remAfter,
+    cap: FOLDER_CAP,
+    ...(addNow < want ? { reason: `Only ${addNow} could be added; folder cap ${FOLDER_CAP} reached.` } : {})
+  };
 }
+
+/**
+ * Back-compat wrapper: adds up to remaining capacity; silently ignores overflow.
+ * Prefer calling tryAddToFolder from new code so you can show a user-facing message.
+ */
+export function addToFolder(user_id: string, chip_id: string, qty = 1) {
+  tryAddToFolder(user_id, chip_id, qty);
+}
+
 export function listFolder(user_id: string): FolderItem[] {
   return db.prepare(`SELECT chip_id, qty FROM folder WHERE user_id = ? ORDER BY chip_id`).all(user_id) as FolderItem[];
 }
@@ -364,7 +419,7 @@ export function addMissionProgress(user_id: string, mission_id: string, delta: n
 // Compatibility exports
 // -------------------------------
 
-export { db };                           // many files do: import { db } from '../lib/db'
+export { db };                             // many files do: import { db } from '../lib/db'
 export const getInventory = listInventory; // alias for older imports
 
 export default db;

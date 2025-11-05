@@ -19,7 +19,6 @@ export type RewardsResult = {
   zenny_gained: number;
   zenny_balance_after?: number;
   drops: DropGrant[];
-  // convenience
   leveledUp?: number;
 };
 
@@ -67,15 +66,14 @@ function coreRoll(user_id: string, virus_id: string) {
   const v = b.viruses[virus_id] || getVirusById(virus_id);
   const isBoss = !!(v as any)?.boss;
 
-  // XP
-  const xpRange = parseRange((v as any)?.xp_range, VIRUS_BASE_XP_RANGE);
+  // XP — always a concrete range
+  const xpRange = parseRangeNonNull((v as any)?.xp_range, VIRUS_BASE_XP_RANGE);
   let xp = rollRange(xpRange);
   if (isBoss) xp = Math.max(1, Math.round(xp * BOSS_FALLBACK_XP_MULT));
 
-  // Zenny
-  const zennyRangeFromVirus = parseRange((v as any)?.zenny_range, null);
-  const zennyRange = zennyRangeFromVirus ||
-    (isBoss ? BOSS_FALLBACK_ZENNY_RANGE : VIRUS_BASE_ZENNY_RANGE);
+  // Zenny — always a concrete range (no null into rollRange)
+  const zFallback = isBoss ? BOSS_FALLBACK_ZENNY_RANGE : VIRUS_BASE_ZENNY_RANGE;
+  const zennyRange = parseRangeNonNull((v as any)?.zenny_range, zFallback);
   const zenny = rollRange(zennyRange);
 
   // Apply zenny & XP (and compute leveled up)
@@ -139,10 +137,10 @@ function rollDropsForVirus(virus_id: string): string[] {
 /* -------------------------------------------
  * Helpers
  * -----------------------------------------*/
-function parseRange(
+function parseRangeNonNull(
   s: any,
-  fallback: readonly [number, number] | null
-): [number, number] | null {
+  fallback: readonly [number, number]
+): [number, number] {
   const text = String(s ?? '').trim();
   const m = text.match(/^\s*(\d+)\s*-\s*(\d+)\s*$/);
   if (m) {
@@ -150,7 +148,7 @@ function parseRange(
     const lo = Math.min(a, b), hi = Math.max(a, b);
     return [lo, hi];
   }
-  return fallback ? [fallback[0], fallback[1]] : null;
+  return [fallback[0], fallback[1]];
 }
 
 function rollRange(range: [number, number] | readonly [number, number]) {

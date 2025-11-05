@@ -12,12 +12,13 @@ import {
 } from 'discord.js';
 
 import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
-import { getBundle } from '../lib/data';
+import { getBundle, resolveShopInventory } from '../lib/data';
 import {
   getPlayer, setRegion, setZone, getZone,
-  addZenny, grantChip,
+  addZenny, spendZenny,
   addHPMax, addATK, addDEF, addSPD, addACC, addEvasion,
 } from '../lib/db';
+import { tryAddToFolder, getFolderRemaining } from '../lib/folder';
 import { startEncounterBattle } from '../lib/battle';
 
 const JACK_GIF =
@@ -65,21 +66,22 @@ function zonesMatch(v: any, zone: number): boolean {
 function pickEncounter(regionId: string, zone: number) {
   const { viruses } = getBundle();
   const normRegion = String(regionId || '').trim();
-  const inRegion = (v: any) => String(v?.region || '').trim() === normRegion && zonesMatch(v, zone);
+  const inRegion = (v: any) => String((v as any)?.region || '').trim() === normRegion && zonesMatch(v, zone);
 
-  const inZone = Object.values(viruses).filter(inRegion);
+  const all = Object.values(viruses);
+  const inZone = all.filter(inRegion);
   const bosses = inZone.filter(isBossFlag);
   const normals = inZone.filter(v => !isBossFlag(v));
 
   if (normals.length === 0 && bosses.length > 0) {
-    return { enemy_kind: 'boss' as const, virus: bosses[0] };
+    return { enemy_kind: 'boss' as const, virus: bosses[0] as any };
   }
   if (bosses.length && Math.random() < BOSS_ENCOUNTER) {
-    return { enemy_kind: 'boss' as const, virus: bosses[0] };
+    return { enemy_kind: 'boss' as const, virus: bosses[0] as any };
   }
   if (normals.length) {
     const pick = normals[Math.floor(Math.random() * normals.length)];
-    return { enemy_kind: 'virus' as const, virus: pick };
+    return { enemy_kind: 'virus' as const, virus: pick as any };
   }
 
   throw Object.assign(
@@ -108,7 +110,6 @@ export async function renderJackInHUD(ix: ButtonInteraction | StringSelectMenuIn
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(encounterBtn, travelBtn, shopBtn);
 
-  // decide whether to reply or update
   if (ix.isChatInputCommand()) {
     await ix.reply({ ephemeral: true, embeds: [embed], components: [row] });
   } else if (ix.isButton()) {
@@ -206,7 +207,7 @@ export async function onSelectZone(ix: StringSelectMenuInteraction) {
   await renderJackInHUD(ix);
 }
 
-/** Encounter → create battle, show an embedded header with the virus image, plus hand pickers. */
+/** Encounter → create battle, show an embedded header with the virus image, plus hand picker (single multi-select). */
 export async function onEncounter(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
@@ -229,51 +230,53 @@ export async function onEncounter(ix: ButtonInteraction) {
     const { battleId, state } = startEncounterBattle({
       user_id: userId,
       enemy_kind,
-      enemy_id: virus.id,
+      enemy_id: (virus as any).id,
       region_id: regionId,
       zone,
     });
 
     // encounter header embed with virus image
     const header = new EmbedBuilder()
-      .setTitle(`${virus.name}`)
-      .setDescription(`Enemy HP: **${virus.hp ?? 0}** • Kind: **${enemy_kind === 'boss' ? 'Boss' : 'Virus'}**`)
-      .setThumbnail(virus.image_url || virus.anim_url || null)
+      .setTitle(`${(virus as any).name}`)
+      .setDescription(`Enemy HP: **${(virus as any).hp ?? 0}** • Kind: **${enemy_kind === 'boss' ? 'Boss' : 'Virus'}**`)
+      .setThumbnail((virus as any).image_url || (virus as any).anim_url || null)
       .setImage(reg?.background_url || null);
 
-    // build 3 pickers from opening hand
+    // ----- SINGLE MULTI-SELECT (max 3) + Lock/Run -----
     const hand: string[] = Array.isArray(state?.hand) ? state.hand : [];
-    const makeSelect = (slot: 1 | 2 | 3) => {
-      const sel = new StringSelectMenuBuilder()
-        .setCustomId(`pick${slot}:${battleId}`)
-        .setPlaceholder(`Pick ${slot}`)
-        .setMinValues(0)
-        .setMaxValues(1);
 
-      const opts = hand.map((cid) => {
-        const c: any = chips[cid] || {};
-        const name = c.name || cid;
-        const code = c.code || c.letters || '';
-        const pwr  = c.power || c.power_total || '';
-        const hits = c.hits || 1;
-        const label = `${name}${code ? ` [${code}]` : ''}${pwr ? ` ${pwr}×${hits}` : ''}`;
-        return { label: label.slice(0, 100), value: cid };
-      });
-      if (opts.length) sel.addOptions(opts);
-      return sel;
-    };
-    const row1 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(1));
-    const row2 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(2));
-    const row3 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(3));
+    const sel = new StringSelectMenuBuilder()
+      .setCustomId(`pick:${battleId}`)
+      .setPlaceholder('Select up to 3 chips…')
+      .setMinValues(0)
+      .setMaxValues(Math.min(3, hand.length));
+
+    const opts = hand.map((cid) => {
+      const c: any = chips[cid] || {};
+      const name = c.name || cid;
+      const code = c.code || c.letters || '';
+      const pwr  = c.power || c.power_total || '';
+      const hits = c.hits || 1;
+      const descBits: string[] = [];
+      if (c.element) descBits.push(c.element);
+      if (pwr) descBits.push(`P${pwr}${hits > 1 ? `×${hits}` : ''}`);
+      if (c.effects) descBits.push(String(c.effects).replace(/\s+/g, ' ').trim());
+      const description = descBits.join(' • ').slice(0, 100);
+      const label = `${name}${code ? ` [${code}]` : ''}`.slice(0, 100);
+      return { label, description, value: cid };
+    });
+    if (opts.length) sel.addOptions(opts);
+
+    const rowSelect = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(sel);
 
     const lockBtn = new ButtonBuilder().setCustomId(`lock:${battleId}`).setStyle(ButtonStyle.Success).setLabel('Lock');
     const runBtn  = new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run');
-    const row4 = new ActionRowBuilder<ButtonBuilder>().addComponents(lockBtn, runBtn);
+    const rowBtns = new ActionRowBuilder<ButtonBuilder>().addComponents(lockBtn, runBtn);
 
     await ix.reply({
       ephemeral: true,
       embeds: [header],
-      components: [row1, row2, row3, row4],
+      components: [rowSelect, rowBtns],
     });
   } catch (err: any) {
     if (err?.code === 'EMPTY_FOLDER') {
@@ -292,25 +295,14 @@ export async function onEncounter(ix: ButtonInteraction) {
 
 /* ------------------------------ Shop flow ------------------------------ */
 
-function parseShopEntries(entries: string): string[] {
-  return String(entries || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(e => e.split(':')[0].trim()); // ignore any extra tokens, keep chip id
-}
-function chipPrice(id: string): number {
-  const c: any = getBundle().chips[id] || {};
-  const z = Number(c.zenny_cost || 0);
-  return Number.isFinite(z) ? Math.max(0, z) : 0;
-}
+// Upgrade effect parser -> immediate stat application
 function applyUpgradeImmediate(userId: string, chip: any): string {
   const text = String(chip.effects || chip.description || '');
   const apply = (rx: RegExp) => {
     const m = text.match(rx);
     return m ? parseInt(m[1], 10) : 0;
   };
-  // very forgiving patterns like "HP+50", "atk +2", etc.
+  // forgiving patterns like "HP+50", "atk +2", etc.
   const dHP  = apply(/(?:hp_max|max\s*hp|hp)\s*([+-]?\d+)/i);
   const dATK = apply(/atk\s*([+-]?\d+)/i);
   const dDEF = apply(/def\s*([+-]?\d+)/i);
@@ -337,23 +329,25 @@ function applyUpgradeImmediate(userId: string, chip: any): string {
 
 export async function onOpenShop(ix: ButtonInteraction) {
   const userId = ix.user.id;
-  const { regions, shops, chips } = getBundle();
+  const { regions } = getBundle();
   const p: any = await getPlayer(userId);
   const region = regions[p?.region_id];
 
-  if (!region?.shop_id || !shops[region.shop_id]) {
+  if (!region) {
+    await ix.reply({ ephemeral: true, content: '🛒 No region selected. Use **/jack_in** first.' });
+    return;
+  }
+
+  const items = resolveShopInventory(region.id);
+  if (!items.length) {
     await ix.reply({ ephemeral: true, content: `🛒 No shop available in **${region?.name || 'this region'}**.` });
     return;
   }
 
-  const shop = shops[region.shop_id] as any;
-  const ids = parseShopEntries(shop.entries);
-
-  const options = ids
-    .map((id: string) => {
-      const c: any = chips[id] || {};
-      const lbl = `${c.name || id}${c.letters ? ` [${c.letters}]` : ''} — ${chipPrice(id)}z`;
-      return { label: lbl.slice(0, 100), value: id };
+  const options = items
+    .map((it) => {
+      const lbl = `${it.name}${(it.chip as any).letters ? ` [${(it.chip as any).letters}]` : ''} — ${it.zenny_price}z`;
+      return { label: lbl.slice(0, 100), value: it.item_id };
     })
     .slice(0, 25);
 
@@ -369,7 +363,7 @@ export async function onOpenShop(ix: ButtonInteraction) {
 
   const embed = new EmbedBuilder()
     .setTitle(`🛒 ${region.name} Shop`)
-    .setDescription('Pick an item, then **Buy**.\nPrices reflect chip `zenny_cost` from your TSV.')
+    .setDescription('Pick an item, then **Buy**.\nPrices reflect TSV `price_override` (if present) or chip `zenny_cost`.')
     .setImage(region.background_url || null);
 
   await ix.reply({
@@ -383,14 +377,29 @@ export async function onOpenShop(ix: ButtonInteraction) {
 }
 
 export async function onShopSelect(ix: StringSelectMenuInteraction) {
+  const userId = ix.user.id;
+  const { regions } = getBundle();
+  const p: any = await getPlayer(userId);
+  const region = regions[p?.region_id];
+  const items = region ? resolveShopInventory(region.id) : [];
+
   const id = ix.values?.[0];
-  const { chips } = getBundle();
-  const c: any = chips[id] || {};
-  const price = chipPrice(id);
+  const item = items.find(i => i.item_id === id);
+
+  if (!item) {
+    await ix.update({
+      content: '⚠️ That item is not available here.',
+      components: [],
+    });
+    return;
+  }
+
+  const c: any = item.chip || {};
+  const price = item.zenny_price;
   const embed = new EmbedBuilder()
     .setTitle(c.name || id)
     .setDescription(`${c.description || '—'}\n\nPrice: **${price}z**`)
-    .setThumbnail(c.image_url || null);
+    .setThumbnail(c.image_url || (c as any).image || null);
 
   const buy  = new ButtonBuilder().setCustomId(`jackin:shopBuy:${id}`).setStyle(ButtonStyle.Success).setLabel(`Buy for ${price}z`);
   const exit = new ButtonBuilder().setCustomId('jackin:shopExit').setStyle(ButtonStyle.Secondary).setLabel('Exit');
@@ -411,30 +420,73 @@ export async function onShopSelect(ix: StringSelectMenuInteraction) {
 }
 
 export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
-  if (!chipId || chipId === '_none') { await ix.reply({ ephemeral: true, content: 'Please select an item first.' }); return; }
-  const userId = ix.user.id;
-  const { chips } = getBundle();
-  const c: any = chips[chipId] || {};
-  const cost = chipPrice(chipId);
+  try {
+    if (!chipId || chipId === '_none') {
+      await ix.reply({ ephemeral: true, content: 'Please select an item first.' });
+      return;
+    }
 
-  const p: any = await getPlayer(userId);
-  if ((p?.zenny ?? 0) < cost) {
-    await ix.reply({ ephemeral: true, content: `❌ Not enough zenny. You need **${cost}z**.` });
-    return;
+    const userId = ix.user.id;
+    const { regions } = getBundle();
+    const p: any = await getPlayer(userId);
+    const region = regions[p?.region_id];
+
+    if (!region) {
+      await ix.reply({ ephemeral: true, content: '⚠️ Pick a region first (use /jack_in).' });
+      return;
+    }
+
+    const items = resolveShopInventory(region.id);
+    const item = items.find(s => s.item_id === chipId);
+    if (!item) {
+      await ix.reply({ ephemeral: true, content: '❌ That chip is not for sale in this region.' });
+      return;
+    }
+
+    // Capacity check BEFORE spending
+    const remaining = getFolderRemaining(userId);
+    if (remaining <= 0 && !item.is_upgrade) {
+      await ix.reply({ ephemeral: true, content: `❌ Folder is full (30/30). Remove a chip from your folder first.` });
+      return;
+    }
+
+    // Pay
+    const pay = spendZenny(userId, item.zenny_price);
+    if (!pay.ok) {
+      await ix.reply({ ephemeral: true, content: `❌ Not enough Zenny. You need ${item.zenny_price}z.` });
+      return;
+    }
+
+    // Apply
+    if (item.is_upgrade) {
+      const summary = applyUpgradeImmediate(userId, item.chip);
+      await ix.reply({
+        ephemeral: true,
+        content: `✅ Purchased **${item.name}** for **${item.zenny_price}z**.\nUpgrade applied: ${summary}`,
+      });
+      return;
+    }
+
+    // Non-upgrade → add to folder (refund on failure)
+    const res = tryAddToFolder(userId, chipId, 1);
+    if (!res.ok || res.added <= 0) {
+      addZenny(userId, item.zenny_price); // refund
+      const why = res.reason ? ` ${res.reason}` : '';
+      await ix.reply({ ephemeral: true, content: `❌ Purchase failed.${why}` });
+      return;
+    }
+
+    const used = (res.cap - res.remaining);
+    await ix.reply({
+      ephemeral: true,
+      content: `✅ Bought **${item.name}** for **${item.zenny_price}z**.\nAdded to your folder. Slots: ${used}/${res.cap} (remaining ${res.remaining}).`,
+    });
+  } catch (err: any) {
+    console.error('onShopBuy error:', err);
+    try {
+      await ix.reply({ ephemeral: true, content: `⚠️ Error: ${err?.message || err}` });
+    } catch {}
   }
-
-  addZenny(userId, -cost);
-  let resultMsg = '';
-
-  if (c.is_upgrade) {
-    const summary = applyUpgradeImmediate(userId, c);
-    resultMsg = `✅ Purchased **${c.name || chipId}** for **${cost}z**.\nUpgrade applied: ${summary}`;
-  } else {
-    grantChip(userId, chipId, 1);
-    resultMsg = `✅ Purchased **${c.name || chipId}** for **${cost}z**. Added to inventory.`;
-  }
-
-  await ix.reply({ ephemeral: true, content: resultMsg });
 }
 
 export async function onShopExit(ix: ButtonInteraction) {

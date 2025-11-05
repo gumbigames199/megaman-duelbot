@@ -20,7 +20,7 @@ import { wantDmg } from './lib/settings-util';
 import * as Start from './commands/start';
 import * as Profile from './commands/profile';
 import * as Folder from './commands/folder';
-import * as ShopCmd from './commands/shop'; // keep if you still want /shop
+import * as ShopCmd from './commands/shop'; // optional slash
 import * as Mission from './commands/mission';
 import * as Leaderboard from './commands/leaderboard';
 import * as Chip from './commands/chip';
@@ -36,15 +36,14 @@ if (!GUILD_ID) console.warn('⚠️ Missing GUILD_ID (commands will not register
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds], partials: [Partials.Channel] });
 
-/* ---------- slash (guild-scoped) ----------
-   Removed /health and all /settings subcommands per request. */
+/* ---------- slash (guild-scoped) ---------- */
 const commands = [
   new SlashCommandBuilder()
     .setName('reload_data')
     .setDescription('Reload TSV bundle from /data (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   Start.data, Profile.data, Folder.data,
-  ShopCmd.data,          // remove this line if you no longer want /shop as a slash command
+  ShopCmd.data,          // remove if you no longer want /shop
   Mission.data, Leaderboard.data,
   Chip.data, VirusDex.data, JackIn.data,
 ].map((c: any) => c.toJSON());
@@ -65,37 +64,39 @@ function isAdmin(ix: Interaction): boolean {
 }
 
 /* ---------- helpers ---------- */
+/** Build a single multi-select (max 3) + Lock/Run buttons from a raw hand of chip ids. */
 function buildPickRows(battleId: string, hand: string[]) {
   const { chips } = getBundle();
 
-  const makeSelect = (slot: 1 | 2 | 3) => {
-    const sel = new StringSelectMenuBuilder()
-      .setCustomId(`pick${slot}:${battleId}`)
-      .setPlaceholder(`Pick ${slot}`)
-      .setMinValues(0)
-      .setMaxValues(1);
-    const opts = (hand || []).map((cid) => {
-      const c: any = chips[cid] || {};
-      const name = c.name || cid;
-      const code = c.code || c.letters || '';
-      const pwr  = c.power || c.power_total || '';
-      const hits = c.hits || 1;
-      const label = `${name}${code ? ` [${code}]` : ''}${pwr ? ` ${pwr}×${hits}` : ''}`;
-      return { label: label.slice(0, 100), value: cid };
-    });
-    if (opts.length) sel.addOptions(opts);
-    return sel;
-  };
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`pick:${battleId}`)
+    .setPlaceholder('Select up to 3 chips…')
+    .setMinValues(0)
+    .setMaxValues(Math.min(3, hand.length));
 
-  const row1 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(1));
-  const row2 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(2));
-  const row3 = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(makeSelect(3));
+  const opts = (hand || []).map((cid) => {
+    const c: any = chips[cid] || {};
+    const name = c.name || cid;
+    const code = c.code || c.letters || '';
+    const pwr  = c.power || c.power_total || '';
+    const hits = c.hits || 1;
+    const descBits: string[] = [];
+    if (c.element) descBits.push(c.element);
+    if (pwr) descBits.push(`P${pwr}${hits > 1 ? `×${hits}` : ''}`);
+    if (c.effects) descBits.push(String(c.effects).replace(/\s+/g, ' ').trim());
+    const description = descBits.join(' • ').slice(0, 100);
+    const label = `${name}${code ? ` [${code}]` : ''}`.slice(0, 100);
+    return { label, description, value: cid };
+  });
+  if (opts.length) select.addOptions(opts);
 
-  const lockBtn = new ButtonBuilder().setCustomId(`lock:${battleId}`).setStyle(ButtonStyle.Success).setLabel('Lock');
-  const runBtn  = new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run');
-  const row4 = new ActionRowBuilder<ButtonBuilder>().addComponents(lockBtn, runBtn);
+  const rowSel = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+  const rowBtns = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`lock:${battleId}`).setStyle(ButtonStyle.Success).setLabel('Lock'),
+    new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run'),
+  );
 
-  return [row1, row2, row3, row4] as const;
+  return [rowSel, rowBtns] as const;
 }
 
 /* ---------- router ---------- */
@@ -107,7 +108,6 @@ client.on('interactionCreate', async (ix) => {
         if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', ephemeral: true }); return; }
         await ix.deferReply({ ephemeral: true });
 
-        // Cast this call to tolerate the loader’s runtime shape ({ data, report }) and arg.
         const { report } = (loadTSVBundle as unknown as (dir?: string) => any)(
           process.env.DATA_DIR || './data'
         );
@@ -150,37 +150,27 @@ client.on('interactionCreate', async (ix) => {
       }
     }
 
-    // Battle pick menus (silent & persisted)
-    if (ix.isStringSelectMenu()) {
-      const [kind, battleId] = ix.customId.split(':');
-      if (!/^pick[123]$/.test(kind)) return;
-
+    // Battle pick menu (single multi-select)
+    if (ix.isStringSelectMenu() && ix.customId.startsWith('pick:')) {
+      const [, battleId] = ix.customId.split(':');
       const s = loadBattle(battleId);
       if (!s || s.user_id !== ix.user.id) { await ix.deferUpdate(); return; }
 
-      const slotIdx = ({ pick1: 0, pick2: 1, pick3: 2 } as any)[kind] ?? 0;
-      const chosenId = ix.values[0] || '';
+      // Chosen up to 3
+      const chosen = (ix.values || []).slice(0, 3);
 
-      while (s.locked.length < 3) s.locked.push('');
-
-      if (chosenId && s.locked.includes(chosenId)) {
-        await ix.reply({ ephemeral: true, content: '⚠️ Already selected that chip in another slot.' });
-        return;
-      }
-
-      const prev = s.locked[slotIdx];
-      s.locked[slotIdx] = chosenId;
-
-      const chosen = s.locked.filter(Boolean);
+      // Letter rule validation
       if (chosen.length) {
         const chipRows = chosen.map(id => ({ id, letters: getBundle().chips[id]?.letters || '' }));
         if (!validateLetterRule(chipRows)) {
-          s.locked[slotIdx] = prev;
           await ix.reply({ ephemeral: true, content: '❌ Invalid combo. Chips must share a letter, exact name, or include *.' });
           return;
         }
       }
 
+      // Persist (compat save)
+      // Ensure s.locked has the chosen ids (pad/trim as legacy expects array length <=3)
+      s.locked = chosen.slice();
       save(s);
       await ix.deferUpdate();
       return;
@@ -252,13 +242,13 @@ client.on('interactionCreate', async (ix) => {
 
           end(battleId);
           await ix.followUp({ content: `✅ Victory!${extra ? ` ${extra}` : ''}\n${rewardText}`, ephemeral: false });
-          await JackIn.renderJackInHUD(ix); // back to Encounter / Travel / Shop
+          await JackIn.renderJackInHUD(ix); // back to hub
         } else if (res.outcome === 'defeat') {
           end(battleId);
           await ix.followUp({ content: `💀 Defeat…${extra ? ` ${extra}` : ''}`, ephemeral: false });
           await JackIn.renderJackInHUD(ix); // back to hub
         } else {
-          // Ongoing: show fresh ephemeral pickers built from the NEW hand
+          // Ongoing: show fresh ephemeral picker built from the NEW hand
           const rows = buildPickRows(battleId, s.hand);
           await ix.followUp({ ephemeral: true, components: rows });
           if (extra) await ix.followUp({ ephemeral: true, content: extra });
