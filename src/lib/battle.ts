@@ -5,7 +5,7 @@ import {
   ChatInputCommandInteraction,
 } from 'discord.js';
 
-import { getChipById, getVirusById } from './data';
+import { getChipById, getVirusId as _unused, getVirusById } from './data';
 import {
   renderBattleScreen,
   renderRoundResultWithNextHand,
@@ -14,6 +14,7 @@ import {
 import { ensurePlayer, getPlayer, listFolder as listFolderQty } from './db';
 import { grantVirusRewards } from './rewards';
 import { typeMultiplier } from './rules';
+import type { Element } from './types'; // <<< added
 
 const ROUND_SECONDS = toInt(process.env.ROUND_SECONDS, 60);
 const DEFAULT_PLAYER_HP = 100;
@@ -59,6 +60,22 @@ type BattleState = {
   player_status: BattleStatuses;
   enemy_status: BattleStatuses;
 };
+
+// ---- Element normalizer (string → Element union) ----
+function toElement(x: unknown): Element {
+  const s = String(x ?? '').toLowerCase();
+  switch (s) {
+    case 'fire':   return 'Fire';
+    case 'aqua':
+    case 'water':  return 'Aqua';
+    case 'elec':
+    case 'electric': return 'Elec';
+    case 'wood':
+    case 'grass':  return 'Wood';
+    case 'neutral':
+    default:       return 'Neutral';
+  }
+}
 
 // ---------------- In-memory store ----------------
 const battles = new Map<string, BattleState>();
@@ -371,7 +388,9 @@ function _resolveRoundInternal(bs: BattleState) {
 
   const selected = bs.selected.slice(0, 3);
   const virus = getVirusById(bs.virus_id) as any;
-  const defenderElem = String(virus?.element || 'Neutral');
+
+  // --- Element mapping (fix TS: string → Element) ---
+  const defenderElem: Element = toElement(virus?.element);
 
   for (const chipId of selected) {
     const chip = getChipById(chipId) as any;
@@ -382,9 +401,9 @@ function _resolveRoundInternal(bs: BattleState) {
 
     const power = Math.max(0, asNum(chip.power, 0));
     const hits = Math.max(1, asNum(chip.hits, 1));
-    const attElem = String(chip.element || 'Neutral');
+    const attElem: Element = toElement(chip?.element);
 
-    // Elemental multiplier
+    // Elemental multiplier (typed)
     const mult = Number(typeMultiplier(attElem, defenderElem) || 1);
     const dmgPerHit = Math.round(power * Math.max(0.25, mult)); // keep bounded if mult<1
     const total = Math.max(0, dmgPerHit * hits);

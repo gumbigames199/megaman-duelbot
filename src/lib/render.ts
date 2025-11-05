@@ -1,144 +1,139 @@
-// src/lib/rewards.ts
-import { getBundle, getVirusById } from './data';
-import { addZenny, addXP, grantChip, getPlayer } from './db';
+// src/lib/render.ts
+import {
+  EmbedBuilder,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+} from 'discord.js';
 
-const GLOBAL_DROP_RATE_MULT = envFloat('GLOBAL_DROP_RATE_MULT', 1.0);
+import { getVirusArt } from './data';
 
-// Fallbacks if a virus row is missing ranges
-const VIRUS_BASE_XP_RANGE = [10, 20] as const;
-const VIRUS_BASE_ZENNY_RANGE = [20, 60] as const;
-const BOSS_FALLBACK_XP_MULT = envFloat('BOSS_XP_MULTIPLIER', 1.5);
-const BOSS_FALLBACK_ZENNY_RANGE = [150, 300] as const;
+export type EnemyRef = { virusId: string; displayName?: string };
 
-export type DropGrant = { item_id: string; qty: number };
-export type RewardsResult = {
-  xp_gained: number;
-  xp_total_after: number;
-  level_after: number;
-  next_threshold: number;
-  zenny_gained: number;
-  zenny_balance_after?: number;
-  drops: DropGrant[];
-  leveledUp?: number;
-};
+export function buildBattleHeaderEmbed(opts: { virusId: string; displayName?: string }) {
+  const art = getVirusArt(opts.virusId);
+  const e = new EmbedBuilder()
+    .setTitle(opts.displayName || opts.virusId);
 
-export function grantVirusRewards(user_id: string, virus_id: string): RewardsResult {
-  const { xp, zenny, drops, leveledUp, xpTotal, levelAfter, nextThreshold } =
-    coreRoll(user_id, virus_id);
+  if (art.image) e.setThumbnail(String(art.image));
+  else if (art.sprite) e.setThumbnail(String(art.sprite));
+  else e.setDescription(`${art.fallbackEmoji} ${opts.displayName || opts.virusId}`);
 
-  return {
-    xp_gained: xp,
-    xp_total_after: xpTotal,
-    level_after: levelAfter,
-    next_threshold: nextThreshold,
-    zenny_gained: zenny,
-    drops: drops.map(id => ({ item_id: id, qty: 1 })),
-    leveledUp,
-  };
+  return e;
 }
 
-export function rollRewards(user_id: string, virus_id: string): {
-  xp: number;
-  zenny: number;
-  drops: string[];
-  leveledUp: number;
-} {
-  const { xp, zenny, drops, leveledUp } = coreRoll(user_id, virus_id);
-  return { xp, zenny, drops, leveledUp };
+/** First screen of a battle with a single multi-select (max 3) + Lock/Run buttons. */
+export function renderBattleScreen(args: {
+  battleId: string;
+  enemy: EnemyRef;
+  hp: { playerHP: number; playerHPMax: number; enemyHP: number; enemyHPMax: number };
+  hand: Array<{ id: string; name: string; power?: number; hits?: number; element?: string; effects?: string; description?: string }>;
+  selectedIds: string[];
+}) {
+  const { battleId, enemy, hp, hand } = args;
+
+  const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
+    [
+      `**Your HP:** ${hp.playerHP}/${hp.playerHPMax}`,
+      `**Enemy HP:** ${hp.enemyHP}/${hp.enemyHPMax}`,
+      '',
+      hand.length ? '**Choose up to 3 chips**' : '📁 Your hand is empty.',
+    ].join('\n')
+  );
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`pick:${battleId}`)
+    .setPlaceholder('Select up to 3 chips…')
+    .setMinValues(0)
+    .setMaxValues(Math.min(3, hand.length));
+
+  const opts = hand.map((c) => {
+    const bits: string[] = [];
+    if (c.element) bits.push(c.element);
+    if (c.power)  bits.push(`P${c.power}${c.hits && c.hits > 1 ? `×${c.hits}` : ''}`);
+    if (c.effects) bits.push(String(c.effects).replace(/\s+/g, ' ').trim());
+    const description = bits.join(' • ').slice(0, 100);
+    const label = `${c.name}${c.element ? ` [${c.element}]` : ''}`.slice(0, 100);
+    return { label, description, value: c.id };
+  });
+  if (opts.length) select.addOptions(opts);
+
+  const rowSel = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+  const rowBtns = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`lock:${battleId}`).setStyle(ButtonStyle.Success).setLabel('Lock'),
+    new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run'),
+  );
+
+  return { embed, components: [rowSel, rowBtns] as const };
 }
 
-export function rollBossRewards(user_id: string, virus_id: string) {
-  return rollRewards(user_id, virus_id);
+/** Round result embed + NEW hand picker (single multi-select) with buttons. */
+export function renderRoundResultWithNextHand(args: {
+  battleId: string;
+  enemy: EnemyRef;
+  hp: { playerHP: number; playerHPMax: number; enemyHP: number; enemyHPMax: number };
+  round: { playerLogLines: string[]; enemyLogLines: string[] };
+  nextHand: Array<{ id: string; name: string; power?: number; hits?: number; element?: string; effects?: string; description?: string }>;
+  selectedIds: string[];
+}) {
+  const { battleId, enemy, hp, round, nextHand } = args;
+
+  const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
+    [
+      `**Your HP:** ${hp.playerHP}/${hp.playerHPMax}`,
+      `**Enemy HP:** ${hp.enemyHP}/${hp.enemyHPMax}`,
+      '',
+      round.playerLogLines.length ? '🟦 **Your turn**' : undefined,
+      round.playerLogLines.join('\n'),
+      round.enemyLogLines.length ? '\n🟥 **Enemy turn**' : undefined,
+      round.enemyLogLines.join('\n'),
+      '\n**Next hand:** pick up to 3',
+    ].filter(Boolean).join('\n')
+  );
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`pick:${battleId}`)
+    .setPlaceholder('Select up to 3 chips…')
+    .setMinValues(0)
+    .setMaxValues(Math.min(3, nextHand.length));
+
+  const opts = nextHand.map((c) => {
+    const bits: string[] = [];
+    if (c.element) bits.push(c.element);
+    if (c.power)  bits.push(`P${c.power}${c.hits && c.hits > 1 ? `×${c.hits}` : ''}`);
+    if (c.effects) bits.push(String(c.effects).replace(/\s+/g, ' ').trim());
+    const description = bits.join(' • ').slice(0, 100);
+    const label = `${c.name}${c.element ? ` [${c.element}]` : ''}`.slice(0, 100);
+    return { label, description, value: c.id };
+  });
+  if (opts.length) select.addOptions(opts);
+
+  const rowSel = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+  const rowBtns = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`lock:${battleId}`).setStyle(ButtonStyle.Success).setLabel('Lock'),
+    new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run'),
+  );
+
+  return { embed, components: [rowSel, rowBtns] as const };
 }
 
-function coreRoll(user_id: string, virus_id: string) {
-  const b = getBundle();
-  const v = (b.viruses as any)[virus_id] || getVirusById(virus_id);
-  const isBoss = !!(v as any)?.boss;
+/** Final screen after victory/defeat; light wrapper so callers can update once. */
+export function renderVictoryToHub(args: {
+  enemy: EnemyRef;
+  victory: { title: string; rewardLines: string[] };
+}) {
+  const { enemy, victory } = args;
+  const art = getVirusArt(enemy.virusId);
 
-  // XP — always non-null range
-  const xpRange = parseRangeNonNull((v as any)?.xp_range, VIRUS_BASE_XP_RANGE);
-  let xp = rollRange(xpRange);
-  if (isBoss) xp = Math.max(1, Math.round(xp * BOSS_FALLBACK_XP_MULT));
+  const embed = new EmbedBuilder()
+    .setTitle(`${victory.title} — ${enemy.displayName || enemy.virusId}`)
+    .setDescription(victory.rewardLines.length ? victory.rewardLines.join('\n') : ' ')
+    .setFooter({ text: 'Use /jack_in to continue.' });
 
-  // Zenny — always non-null range
-  const zFallback = isBoss ? BOSS_FALLBACK_ZENNY_RANGE : VIRUS_BASE_ZENNY_RANGE;
-  const zennyRange = parseRangeNonNull((v as any)?.zenny_range, zFallback);
-  const zenny = rollRange(zennyRange);
+  if (art.image) embed.setThumbnail(String(art.image));
+  else if (art.sprite) embed.setThumbnail(String(art.sprite));
 
-  if (zenny > 0) addZenny(user_id, zenny);
-
-  const beforeLevel = getPlayer(user_id)?.level ?? 1;
-  const xpRes = addXP(user_id, xp);
-  const leveledUp = Math.max(0, (xpRes?.level ?? beforeLevel) - beforeLevel);
-
-  const drops = rollDropsForVirus(virus_id);
-  for (const id of drops) grantChip(user_id, id, 1);
-
-  return {
-    xp,
-    zenny,
-    drops,
-    leveledUp,
-    xpTotal: xpRes?.xp_total ?? 0,
-    levelAfter: xpRes?.level ?? beforeLevel,
-    nextThreshold: xpRes?.next_threshold ?? 0,
-  };
+  // No buttons here; index/jack_in will render the HUD next.
+  return { embed, components: [] as const };
 }
-
-function rollDropsForVirus(virus_id: string): string[] {
-  const b = getBundle() as any;
-  const v = b.viruses[virus_id];
-  const tableId = v?.drop_table_id;
-
-  const allTables = b.dropTables ?? b.drop_tables ?? {};
-  const dt = tableId ? allTables[tableId] : null;
-  if (!dt) return [];
-
-  const entries = String(dt.entries || '')
-    .split(',')
-    .map((s: string) => s.trim())
-    .filter(Boolean);
-
-  const won: string[] = [];
-  for (const e of entries) {
-    const [idRaw, rateRaw] = e.split(':').map((s: string) => s?.trim());
-    const id = idRaw || '';
-    if (!id) continue;
-
-    const baseRate = Number(rateRaw);
-    const rate = clamp01(
-      Number.isFinite(baseRate) ? baseRate * GLOBAL_DROP_RATE_MULT : 0
-    );
-
-    if (rate > 0 && Math.random() < rate) won.push(id);
-  }
-  return won;
-}
-
-// Helpers
-
-function parseRangeNonNull(
-  s: any,
-  fallback: readonly [number, number]
-): [number, number] {
-  const text = String(s ?? '').trim();
-  const m = text.match(/^\s*(\d+)\s*-\s*(\d+)\s*$/);
-  if (m) {
-    const a = Number(m[1]), b = Number(m[2]);
-    const lo = Math.min(a, b), hi = Math.max(a, b);
-    return [lo, hi];
-  }
-  return [fallback[0], fallback[1]];
-}
-
-function rollRange(range: [number, number] | readonly [number, number]) {
-  const lo = range[0], hi = range[1];
-  if (hi <= lo) return Math.max(0, lo);
-  return lo + Math.floor(Math.random() * (hi - lo + 1));
-}
-
-function envFloat(k: string, d: number) {
-  const v = Number(process.env[k]); return Number.isFinite(v) ? v : d;
-}
-function clamp01(x: number) { return x < 0 ? 0 : x > 1 ? 1 : x; }
