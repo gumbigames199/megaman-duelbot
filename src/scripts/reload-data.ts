@@ -3,23 +3,24 @@ import 'dotenv/config';
 import tsv from '../lib/tsv';
 
 function main() {
-  // Clear cache then reload
+  // Clear the in-memory cache (if exposed by the module), then reload.
   (tsv as any).invalidateBundleCache?.();
-  const bundle = tsv(); // callable default export (no args)
 
-  // Build a report similar to your previous shape
+  // Default export is callable with no args in your setup.
+  const bundle = tsv();
+
+  // Build a lightweight report for CI/Railway logs.
   const report = {
     ok: true,
     counts: {
-      chips: bundle.chips.length,
-      viruses: bundle.viruses.length,
-      regions: bundle.regions.length,
-      drop_tables: bundle.drop_tables.length,
-      missions: bundle.missions.length,
-      program_advances: bundle.program_advances.length,
-      shops: bundle.shops.length,
+      chips: bundle?.chips?.length ?? 0,
+      viruses: bundle?.viruses?.length ?? 0,
+      regions: bundle?.regions?.length ?? 0,
+      drop_tables: bundle?.drop_tables?.length ?? 0,
+      missions: bundle?.missions?.length ?? 0,
+      program_advances: bundle?.program_advances?.length ?? 0,
+      shops: bundle?.shops?.length ?? 0,
     },
-    // You can populate these later if you add validation back in lib/tsv
     warnings: [] as string[],
     errors: [] as string[],
   };

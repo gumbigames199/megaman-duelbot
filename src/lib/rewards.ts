@@ -103,13 +103,16 @@ function coreRoll(user_id: string, virus_id: string) {
 }
 
 /* -------------------------------------------
- * Drops: parse dropTables[id].entries → "chip:rate,..."
+ * Drops: parse drop table entries → "chip:rate,..."
  * -----------------------------------------*/
 function rollDropsForVirus(virus_id: string): string[] {
   const b = getBundle();
   const v = b.viruses[virus_id];
   const tableId = (v as any)?.drop_table_id;
-  const dt = tableId ? (b.dropTables as any)?.[tableId] : null;
+
+  // Tolerate both shapes: dropTables (camel) and drop_tables (snake)
+  const allTables = (b as any).dropTables ?? (b as any).drop_tables ?? {};
+  const dt = tableId ? allTables[tableId] : null;
   if (!dt) return [];
 
   const entries = String(dt.entries || '')
@@ -136,7 +139,10 @@ function rollDropsForVirus(virus_id: string): string[] {
 /* -------------------------------------------
  * Helpers
  * -----------------------------------------*/
-function parseRange(s: any, fallback: readonly [number, number] | null): [number, number] {
+function parseRange(
+  s: any,
+  fallback: readonly [number, number] | null
+): [number, number] | null {
   const text = String(s ?? '').trim();
   const m = text.match(/^\s*(\d+)\s*-\s*(\d+)\s*$/);
   if (m) {
@@ -144,12 +150,15 @@ function parseRange(s: any, fallback: readonly [number, number] | null): [number
     const lo = Math.min(a, b), hi = Math.max(a, b);
     return [lo, hi];
   }
-  return fallback ?? [0, 0];
+  return fallback ? [fallback[0], fallback[1]] : null;
 }
-function rollRange([lo, hi]: readonly [number, number]) {
+
+function rollRange(range: [number, number] | readonly [number, number]) {
+  const lo = range[0], hi = range[1];
   if (hi <= lo) return Math.max(0, lo);
   return lo + Math.floor(Math.random() * (hi - lo + 1));
 }
+
 function envFloat(k: string, d: number) {
   const v = Number(process.env[k]); return Number.isFinite(v) ? v : d;
 }

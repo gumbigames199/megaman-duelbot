@@ -87,7 +87,10 @@ export function startBattle(user_id: string, virus_id: string) {
 
   drawHand(bs);
   battles.set(id, bs);
-  return renderBattle(bs);
+
+  // Return the normal view PLUS the battleId so callers that need it can read it.
+  const view = renderBattle(bs);
+  return { ...view, battleId: id };
 }
 
 export async function handlePick(ix: StringSelectMenuInteraction) {
@@ -205,7 +208,7 @@ export function startEncounterBattle(init: {
   zone?: number;
 }): { battleId: string; state: any } {
   // Reuse startBattle and reshape for callers that expect the old shape.
-  const { embed, components, battleId } = startBattle(init.user_id, init.enemy_id);
+  const { battleId } = startBattle(init.user_id, init.enemy_id);
   const bs = battles.get(battleId)!;
   return { battleId, state: toCompatState(bs, init.enemy_kind) };
 }

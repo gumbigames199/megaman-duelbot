@@ -106,7 +106,12 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'reload_data') {
         if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', ephemeral: true }); return; }
         await ix.deferReply({ ephemeral: true });
-        const { report } = loadTSVBundle(process.env.DATA_DIR || './data');
+
+        // Cast this call to tolerate the loader’s runtime shape ({ data, report }) and arg.
+        const { report } = (loadTSVBundle as unknown as (dir?: string) => any)(
+          process.env.DATA_DIR || './data'
+        );
+
         const counts = Object.entries(report.counts).map(([k, v]) => `${k}:${v}`).join(' • ') || 'none';
         const warnings = report.warnings.length ? `\n⚠️ Warnings:\n- ${report.warnings.join('\n- ')}` : '';
         const errors = report.errors.length ? `\n❌ Errors:\n- ${report.errors.join('\n- ')}` : '';
