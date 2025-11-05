@@ -5,7 +5,7 @@ import {
   ChatInputCommandInteraction,
 } from 'discord.js';
 
-import { getChipById, getVirusId as _unused, getVirusById } from './data';
+import { getChipById, getVirusById } from './data';
 import {
   renderBattleScreen,
   renderRoundResultWithNextHand,
