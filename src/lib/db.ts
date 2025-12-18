@@ -4,10 +4,14 @@
 // name/element fields, and compatibility aliases (db, getInventory, etc).
 // NEW: missions_state.counter column (compat) kept in sync with progress.
 // QOL: Hard folder cap with status-returning tryAddToFolder; addToFolder honors cap.
+// NEW: chip-id normalizer to migrate legacy numeric ids -> current TSV ids.
 
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
+
+// NOTE: used only for chip-id normalization (no circular import back to db.ts)
+import { getChipById, listChips } from "./data";
 
 // -------------------------------
 // Environment & Caps
@@ -276,17 +280,91 @@ export function addCRIT(u: string, n: number)  { applyStatDeltas(u, { crit: n })
 
 // Inventory & folder
 export type InventoryItem = { chip_id: string; qty: number };
+
+// --- chip-id normalization helpers -------------------------------
+
+/**
+ * Best-effort normalizer for legacy chip ids.
+ * - If id already resolves via getChipById -> return as-is.
+ * - If id is an integer string and within the array bounds of listChips(),
+ *   treat it as a row index and return the corresponding chip.id.
+ * - If id matches a chip name (case-insensitive), return that chip.id.
+ * Otherwise return original string.
+ */
+function normalizeChipIdLocal(id: string): string {
+  const raw = String(id ?? "").trim();
+  if (!raw) return raw;
+
+  // already valid id?
+  if (getChipById(raw)) return raw;
+
+  // numeric index -> chips[row].id
+  if (/^\d+$/.test(raw)) {
+    const idx = Number(raw);
+    const chips = listChips() as any[];
+    if (Array.isArray(chips) && idx >= 0 && idx < chips.length) {
+      const mapped = String(chips[idx]?.id ?? "");
+      if (mapped && getChipById(mapped)) return mapped;
+    }
+  }
+
+  // exact name match
+  const low = raw.toLowerCase();
+  const byName = (listChips() as any[]).find(c => String(c?.name ?? "").toLowerCase() === low);
+  if (byName && getChipById(String(byName.id))) return String(byName.id);
+
+  return raw;
+}
+
+/** Normalize a single row in-place; returns true if updated. */
+function normalizeInventoryRow(rowId: number, badId: string): boolean {
+  const fixed = normalizeChipIdLocal(badId);
+  if (fixed && fixed !== badId) {
+    db.prepare(`UPDATE inventory SET chip_id = ? WHERE id = ?`).run(fixed, rowId);
+    return true;
+  }
+  return false;
+}
+function normalizeFolderRow(rowId: number, badId: string): boolean {
+  const fixed = normalizeChipIdLocal(badId);
+  if (fixed && fixed !== badId) {
+    db.prepare(`UPDATE folder SET chip_id = ? WHERE id = ?`).run(fixed, rowId);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Public: normalize all inventory/folder chip_ids to current TSV ids.
+ * Call this right after /reload_data completes.
+ */
+export function normalizeChipIds(): { fixedInventory: number; fixedFolder: number } {
+  let fixedInv = 0, fixedFold = 0;
+
+  const invRows = db.prepare(`SELECT id, chip_id FROM inventory`).all() as { id: number; chip_id: string }[];
+  for (const r of invRows) if (normalizeInventoryRow(r.id, String(r.chip_id))) fixedInv++;
+
+  const foldRows = db.prepare(`SELECT id, chip_id FROM folder`).all() as { id: number; chip_id: string }[];
+  for (const r of foldRows) if (normalizeFolderRow(r.id, String(r.chip_id))) fixedFold++;
+
+  return { fixedInventory: fixedInv, fixedFolder: fixedFold };
+}
+
+// ------------------------------------------------------------------
+
 export function grantChip(user_id: string, chip_id: string, qty = 1) {
   ensurePlayer(user_id);
+  const safeId = normalizeChipIdLocal(String(chip_id)); // keep new inserts normalized
   const row = db.prepare(`SELECT id, qty FROM inventory WHERE user_id = ? AND chip_id = ?`)
-    .get(user_id, chip_id) as { id: number; qty: number } | undefined;
+    .get(user_id, safeId) as { id: number; qty: number } | undefined;
   if (row) db.prepare(`UPDATE inventory SET qty = ? WHERE id = ?`).run(Math.max(0, row.qty + qty), row.id);
   else db.prepare(`INSERT INTO inventory (user_id, chip_id, qty) VALUES (?, ?, ?)`)
-    .run(user_id, chip_id, Math.max(0, qty));
+    .run(user_id, safeId, Math.max(0, qty));
 }
 export function removeChip(user_id: string, chip_id: string, qty = 1): boolean {
+  const safeId = normalizeChipIdLocal(String(chip_id));
   const row = db.prepare(`SELECT id, qty FROM inventory WHERE user_id = ? AND chip_id = ?`)
-    .get(user_id, chip_id) as { id: number; qty: number } | undefined;
+    .get(user_id, safeId) as { id: number; qty: number } | undefined;
   if (!row || row.qty < qty) return false;
   const newQty = row.qty - qty;
   if (newQty > 0) db.prepare(`UPDATE inventory SET qty = ? WHERE id = ?`).run(newQty, row.id);
@@ -327,14 +405,15 @@ export function tryAddToFolder(
   }
 
   const addNow = Math.min(remaining, want);
+  const safeId = normalizeChipIdLocal(String(chip_id));
 
   const row = db.prepare(`SELECT id, qty FROM folder WHERE user_id = ? AND chip_id = ?`)
-    .get(user_id, chip_id) as { id: number; qty: number } | undefined;
+    .get(user_id, safeId) as { id: number; qty: number } | undefined;
 
   if (row) {
     db.prepare(`UPDATE folder SET qty = ? WHERE id = ?`).run(Math.max(0, row.qty + addNow), row.id);
   } else {
-    db.prepare(`INSERT INTO folder (user_id, chip_id, qty) VALUES (?, ?, ?)`).run(user_id, chip_id, addNow);
+    db.prepare(`INSERT INTO folder (user_id, chip_id, qty) VALUES (?, ?, ?)`).run(user_id, safeId, addNow);
   }
 
   const remAfter = getFolderRemaining(user_id);
