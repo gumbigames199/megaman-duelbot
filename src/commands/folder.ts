@@ -6,20 +6,19 @@ import {
 } from 'discord.js';
 import { getFolder, setFolder, validateFolder, MAX_FOLDER, maxCopiesForChip } from '../lib/folder';
 import { getInventory, grantChip } from '../lib/db';
-import { getBundle } from '../lib/data';
+import { getBundle, getChipById, listChips } from '../lib/data';
 
 export const data = new SlashCommandBuilder()
   .setName('folder')
   .setDescription('View and edit your chip folder');
 
 function formatFolder(chips: string[]) {
-  const b = getBundle();
   if (!chips.length) return '— (empty)';
   const counts = new Map<string, number>();
   for (const id of chips) counts.set(id, (counts.get(id) || 0) + 1);
   const lines: string[] = [];
   for (const [id, qty] of counts) {
-    const c: any = b.chips[id] || {};
+    const c: any = getChipById(id) || {};
     lines.push(`• ${c.name || id} ×${qty}`);
   }
   return lines.join('\n');
@@ -56,7 +55,6 @@ export async function onEdit(ix: ButtonInteraction) {
 
 export async function onOpenAdd(ix: ButtonInteraction) {
   const userId = ix.user.id;
-  const b = getBundle();
 
   // 1) Read inventory
   let inv = getInventory(userId);
@@ -64,16 +62,17 @@ export async function onOpenAdd(ix: ButtonInteraction) {
   // 2) Backfill once if inventory is empty using STARTER_CHIPS
   if (!inv.length) {
     const granted = grantStartersFromEnvIfAny(userId);
-    if (granted > 0) {
-      inv = getInventory(userId); // re-read after granting
-    }
+    if (granted > 0) inv = getInventory(userId);
   }
 
   // 3) Build options (skip upgrades)
   const options = inv
-    .filter(row => !(b.chips[row.chip_id]?.is_upgrade)) // cannot add upgrades to folder
     .map(row => {
-      const c: any = b.chips[row.chip_id] || {};
+      const c: any = getChipById(row.chip_id) || {};
+      return { row, c };
+    })
+    .filter(({ c }) => !c?.is_upgrade)
+    .map(({ row, c }) => {
       const name = c.name || row.chip_id;
       const cap = maxCopiesForChip(row.chip_id);
       return {
@@ -104,7 +103,6 @@ export async function onOpenAdd(ix: ButtonInteraction) {
 
 export async function onOpenRemove(ix: ButtonInteraction) {
   const folder = getFolder(ix.user.id);
-  const b = getBundle();
   if (!folder.length) {
     await ix.reply({ ephemeral: true, content: 'Folder is empty.' });
     return;
@@ -112,7 +110,7 @@ export async function onOpenRemove(ix: ButtonInteraction) {
 
   // Present first 25 entries (with duplicates)
   const options = folder.slice(0, 25).map((id, i) => {
-    const c: any = b.chips[id] || {};
+    const c: any = getChipById(id) || {};
     const name = c.name || id;
     return { label: `${i+1}. ${name}`, value: `${i}:${id}` };
   });
@@ -133,12 +131,11 @@ export async function onOpenRemove(ix: ButtonInteraction) {
 
 export async function onAddSelect(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
-  const b = getBundle();
   let folder = getFolder(userId);
 
   // Apply additions
   for (const id of ix.values) {
-    const c: any = b.chips[id] || {};
+    const c: any = getChipById(id) || {};
     if (c?.is_upgrade) continue; // upgrades never go into folder
     folder = [...folder, id];
   }
@@ -200,27 +197,27 @@ function parseStarterTokens(text: string): string[] {
   return String(text || '').split(',').map(s => s.trim()).filter(Boolean);
 }
 
-/** return chip id from token by id (exact or lowercase) or by case-insensitive name */
+/** resolve a token by exact id (any type), lowercase id, or case-insensitive name */
 function resolveChipToken(token: string): string | null {
   if (!token) return null;
-  const { chips } = getBundle();
 
-  // exact id
-  if ((chips as any)[token]) return token;
+  // exact id hit
+  const byId = getChipById(token);
+  if (byId) return token;
 
-  // lowercase id
-  const low = token.toLowerCase();
-  if ((chips as any)[low]) return low;
+  // lowercase id hit
+  const low = String(token).toLowerCase();
+  const byLow = getChipById(low);
+  if (byLow) return low;
 
-  // name lookup
-  for (const id of Object.keys(chips)) {
-    const c: any = (chips as any)[id] || {};
-    if (String(c.name || '').toLowerCase() === low) return id;
+  // name match scan
+  for (const c of listChips() as any[]) {
+    if (String(c?.name || '').toLowerCase() === low) return c.id;
   }
   return null;
 }
 
-/** Grants starters from env ONLY if any tokens resolve; returns number granted */
+/** Grants starters from env ONLY if they resolve; returns number granted */
 function grantStartersFromEnvIfAny(userId: string): number {
   const tokens = parseStarterTokens(process.env.STARTER_CHIPS || '');
   if (!tokens.length) return 0;
