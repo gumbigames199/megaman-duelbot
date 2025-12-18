@@ -4,11 +4,8 @@ import {
   EmbedBuilder, ButtonBuilder, ButtonStyle, ButtonInteraction,
   StringSelectMenuBuilder, StringSelectMenuInteraction, ActionRowBuilder,
 } from 'discord.js';
-
-import {
-  getFolder, setFolder, validateFolder, MAX_FOLDER, maxCopiesForChip
-} from '../lib/folder';
-import { getInventory, tryAddToFolder, getFolderRemaining } from '../lib/db';
+import { getFolder, setFolder, validateFolder, MAX_FOLDER, maxCopiesForChip } from '../lib/folder';
+import { getInventory, grantChip } from '../lib/db';
 import { getBundle } from '../lib/data';
 
 export const data = new SlashCommandBuilder()
@@ -20,7 +17,6 @@ function formatFolder(chips: string[]) {
   if (!chips.length) return '— (empty)';
   const counts = new Map<string, number>();
   for (const id of chips) counts.set(id, (counts.get(id) || 0) + 1);
-
   const lines: string[] = [];
   for (const [id, qty] of counts) {
     const c: any = b.chips[id] || {};
@@ -36,16 +32,9 @@ export async function execute(ix: ChatInputCommandInteraction) {
     .setDescription(formatFolder(folder))
     .setFooter({ text: `${folder.length}/${MAX_FOLDER}` });
 
-  const editBtn = new ButtonBuilder()
-    .setCustomId('folder:edit')
-    .setStyle(ButtonStyle.Primary)
-    .setLabel('Edit');
+  const editBtn = new ButtonBuilder().setCustomId('folder:edit').setStyle(ButtonStyle.Primary).setLabel('Edit');
 
-  await ix.reply({
-    ephemeral: true,
-    embeds: [e],
-    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(editBtn)],
-  });
+  await ix.reply({ ephemeral: true, embeds: [e], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(editBtn)] });
 }
 
 export async function onEdit(ix: ButtonInteraction) {
@@ -59,20 +48,30 @@ export async function onEdit(ix: ButtonInteraction) {
   const remBtn = new ButtonBuilder().setCustomId('folder:removeOpen').setStyle(ButtonStyle.Secondary).setLabel('Remove chips');
   const saveBtn = new ButtonBuilder().setCustomId('folder:save').setStyle(ButtonStyle.Success).setLabel('Save');
 
-  await ix.reply({
-    ephemeral: true,
-    embeds: [e],
-    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(addBtn, remBtn, saveBtn)],
-  });
+  await ix.reply({ ephemeral: true, embeds: [e],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(addBtn, remBtn, saveBtn)] });
 }
 
+/* ---------------- Add flow (with starter backfill) ---------------- */
+
 export async function onOpenAdd(ix: ButtonInteraction) {
-  const inv = getInventory(ix.user.id);
+  const userId = ix.user.id;
   const b = getBundle();
 
-  // Hide upgrades from Add UI (can’t add upgrades to folder)
+  // 1) Read inventory
+  let inv = getInventory(userId);
+
+  // 2) Backfill once if inventory is empty using STARTER_CHIPS
+  if (!inv.length) {
+    const granted = grantStartersFromEnvIfAny(userId);
+    if (granted > 0) {
+      inv = getInventory(userId); // re-read after granting
+    }
+  }
+
+  // 3) Build options (skip upgrades)
   const options = inv
-    .filter(row => !(b.chips[row.chip_id]?.is_upgrade))
+    .filter(row => !(b.chips[row.chip_id]?.is_upgrade)) // cannot add upgrades to folder
     .map(row => {
       const c: any = b.chips[row.chip_id] || {};
       const name = c.name || row.chip_id;
@@ -89,13 +88,11 @@ export async function onOpenAdd(ix: ButtonInteraction) {
     return;
   }
 
-  const remaining = getFolderRemaining(ix.user.id);
-
   const select = new StringSelectMenuBuilder()
     .setCustomId('folder:addSelect')
     .setMinValues(1)
     .setMaxValues(Math.min(10, options.length))
-    .setPlaceholder(`Select chips to add (remaining ${remaining}/${MAX_FOLDER})`)
+    .setPlaceholder('Select chips to add')
     .addOptions(options);
 
   await ix.reply({
@@ -113,11 +110,11 @@ export async function onOpenRemove(ix: ButtonInteraction) {
     return;
   }
 
-  // Present first 25 entries (with duplicates, ordered)
+  // Present first 25 entries (with duplicates)
   const options = folder.slice(0, 25).map((id, i) => {
     const c: any = b.chips[id] || {};
     const name = c.name || id;
-    return { label: `${i + 1}. ${name}`, value: `${i}:${id}` };
+    return { label: `${i+1}. ${name}`, value: `${i}:${id}` };
   });
 
   const select = new StringSelectMenuBuilder()
@@ -137,54 +134,27 @@ export async function onOpenRemove(ix: ButtonInteraction) {
 export async function onAddSelect(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
   const b = getBundle();
+  let folder = getFolder(userId);
 
-  // We’ll add ONE copy of each selected chip, respecting:
-  // - Folder capacity
-  // - Per-chip copy cap (maxCopiesForChip)
-  // - Inventory (enforced by validateFolder, and your existing system)
-  let added = 0;
-  const skipped: string[] = [];
-  const reasons: string[] = [];
-
+  // Apply additions
   for (const id of ix.values) {
     const c: any = b.chips[id] || {};
-    if (c?.is_upgrade) {
-      skipped.push(c.name || id);
-      reasons.push('cannot add upgrades');
-      continue;
-    }
-
-    // Attempt to add; this enforces global cap and per-chip caps internally
-    const res = tryAddToFolder(userId, id, 1);
-    if (res.ok && res.added > 0) {
-      added += res.added;
-    } else {
-      skipped.push(c.name || id);
-      reasons.push(res.reason || 'cap reached');
-    }
+    if (c?.is_upgrade) continue; // upgrades never go into folder
+    folder = [...folder, id];
   }
 
-  const folder = getFolder(userId);
   const v = validateFolder(userId, folder);
   if (!v.ok) {
     await ix.reply({ ephemeral: true, content: `❌ ${v.error}` });
     return;
   }
 
+  setFolder(userId, folder);
   const e = new EmbedBuilder()
     .setTitle('🗂️ Folder updated')
     .setDescription(formatFolder(folder))
     .setFooter({ text: `${folder.length}/${MAX_FOLDER}` });
-
-  const lines: string[] = [];
-  if (added > 0) lines.push(`✅ Added **${added}** chip${added > 1 ? 's' : ''}.`);
-  if (skipped.length) {
-    const pairs = skipped.map((name, i) => `• ${name} — ${reasons[i]}`);
-    lines.push(`⚠️ Skipped:\n${pairs.join('\n')}`);
-  }
-  const msg = lines.join('\n') || 'No changes.';
-
-  await ix.reply({ ephemeral: true, content: msg, embeds: [e] });
+  await ix.reply({ ephemeral: true, embeds: [e] });
 }
 
 export async function onRemoveSelect(ix: StringSelectMenuInteraction) {
@@ -195,7 +165,7 @@ export async function onRemoveSelect(ix: StringSelectMenuInteraction) {
   const indexes = ix.values
     .map(v => parseInt(v.split(':')[0], 10))
     .filter(n => Number.isFinite(n))
-    .sort((a, b) => b - a); // remove from end first
+    .sort((a,b)=>b-a); // remove from end first
 
   for (const idx of indexes) {
     if (idx >= 0 && idx < folder.length) folder.splice(idx, 1);
@@ -222,4 +192,45 @@ export async function onSave(ix: ButtonInteraction) {
     .setDescription(formatFolder(folder))
     .setFooter({ text: `${folder.length}/${MAX_FOLDER}` });
   await ix.reply({ ephemeral: true, embeds: [e] });
+}
+
+/* ---------------- internal: starter backfill helpers ---------------- */
+
+function parseStarterTokens(text: string): string[] {
+  return String(text || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+
+/** return chip id from token by id (exact or lowercase) or by case-insensitive name */
+function resolveChipToken(token: string): string | null {
+  if (!token) return null;
+  const { chips } = getBundle();
+
+  // exact id
+  if ((chips as any)[token]) return token;
+
+  // lowercase id
+  const low = token.toLowerCase();
+  if ((chips as any)[low]) return low;
+
+  // name lookup
+  for (const id of Object.keys(chips)) {
+    const c: any = (chips as any)[id] || {};
+    if (String(c.name || '').toLowerCase() === low) return id;
+  }
+  return null;
+}
+
+/** Grants starters from env ONLY if any tokens resolve; returns number granted */
+function grantStartersFromEnvIfAny(userId: string): number {
+  const tokens = parseStarterTokens(process.env.STARTER_CHIPS || '');
+  if (!tokens.length) return 0;
+  let granted = 0;
+  for (const t of tokens) {
+    const id = resolveChipToken(t);
+    if (id) {
+      grantChip(userId, id, 1);
+      granted++;
+    }
+  }
+  return granted;
 }
