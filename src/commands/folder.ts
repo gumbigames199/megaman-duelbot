@@ -6,7 +6,7 @@ import {
 } from 'discord.js';
 import { getFolder, setFolder, validateFolder, MAX_FOLDER, maxCopiesForChip } from '../lib/folder';
 import { getInventory, grantChip } from '../lib/db';
-import { getBundle, getChipById, listChips } from '../lib/data';
+import { getChipById, listChips, chipIsUpgrade } from '../lib/data';
 
 export const data = new SlashCommandBuilder()
   .setName('folder')
@@ -15,11 +15,11 @@ export const data = new SlashCommandBuilder()
 function formatFolder(chips: string[]) {
   if (!chips.length) return '— (empty)';
   const counts = new Map<string, number>();
-  for (const id of chips) counts.set(id, (counts.get(id) || 0) + 1);
+  for (const id of chips) counts.set(String(id), (counts.get(String(id)) || 0) + 1);
   const lines: string[] = [];
   for (const [id, qty] of counts) {
     const c: any = getChipById(id) || {};
-    lines.push(`• ${c.name || id} ×${qty}`);
+    lines.push(`• ${c.name || String(id)} ×${qty}`);
   }
   return lines.join('\n');
 }
@@ -47,8 +47,11 @@ export async function onEdit(ix: ButtonInteraction) {
   const remBtn = new ButtonBuilder().setCustomId('folder:removeOpen').setStyle(ButtonStyle.Secondary).setLabel('Remove chips');
   const saveBtn = new ButtonBuilder().setCustomId('folder:save').setStyle(ButtonStyle.Success).setLabel('Save');
 
-  await ix.reply({ ephemeral: true, embeds: [e],
-    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(addBtn, remBtn, saveBtn)] });
+  await ix.reply({
+    ephemeral: true,
+    embeds: [e],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(addBtn, remBtn, saveBtn)],
+  });
 }
 
 /* ---------------- Add flow (with starter backfill) ---------------- */
@@ -65,20 +68,18 @@ export async function onOpenAdd(ix: ButtonInteraction) {
     if (granted > 0) inv = getInventory(userId);
   }
 
-  // 3) Build options (skip upgrades)
+  // 3) Build options (skip upgrades using robust helper)
   const options = inv
     .map(row => {
-      const c: any = getChipById(row.chip_id) || {};
-      return { row, c };
+      const chipId = String(row.chip_id);
+      const chip: any = getChipById(chipId) || {};
+      return { row, chipId, chip };
     })
-    .filter(({ c }) => !c?.is_upgrade)
-    .map(({ row, c }) => {
-      const name = c.name || row.chip_id;
-      const cap = maxCopiesForChip(row.chip_id);
-      return {
-        label: `${name} (own ${row.qty}, cap ${cap})`,
-        value: row.chip_id,
-      };
+    .filter(({ chip }) => chip && !chipIsUpgrade(chip))
+    .map(({ row, chipId, chip }) => {
+      const name = chip.name || chipId;
+      const cap = maxCopiesForChip(chipId);
+      return { label: `${name} (own ${row.qty}, cap ${cap})`, value: chipId };
     })
     .slice(0, 25);
 
@@ -110,9 +111,10 @@ export async function onOpenRemove(ix: ButtonInteraction) {
 
   // Present first 25 entries (with duplicates)
   const options = folder.slice(0, 25).map((id, i) => {
-    const c: any = getChipById(id) || {};
-    const name = c.name || id;
-    return { label: `${i+1}. ${name}`, value: `${i}:${id}` };
+    const chipId = String(id);
+    const c: any = getChipById(chipId) || {};
+    const name = c.name || chipId;
+    return { label: `${i + 1}. ${name}`, value: `${i}:${chipId}` };
   });
 
   const select = new StringSelectMenuBuilder()
@@ -133,10 +135,11 @@ export async function onAddSelect(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
   let folder = getFolder(userId);
 
-  // Apply additions
-  for (const id of ix.values) {
-    const c: any = getChipById(id) || {};
-    if (c?.is_upgrade) continue; // upgrades never go into folder
+  // Apply additions (never allow upgrades)
+  for (const rawId of ix.values) {
+    const id = String(rawId);
+    const chip: any = getChipById(id) || {};
+    if (!chip || chipIsUpgrade(chip)) continue;
     folder = [...folder, id];
   }
 
@@ -162,7 +165,7 @@ export async function onRemoveSelect(ix: StringSelectMenuInteraction) {
   const indexes = ix.values
     .map(v => parseInt(v.split(':')[0], 10))
     .filter(n => Number.isFinite(n))
-    .sort((a,b)=>b-a); // remove from end first
+    .sort((a, b) => b - a); // remove from end first
 
   for (const idx of indexes) {
     if (idx >= 0 && idx < folder.length) folder.splice(idx, 1);
