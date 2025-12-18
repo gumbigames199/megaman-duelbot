@@ -68,8 +68,9 @@ export async function onOpenAdd(ix: ButtonInteraction) {
     if (granted > 0) inv = getInventory(userId);
   }
 
-  // 3) Build options (skip upgrades using robust helper)
+  // 3) Build options (skip zero-qty and upgrades using robust helper)
   const options = inv
+    .filter(row => row.qty > 0)
     .map(row => {
       const chipId = String(row.chip_id);
       const chip: any = getChipById(chipId) || {};
