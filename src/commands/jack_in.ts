@@ -12,11 +12,7 @@ import {
 } from 'discord.js';
 
 import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
-import {
-  getBundle,
-  resolveShopInventory,
-  getRegionById,
-} from '../lib/data';
+import { getBundle, resolveShopInventory, listVirusesForRegionZone } from '../lib/data';
 import {
   getPlayer, setRegion, setZone, getZone,
   addZenny, spendZenny, tryAddToFolder, getFolderRemaining,
@@ -33,66 +29,27 @@ const BOSS_ENCOUNTER = parseFloat(process.env.BOSS_ENCOUNTER || '0.10');
 
 /* ------------------------------ helpers ------------------------------ */
 
-function parseZones(raw: unknown): number[] {
-  if (Array.isArray(raw)) return raw.map(Number).filter(Number.isFinite);
-  if (typeof raw === 'number') return Number.isFinite(raw) ? [raw] : [];
-  const s = String(raw ?? '').trim();
-  if (!s) return [];
-  const out: number[] = [];
-  for (const part of s.split(',')) {
-    const p = part.trim();
-    const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
-    if (m) {
-      let a = parseInt(m[1], 10), b = parseInt(m[2], 10);
-      if (a > b) [a, b] = [b, a];
-      for (let x = a; x <= b; x++) out.push(x);
-    } else {
-      const n = parseInt(p, 10);
-      if (!Number.isNaN(n)) out.push(n);
-    }
-  }
-  return Array.from(new Set(out)).sort((a, b) => a - b);
-}
-
+// Robustly read boss flag regardless of column casing/type.
 function isBossFlag(v: any): boolean {
-  // accept boss / is_boss / 1/0 / true/false / yes
-  const raw = v?.boss ?? v?.is_boss;
+  const raw = v?.boss ?? v?.is_boss ?? v?.Is_Boss;
   if (raw === true || raw === false) return raw;
   if (typeof raw === 'number') return raw === 1;
   const s = String(raw ?? '').toLowerCase();
   return s === '1' || s === 'true' || s === 'yes' || s === 'y';
 }
 
-function zonesMatch(v: any, zone: number): boolean {
-  const list = parseZones((v as any).zones ?? (v as any).zone);
-  return list.length === 0 ? true : list.includes(zone);
-}
-
-function regionZoneCount(region: any): number {
-  // be forgiving: zone_count / zones / zoneCount — default to 1
-  if (!region) return 1;
-  if (Number.isFinite(region.zone_count)) return Number(region.zone_count) || 1;
-  if (Number.isFinite(region.zones)) return Number(region.zones) || 1;
-  if (Number.isFinite((region as any).zoneCount)) return Number((region as any).zoneCount) || 1;
-  return 1;
-}
-
-/** Pick an encounter (boss chance, else uniform non-boss). */
+/** Pick an encounter (boss chance, else uniform non-boss) using the robust data helper. */
 function pickEncounter(regionId: string, zone: number) {
-  const { viruses } = getBundle();
-  const normRegion = String(regionId || '').trim();
+  // Pull a tolerant pool: respects region_id/region, zones, and boss/is_boss.
+  const pool = listVirusesForRegionZone({
+    region_id: String(regionId),
+    zone,
+    includeNormals: true,
+    includeBosses: true,
+  });
 
-  const inRegion = (v: any) => {
-    const vr =
-      String((v as any)?.region_id ?? (v as any)?.region ?? '').trim();
-    return vr === normRegion && zonesMatch(v, zone);
-  };
-
-  // viruses may be an array; Object.values works for both
-  const all = Object.values(viruses as any);
-  const inZone = all.filter(inRegion);
-  const bosses = inZone.filter(isBossFlag);
-  const normals = inZone.filter(v => !isBossFlag(v));
+  const bosses  = pool.filter((v: any) => isBossFlag(v));
+  const normals = pool.filter((v: any) => !isBossFlag(v));
 
   if (normals.length === 0 && bosses.length > 0) {
     return { enemy_kind: 'boss' as const, virus: bosses[0] as any };
@@ -107,7 +64,7 @@ function pickEncounter(regionId: string, zone: number) {
 
   throw Object.assign(
     new Error(`No encounters for region=${regionId} zone=${zone}`),
-    { __encounterDebug: { inZone: inZone.length, bosses: bosses.length, normals: normals.length } }
+    { __encounterDebug: { inZone: pool.length, bosses: bosses.length, normals: normals.length } }
   );
 }
 
@@ -115,14 +72,14 @@ function pickEncounter(regionId: string, zone: number) {
 export async function renderJackInHUD(ix: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
-
-  const region = getRegionById(String(p?.region_id));
+  const { regions } = getBundle();
+  const region = regions[p?.region_id];
   const zone = getZone(userId) || 1;
 
   const embed = new EmbedBuilder()
     .setTitle('✅ Jacked In')
     .setDescription(`Region: **${region?.name || p?.region_id || '—'}**, Zone: **${zone}**`)
-    .setImage(JACK_GIF || (region as any)?.background_url || null)
+    .setImage(JACK_GIF || region?.background_url || null)
     .setFooter({ text: 'You can Encounter, Travel, or Shop.' });
 
   const encounterBtn = new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter');
@@ -163,16 +120,15 @@ export async function execute(ix: ChatInputCommandInteraction) {
         .sort((a: any, b: any) => (a.min_level || 1) - (b.min_level || 1) || String(a.name).localeCompare(String(b.name)))
         .map((r: any) => ({
           label: r.name,
-          value: String(r.id),
-          description: `Min Lv ${r.min_level ?? 1} • ${r.zone_count ?? r.zones ?? 1} zones`,
+          value: r.id,
+          description: `Min Lv ${r.min_level ?? 1} • ${r.zone_count ?? 1} zones`,
         })),
     );
 
-  const first = regionsUnlocked[0];
   const embed = new EmbedBuilder()
     .setTitle('🔌 Jack In')
     .setDescription('Pick a region to enter. You will start at **Zone 1**.')
-    .setImage(JACK_GIF || (first as any)?.background_url || null)
+    .setImage(JACK_GIF || regionsUnlocked[0]?.background_url || null)
     .setFooter({ text: 'Step 1 — Region' });
 
   await ix.reply({
@@ -197,19 +153,19 @@ export async function onSelectRegion(ix: StringSelectMenuInteraction) {
 export async function onOpenTravel(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
-  const region = getRegionById(String(p?.region_id));
+  const { regions } = getBundle();
+  const region = regions[p?.region_id];
 
   if (!region) {
     await ix.reply({ ephemeral: true, content: 'No region set. Use **/jack_in** first.' });
     return;
   }
 
-  const zCount = regionZoneCount(region);
   const zoneSelect = new StringSelectMenuBuilder()
     .setCustomId('jackin:selectZone')
     .setPlaceholder(`Select a zone in ${region.name}`)
     .addOptions(
-      Array.from({ length: zCount || 1 }, (_, i) => {
+      Array.from({ length: region.zone_count || 1 }, (_, i) => {
         const z = i + 1;
         return { label: `Zone ${z}`, value: String(z) };
       }),
@@ -233,7 +189,7 @@ export async function onSelectZone(ix: StringSelectMenuInteraction) {
 export async function onEncounter(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
-  const regionId = String(p?.region_id || '');
+  const regionId = p?.region_id;
   let zone = Number(p?.region_zone || 1);
 
   if (!regionId) {
@@ -241,9 +197,10 @@ export async function onEncounter(ix: ButtonInteraction) {
     return;
   }
 
-  const { chips } = getBundle();
-  const reg = getRegionById(regionId);
-  const maxZone = Math.max(1, regionZoneCount(reg));
+  const { regions, chips } = getBundle();
+  const reg = regions[regionId];
+
+  const maxZone = Math.max(1, Number(reg?.zone_count || 1));
   if (zone < 1 || zone > maxZone) { zone = 1; await setZone(userId, zone); }
 
   try {
@@ -261,7 +218,7 @@ export async function onEncounter(ix: ButtonInteraction) {
       .setTitle(`${(virus as any).name}`)
       .setDescription(`Enemy HP: **${(virus as any).hp ?? 0}** • Kind: **${enemy_kind === 'boss' ? 'Boss' : 'Virus'}**`)
       .setThumbnail((virus as any).image_url || (virus as any).anim_url || null)
-      .setImage((reg as any)?.background_url || null);
+      .setImage(reg?.background_url || null);
 
     // ----- SINGLE MULTI-SELECT (max 3) + Lock/Run -----
     const hand: string[] = Array.isArray(state?.hand) ? state.hand : [];
@@ -273,7 +230,7 @@ export async function onEncounter(ix: ButtonInteraction) {
       .setMaxValues(Math.min(3, hand.length));
 
     const opts = hand.map((cid) => {
-      const c: any = (chips as any)[cid] || {};
+      const c: any = chips[cid] || {};
       const name = c.name || cid;
       const code = c.code || c.letters || '';
       const pwr  = c.power || c.power_total || '';
@@ -309,7 +266,7 @@ export async function onEncounter(ix: ButtonInteraction) {
       ephemeral: true,
       content:
         `⚠️ No eligible encounters configured for **${reg?.name || regionId} / Zone ${zone}**.` +
-        `\nDebug — inZone:${dbg.inZone ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${regionZoneCount(reg)})`,
+        `\nDebug — inZone:${dbg.inZone ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${reg?.zone_count ?? '?'})`,
     });
   }
 }
@@ -350,15 +307,16 @@ function applyUpgradeImmediate(userId: string, chip: any): string {
 
 export async function onOpenShop(ix: ButtonInteraction) {
   const userId = ix.user.id;
+  const { regions } = getBundle();
   const p: any = await getPlayer(userId);
-  const region = getRegionById(String(p?.region_id));
+  const region = regions[p?.region_id];
 
   if (!region) {
     await ix.reply({ ephemeral: true, content: '🛒 No region selected. Use **/jack_in** first.' });
     return;
   }
 
-  const items = resolveShopInventory(String((region as any).id));
+  const items = resolveShopInventory(region.id);
   if (!items.length) {
     await ix.reply({ ephemeral: true, content: `🛒 No shop available in **${region?.name || 'this region'}**.` });
     return;
@@ -384,7 +342,7 @@ export async function onOpenShop(ix: ButtonInteraction) {
   const embed = new EmbedBuilder()
     .setTitle(`🛒 ${region.name} Shop`)
     .setDescription('Pick an item, then **Buy**.\nPrices reflect TSV `price_override` (if present) or chip `zenny_cost`.')
-    .setImage((region as any).background_url || null);
+    .setImage(region.background_url || null);
 
   await ix.reply({
     ephemeral: true,
@@ -398,9 +356,10 @@ export async function onOpenShop(ix: ButtonInteraction) {
 
 export async function onShopSelect(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
+  const { regions } = getBundle();
   const p: any = await getPlayer(userId);
-  const region = getRegionById(String(p?.region_id));
-  const items = region ? resolveShopInventory(String((region as any).id)) : [];
+  const region = regions[p?.region_id];
+  const items = region ? resolveShopInventory(region.id) : [];
 
   const id = ix.values?.[0];
   const item = items.find(i => i.item_id === id);
@@ -446,15 +405,16 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
     }
 
     const userId = ix.user.id;
+    const { regions } = getBundle();
     const p: any = await getPlayer(userId);
-    const region = getRegionById(String(p?.region_id));
+    const region = regions[p?.region_id];
 
     if (!region) {
       await ix.reply({ ephemeral: true, content: '⚠️ Pick a region first (use /jack_in).' });
       return;
     }
 
-    const items = resolveShopInventory(String((region as any).id));
+    const items = resolveShopInventory(region.id);
     const item = items.find(s => s.item_id === chipId);
     if (!item) {
       await ix.reply({ ephemeral: true, content: '❌ That chip is not for sale in this region.' });
