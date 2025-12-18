@@ -12,7 +12,12 @@ import {
 } from 'discord.js';
 
 import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
-import { getBundle, resolveShopInventory, listVirusesForRegionZone } from '../lib/data';
+import {
+  getBundle,
+  getRegionById,
+  listVirusesForRegionZone,
+  resolveShopInventory,
+} from '../lib/data';
 import {
   getPlayer, setRegion, setZone, getZone,
   addZenny, spendZenny, tryAddToFolder, getFolderRemaining,
@@ -29,61 +34,54 @@ const BOSS_ENCOUNTER = parseFloat(process.env.BOSS_ENCOUNTER || '0.10');
 
 /* ------------------------------ helpers ------------------------------ */
 
+function parseZones(raw: unknown): number[] {
+  if (Array.isArray(raw)) return raw.map(Number).filter(Number.isFinite);
+  if (typeof raw === 'number') return Number.isFinite(raw) ? [raw] : [];
+  const s = String(raw ?? '').trim();
+  if (!s) return [];
+  const out: number[] = [];
+  for (const part of s.split(',')) {
+    const p = part.trim();
+    const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      let a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+      if (a > b) [a, b] = [b, a];
+      for (let x = a; x <= b; x++) out.push(x);
+    } else {
+      const n = parseInt(p, 10);
+      if (!Number.isNaN(n)) out.push(n);
+    }
+  }
+  return Array.from(new Set(out)).sort((a, b) => a - b);
+}
+
 function isBossFlag(v: any): boolean {
-  const raw = v?.boss ?? v?.is_boss ?? v?.Is_Boss;
+  const raw = v?.is_boss ?? v?.boss;
   if (raw === true || raw === false) return raw;
   if (typeof raw === 'number') return raw === 1;
   const s = String(raw ?? '').toLowerCase();
   return s === '1' || s === 'true' || s === 'yes' || s === 'y';
 }
 
-function pickEncounter(regionId: string, zone: number) {
-  const pool = listVirusesForRegionZone({
-    region_id: String(regionId),
-    zone,
-    includeNormals: true,
-    includeBosses: true,
-  });
-
-  const bosses  = pool.filter((v: any) => isBossFlag(v));
-  const normals = pool.filter((v: any) => !isBossFlag(v));
-
-  if (normals.length === 0 && bosses.length > 0) {
-    return { enemy_kind: 'boss' as const, virus: bosses[0] as any };
-  }
-  if (bosses.length && Math.random() < BOSS_ENCOUNTER) {
-    return { enemy_kind: 'boss' as const, virus: bosses[0] as any };
-  }
-  if (normals.length) {
-    const pick = normals[Math.floor(Math.random() * normals.length)];
-    return { enemy_kind: 'virus' as const, virus: pick as any };
-  }
-
-  throw Object.assign(
-    new Error(`No encounters for region=${regionId} zone=${zone}`),
-    { __encounterDebug: { inZone: pool.length, bosses: bosses.length, normals: normals.length } }
-  );
-}
-
-function zoneCountOf(region: any): number {
-  // Accept either `zone_count` (preferred) or `zones` as a total/count.
-  const raw = region?.zone_count ?? region?.zones ?? region?.zoneCount;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 1;
+/** Defensive background-url getter for regions. */
+function regionBg(r: any): string | null {
+  return r?.background_url || r?.background || r?.bg_url || r?.bg || null;
 }
 
 /** Jack-In HUD (Encounter / Travel / Shop). Exported so index.ts can reuse. */
-export async function renderJackInHUD(ix: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction) {
+export async function renderJackInHUD(
+  ix: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction
+) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
-  const { regions } = getBundle();
-  const region = regions[p?.region_id];
+
+  const region = p?.region_id ? getRegionById(p.region_id) : undefined;
   const zone = getZone(userId) || 1;
 
   const embed = new EmbedBuilder()
     .setTitle('✅ Jacked In')
     .setDescription(`Region: **${region?.name || p?.region_id || '—'}**, Zone: **${zone}**`)
-    .setImage(JACK_GIF || region?.background_url || region?.background || null)
+    .setImage(JACK_GIF || regionBg(region))
     .setFooter({ text: 'You can Encounter, Travel, or Shop.' });
 
   const encounterBtn = new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter');
@@ -121,18 +119,18 @@ export async function execute(ix: ChatInputCommandInteraction) {
     .setPlaceholder('Select a region to jack in')
     .addOptions(
       regionsUnlocked
-        .sort((a: any, b: any) => (a.min_level || 1) - (b.min_level || 1) || String(a.name).localeCompare(String(b.name)))
+        .sort((a: any, b: any) => (Number(a.min_level) || 1) - (Number(b.min_level) || 1) || String(a.name).localeCompare(String(b.name)))
         .map((r: any) => ({
           label: r.name,
-          value: r.id,
-          description: `Min Lv ${r.min_level ?? 1} • ${r.zone_count ?? r.zones ?? 1} zones`,
+          value: String(r.id),
+          description: `Min Lv ${r.min_level ?? 1} • ${r.zone_count ?? 1} zones`,
         })),
     );
 
   const embed = new EmbedBuilder()
     .setTitle('🔌 Jack In')
     .setDescription('Pick a region to enter. You will start at **Zone 1**.')
-    .setImage(JACK_GIF || regionsUnlocked[0]?.background_url || regionsUnlocked[0]?.background || null)
+    .setImage(JACK_GIF || regionBg(regionsUnlocked[0]))
     .setFooter({ text: 'Step 1 — Region' });
 
   await ix.reply({
@@ -157,21 +155,19 @@ export async function onSelectRegion(ix: StringSelectMenuInteraction) {
 export async function onOpenTravel(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
-  const { regions } = getBundle();
-  const region = regions[p?.region_id];
+  const region = p?.region_id ? getRegionById(p.region_id) : undefined;
 
   if (!region) {
     await ix.reply({ ephemeral: true, content: 'No region set. Use **/jack_in** first.' });
     return;
   }
 
-  const zoneMax = zoneCountOf(region);
-
+  const zoneCount = Math.max(1, Number(region.zone_count || 1));
   const zoneSelect = new StringSelectMenuBuilder()
     .setCustomId('jackin:selectZone')
     .setPlaceholder(`Select a zone in ${region.name}`)
     .addOptions(
-      Array.from({ length: zoneMax }, (_, i) => {
+      Array.from({ length: zoneCount }, (_, i) => {
         const z = i + 1;
         return { label: `Zone ${z}`, value: String(z) };
       }),
@@ -191,6 +187,34 @@ export async function onSelectZone(ix: StringSelectMenuInteraction) {
   await renderJackInHUD(ix);
 }
 
+/** Pick an encounter using loader helpers (boss chance, else uniform non-boss). */
+function pickEncounter(regionId: string, zone: number) {
+  const inZone = listVirusesForRegionZone({
+    region_id: String(regionId),
+    zone,
+    includeNormals: true,
+    includeBosses: true,
+  });
+  const bosses = inZone.filter(isBossFlag);
+  const normals = inZone.filter(v => !isBossFlag(v));
+
+  if (normals.length === 0 && bosses.length > 0) {
+    return { enemy_kind: 'boss' as const, virus: bosses[0] as any };
+  }
+  if (bosses.length && Math.random() < BOSS_ENCOUNTER) {
+    return { enemy_kind: 'boss' as const, virus: bosses[0] as any };
+  }
+  if (normals.length) {
+    const pick = normals[Math.floor(Math.random() * normals.length)];
+    return { enemy_kind: 'virus' as const, virus: pick as any };
+  }
+
+  throw Object.assign(
+    new Error(`No encounters for region=${regionId} zone=${zone}`),
+    { __encounterDebug: { inZone: inZone.length, bosses: bosses.length, normals: normals.length } }
+  );
+}
+
 /** Encounter → create battle, show an embedded header with the virus image, plus hand picker (single multi-select). */
 export async function onEncounter(ix: ButtonInteraction) {
   const userId = ix.user.id;
@@ -203,10 +227,10 @@ export async function onEncounter(ix: ButtonInteraction) {
     return;
   }
 
-  const { regions, chips } = getBundle();
-  const reg = regions[regionId];
+  const region = getRegionById(regionId);
+  const { chips } = getBundle();
 
-  const maxZone = Math.max(1, zoneCountOf(reg));
+  const maxZone = Math.max(1, Number(region?.zone_count || 1));
   if (zone < 1 || zone > maxZone) { zone = 1; await setZone(userId, zone); }
 
   try {
@@ -219,12 +243,14 @@ export async function onEncounter(ix: ButtonInteraction) {
       zone,
     });
 
+    // encounter header embed with virus image
     const header = new EmbedBuilder()
       .setTitle(`${(virus as any).name}`)
       .setDescription(`Enemy HP: **${(virus as any).hp ?? 0}** • Kind: **${enemy_kind === 'boss' ? 'Boss' : 'Virus'}**`)
-      .setThumbnail((virus as any).image_url || (virus as any).image || (virus as any).anim_url || null)
-      .setImage(reg?.background_url || reg?.background || null);
+      .setThumbnail((virus as any).image_url || (virus as any).anim_url || null)
+      .setImage(regionBg(region));
 
+    // ----- SINGLE MULTI-SELECT (max 3) + Lock/Run -----
     const hand: string[] = Array.isArray(state?.hand) ? state.hand : [];
 
     const sel = new StringSelectMenuBuilder()
@@ -234,7 +260,7 @@ export async function onEncounter(ix: ButtonInteraction) {
       .setMaxValues(Math.min(3, hand.length));
 
     const opts = hand.map((cid) => {
-      const c: any = chips[cid] || {};
+      const c: any = (chips as any[]).find((x: any) => String(x?.id) === String(cid)) || {};
       const name = c.name || cid;
       const code = c.code || c.letters || '';
       const pwr  = c.power || c.power_total || '';
@@ -269,20 +295,22 @@ export async function onEncounter(ix: ButtonInteraction) {
     await ix.reply({
       ephemeral: true,
       content:
-        `⚠️ No eligible encounters configured for **${reg?.name || regionId} / Zone ${zone}**.` +
-        `\nDebug — inZone:${dbg.inZone ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${zoneCountOf(reg)})`,
+        `⚠️ No eligible encounters configured for **${region?.name || regionId} / Zone ${zone}**.` +
+        `\nDebug — inZone:${dbg.inZone ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${region?.zone_count ?? '?'})`,
     });
   }
 }
 
 /* ------------------------------ Shop flow ------------------------------ */
 
+// Upgrade effect parser -> immediate stat application
 function applyUpgradeImmediate(userId: string, chip: any): string {
   const text = String(chip.effects || chip.description || '');
   const apply = (rx: RegExp) => {
     const m = text.match(rx);
     return m ? parseInt(m[1], 10) : 0;
-  };
+    };
+  // forgiving patterns like "HP+50", "atk +2", etc.
   const dHP  = apply(/(?:hp_max|max\s*hp|hp)\s*([+-]?\d+)/i);
   const dATK = apply(/atk\s*([+-]?\d+)/i);
   const dDEF = apply(/def\s*([+-]?\d+)/i);
@@ -309,16 +337,15 @@ function applyUpgradeImmediate(userId: string, chip: any): string {
 
 export async function onOpenShop(ix: ButtonInteraction) {
   const userId = ix.user.id;
-  const { regions } = getBundle();
   const p: any = await getPlayer(userId);
-  const region = regions[p?.region_id];
+  const region = p?.region_id ? getRegionById(p.region_id) : undefined;
 
   if (!region) {
     await ix.reply({ ephemeral: true, content: '🛒 No region selected. Use **/jack_in** first.' });
     return;
   }
 
-  const items = resolveShopInventory(region.id);
+  const items = resolveShopInventory(String(region.id));
   if (!items.length) {
     await ix.reply({ ephemeral: true, content: `🛒 No shop available in **${region?.name || 'this region'}**.` });
     return;
@@ -327,7 +354,7 @@ export async function onOpenShop(ix: ButtonInteraction) {
   const options = items
     .map((it) => {
       const lbl = `${it.name}${(it.chip as any).letters ? ` [${(it.chip as any).letters}]` : ''} — ${it.zenny_price}z`;
-      return { label: lbl.slice(0, 100), value: it.item_id };
+      return { label: lbl.slice(0, 100), value: String(it.item_id) };
     })
     .slice(0, 25);
 
@@ -344,7 +371,7 @@ export async function onOpenShop(ix: ButtonInteraction) {
   const embed = new EmbedBuilder()
     .setTitle(`🛒 ${region.name} Shop`)
     .setDescription('Pick an item, then **Buy**.\nPrices reflect TSV `price_override` (if present) or chip `zenny_cost`.')
-    .setImage(region.background_url || region.background || null);
+    .setImage(regionBg(region));
 
   await ix.reply({
     ephemeral: true,
@@ -358,13 +385,12 @@ export async function onOpenShop(ix: ButtonInteraction) {
 
 export async function onShopSelect(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
-  const { regions } = getBundle();
   const p: any = await getPlayer(userId);
-  const region = regions[p?.region_id];
-  const items = region ? resolveShopInventory(region.id) : [];
+  const region = p?.region_id ? getRegionById(p.region_id) : undefined;
+  const items = region ? resolveShopInventory(String(region.id)) : [];
 
   const id = ix.values?.[0];
-  const item = items.find(i => i.item_id === id);
+  const item = items.find(i => String(i.item_id) === String(id));
 
   if (!item) {
     await ix.update({
@@ -377,7 +403,7 @@ export async function onShopSelect(ix: StringSelectMenuInteraction) {
   const c: any = item.chip || {};
   const price = item.zenny_price;
   const embed = new EmbedBuilder()
-    .setTitle(c.name || id)
+    .setTitle(c.name || String(id))
     .setDescription(`${c.description || '—'}\n\nPrice: **${price}z**`)
     .setThumbnail(c.image_url || (c as any).image || null);
 
@@ -390,9 +416,9 @@ export async function onShopSelect(ix: StringSelectMenuInteraction) {
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder()
           .setCustomId('jackin:shopSelect')
-          .setPlaceholder(`Selected: ${c.name || id}`)
+          .setPlaceholder(`Selected: ${c.name || String(id)}`)
           .setMinValues(0).setMaxValues(1)
-          .addOptions([{ label: `${c.name || id} — ${price}z`, value: id }])
+          .addOptions([{ label: `${c.name || String(id)} — ${price}z`, value: String(id) }])
       ),
       new ActionRowBuilder<ButtonBuilder>().addComponents(buy, exit),
     ],
@@ -407,34 +433,36 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
     }
 
     const userId = ix.user.id;
-    const { regions } = getBundle();
     const p: any = await getPlayer(userId);
-    const region = regions[p?.region_id];
+    const region = p?.region_id ? getRegionById(p.region_id) : undefined;
 
     if (!region) {
       await ix.reply({ ephemeral: true, content: '⚠️ Pick a region first (use /jack_in).' });
       return;
     }
 
-    const items = resolveShopInventory(region.id);
-    const item = items.find(s => s.item_id === chipId);
+    const items = resolveShopInventory(String(region.id));
+    const item = items.find(s => String(s.item_id) === String(chipId));
     if (!item) {
       await ix.reply({ ephemeral: true, content: '❌ That chip is not for sale in this region.' });
       return;
     }
 
+    // Capacity check BEFORE spending
     const remaining = getFolderRemaining(userId);
     if (remaining <= 0 && !item.is_upgrade) {
       await ix.reply({ ephemeral: true, content: `❌ Folder is full (30/30). Remove a chip from your folder first.` });
       return;
     }
 
+    // Pay
     const pay = spendZenny(userId, item.zenny_price);
     if (!pay.ok) {
       await ix.reply({ ephemeral: true, content: `❌ Not enough Zenny. You need ${item.zenny_price}z.` });
       return;
     }
 
+    // Apply
     if (item.is_upgrade) {
       const summary = applyUpgradeImmediate(userId, item.chip);
       await ix.reply({
@@ -444,7 +472,8 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
       return;
     }
 
-    const res = tryAddToFolder(userId, chipId, 1);
+    // Non-upgrade → add to folder (refund on failure)
+    const res = tryAddToFolder(userId, String(chipId), 1);
     if (!res.ok || res.added <= 0) {
       addZenny(userId, item.zenny_price); // refund
       const why = res.reason ? ` ${res.reason}` : '';
