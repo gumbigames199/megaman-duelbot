@@ -212,6 +212,18 @@ client.on('interactionCreate', async (ix) => {
       }
     }
 
+    // ---------- Folder routing (buttons & selects) ----------
+    if (ix.isButton()) {
+      if (ix.customId === 'folder:edit')        { await Folder.onEdit(ix); return; }
+      if (ix.customId === 'folder:addOpen')     { await Folder.onOpenAdd(ix); return; }
+      if (ix.customId === 'folder:removeOpen')  { await Folder.onOpenRemove(ix); return; }
+      if (ix.customId === 'folder:save')        { await Folder.onSave(ix); return; }
+    }
+    if (ix.isStringSelectMenu()) {
+      if (ix.customId === 'folder:addSelect')    { await Folder.onAddSelect(ix); return; }
+      if (ix.customId === 'folder:removeSelect') { await Folder.onRemoveSelect(ix); return; }
+    }
+
     // Battle pick menu (single multi-select)
     if (ix.isStringSelectMenu() && ix.customId.startsWith('pick:')) {
       const [, battleId] = ix.customId.split(':');
@@ -231,7 +243,6 @@ client.on('interactionCreate', async (ix) => {
       }
 
       // Persist (compat save)
-      // Ensure s.locked has the chosen ids (pad/trim as legacy expects array length <=3)
       s.locked = chosen.slice();
       save(s);
       await ix.deferUpdate();
