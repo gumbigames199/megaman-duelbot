@@ -21,6 +21,29 @@ export function getBundle(): DataBundle {
   return b as DataBundle;
 }
 
+/* ---------------------------------------------
+ * Helpers
+ * -------------------------------------------*/
+
+// Robust bool reader (0/1, true/false, yes/no, "0"/"1"/"true"/"false")
+function _toBool(v: any): boolean {
+  if (v === true || v === 1) return true;
+  if (v === false || v === 0 || v === null || v === undefined) return false;
+  const s = String(v).trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'y';
+}
+
+/** Accepts any of: is_upgrade | Is_Upgrade | upgrade | isUpgrade */
+export function chipIsUpgrade(c: any): boolean {
+  if (!c) return false;
+  const raw = c.is_upgrade ?? c.Is_Upgrade ?? c.isUpgrade ?? c.upgrade;
+  return _toBool(raw);
+}
+
+/* ---------------------------------------------
+ * Indices
+ * -------------------------------------------*/
+
 type Indices = {
   chipById: Map<string, ChipRow>;
   virusById: Map<string, VirusRow>;
@@ -30,10 +53,26 @@ type Indices = {
 let _indices: Indices | null = null;
 
 function buildIndices(b: DataBundle): Indices {
-  // Normalize keys to strings so "104" and 104 both work everywhere.
-  const chipById   = new Map<string, ChipRow>(b.chips.map(c   => [String((c as any).id), c]));
-  const virusById  = new Map<string, VirusRow>(b.viruses.map(v => [String((v as any).id), v]));
-  const regionById = new Map<string, RegionRow>(b.regions.map(r => [String((r as any).id), r]));
+  const chipById = new Map<string, ChipRow>();
+  for (const c of b.chips as any[]) {
+    // Normalize id: prefer explicit id, else name; if id is numeric-like, promote to name
+    let id = String(c?.id ?? '').trim();
+    const name = String(c?.name ?? '').trim();
+    if (!id) id = name;
+    if (/^\d+$/.test(id) && name) id = name;
+
+    // write back so downstream callers see the normalized id
+    (c as any).id = id;
+
+    chipById.set(id, c as ChipRow);
+  }
+
+  const virusById  = new Map<string, VirusRow>(
+    b.viruses.map(v => [String((v as any).id), v])
+  );
+  const regionById = new Map<string, RegionRow>(
+    b.regions.map(r => [String((r as any).id), r])
+  );
 
   const shopsByRegion = new Map<string, ShopRow[]>();
   for (const s of b.shops) {
@@ -42,6 +81,7 @@ function buildIndices(b: DataBundle): Indices {
     arr.push(s);
     shopsByRegion.set(rid, arr);
   }
+
   return { chipById, virusById, regionById, shopsByRegion };
 }
 function indices(): Indices { return _indices ?? (_indices = buildIndices(getBundle())); }
@@ -54,14 +94,9 @@ export function listRegions()  { return getBundle().regions; }
 export function listChips()    { return getBundle().chips; }
 export function listViruses()  { return getBundle().viruses; }
 
-// Robust upgrade detector (handles is_upgrade / Is_Upgrade / true/false / 1/0 / "yes")
-export function chipIsUpgrade(c: any): boolean {
-  const raw = c?.is_upgrade ?? c?.Is_Upgrade ?? c?.isUpgrade ?? c?.upgrade;
-  if (typeof raw === 'boolean') return raw;
-  if (typeof raw === 'number')  return raw === 1;
-  const s = String(raw ?? '').trim().toLowerCase();
-  return s === '1' || s === 'true' || s === 'yes' || s === 'y';
-}
+/* ---------------------------------------------
+ * Queries
+ * -------------------------------------------*/
 
 export function listVirusesForRegionZone(opts: {
   region_id: string;
@@ -74,13 +109,17 @@ export function listVirusesForRegionZone(opts: {
   return getBundle().viruses.filter(v => {
     const vRegion = String((v as any).region_id ?? (v as any).region ?? '');
     if (vRegion && vRegion !== wantRegion) return false;
-    const isBoss = !!(v as any).is_boss || !!(v as any).boss;
+    const isBoss = _toBool((v as any).is_boss ?? (v as any).boss);
     if (!includeBosses && isBoss) return false;
     if (!includeNormals && !isBoss) return false;
     const z = ((v as any).zones ?? []) as number[];
     return z.length === 0 || z.includes(zone);
   });
 }
+
+/* ---------------------------------------------
+ * Shops
+ * -------------------------------------------*/
 
 export type ResolvedShopItem = {
   region_id: string;
@@ -122,9 +161,10 @@ export function resolveShopInventory(region_id: string): ResolvedShopItem[] {
   return out;
 }
 
-// -------------------------------
-// Virus art (robust fallbacks)
-// -------------------------------
+/* ---------------------------------------------
+ * Virus art (robust fallbacks)
+ * -------------------------------------------*/
+
 export function getVirusArt(virusId: string | number) {
   const v = getVirusById(virusId) as any;
   if (!v) return { fallbackEmoji: '⚔️' };
@@ -136,6 +176,10 @@ export function getVirusArt(virusId: string | number) {
   if (image || sprite) return { image, sprite, fallbackEmoji: '⚔️' };
   return { fallbackEmoji: '⚔️' };
 }
+
+/* ---------------------------------------------
+ * Reload
+ * -------------------------------------------*/
 
 export function reloadDataFromDisk(): DataBundle {
   invalidateBundleCache();
