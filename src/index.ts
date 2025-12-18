@@ -1,5 +1,7 @@
 // src/index.ts
 import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   Client, GatewayIntentBits, Partials, REST, Routes,
   SlashCommandBuilder, PermissionFlagsBits, Interaction,
@@ -108,15 +110,75 @@ client.on('interactionCreate', async (ix) => {
         if (!isAdmin(ix)) { await ix.reply({ content: '❌ Admin only.', ephemeral: true }); return; }
         await ix.deferReply({ ephemeral: true });
 
-        const { report } = (loadTSVBundle as unknown as (dir?: string) => any)(
-          process.env.DATA_DIR || './data'
-        );
+        // --- Diagnostics: determine and show the data directory & files ---
+        const rawDir = process.env.DATA_DIR || './data';
+        const dataDir = path.resolve(process.cwd(), rawDir);
+        let exists = false;
+        let files: string[] = [];
+        try {
+          exists = fs.existsSync(dataDir);
+          if (exists) files = fs.readdirSync(dataDir).filter(f => /\.(tsv|csv|txt|json)$/i.test(f)).sort();
+        } catch (e) {
+          // ignore fs errors, will be shown below anyway
+        }
 
-        const counts = Object.entries(report.counts).map(([k, v]) => `${k}:${v}`).join(' • ') || 'none';
-        const warnings = report.warnings.length ? `\n⚠️ Warnings:\n- ${report.warnings.join('\n- ')}` : '';
-        const errors = report.errors.length ? `\n❌ Errors:\n- ${report.errors.join('\n- ')}` : '';
+        // --- Load with strong error reporting ---
+        let report: any = null;
+        try {
+          const res = (loadTSVBundle as unknown as (dir?: string) => any)(dataDir);
+          report = res?.report ?? res ?? null;
+        } catch (e: any) {
+          await ix.editReply(
+            [
+              '❌ TSV loader threw an error.',
+              `• CWD: \`${process.cwd()}\``,
+              `• DATA_DIR: \`${rawDir}\` → \`${dataDir}\` (exists: ${exists ? 'yes' : 'no'})`,
+              `• Visible files: ${files.length ? files.join(', ') : '(none found)'}`,
+              `• Error: ${e?.message || e}`,
+            ].join('\n')
+          );
+          return;
+        }
+
+        // Invalidate cached indices/bundle so the new data is used immediately
         invalidateBundleCache();
-        await ix.editReply(`📦 TSV load: **${report.ok ? 'OK' : 'ISSUES'}**\nCounts: ${counts}${warnings}${errors}`);
+
+        // Attempt to pull live bundle to confirm visibility after reload
+        let liveSummary = '';
+        try {
+          const b = getBundle() as any;
+          const count = (x: any) =>
+            Array.isArray(x) ? x.length : x ? Object.keys(x).length : 0;
+          liveSummary =
+            `Live bundle → regions:${count(b.regions)} chips:${count(b.chips)} viruses:${count(b.viruses)} shops:${count(b.shops)}`;
+        } catch (e) {
+          liveSummary = `Live bundle → (failed to read: ${e})`;
+        }
+
+        const counts =
+          report?.counts
+            ? Object.entries(report.counts).map(([k, v]) => `${k}:${v}`).join(' • ')
+            : 'none';
+
+        const warnings = Array.isArray(report?.warnings) && report.warnings.length
+          ? `\n⚠️ Warnings:\n- ${report.warnings.join('\n- ')}`
+          : '';
+
+        const errors = Array.isArray(report?.errors) && report.errors.length
+          ? `\n❌ Errors:\n- ${report.errors.join('\n- ')}`
+          : '';
+
+        await ix.editReply(
+          [
+            `📦 TSV load: **${report?.ok === false ? 'ISSUES' : 'OK'}**`,
+            `Counts (loader): ${counts}`,
+            `Dir: \`${dataDir}\` (exists: ${exists ? 'yes' : 'no'})`,
+            `Files: ${files.length ? files.join(', ') : '(none found)'}`,
+            liveSummary,
+            warnings,
+            errors,
+          ].filter(Boolean).join('\n')
+        );
         return;
       }
 
