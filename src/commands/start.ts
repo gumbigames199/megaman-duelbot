@@ -1,70 +1,119 @@
+// src/commands/start.ts
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
   EmbedBuilder,
-} from "discord.js";
-import { ensurePlayer, setNameAndElement, addZenny, grantChip } from "../lib/db";
-import { getBundle } from "../lib/data";
-import { ensureStartUnlocked } from "../lib/unlock";
+} from 'discord.js';
 
-function parseStarters(raw: string): Array<{ id: string; qty: number }> {
-  return String(raw || "")
-    .split(/[,\n]+/)
-    .map((tok) => {
-      const m = tok.trim().match(/^([\w\-]+)(?::(\d+))?$/i);
-      if (!m) return null;
-      return { id: m[1], qty: Math.max(1, parseInt(m[2] || "1", 10)) };
-    })
-    .filter(Boolean) as any;
-}
+import { ensureStartUnlocked } from '../lib/unlock';
+import { getBundle } from '../lib/data';
+import {
+  ensurePlayer,
+  getPlayer,
+  listInventory,
+  grantChip,
+} from '../lib/db';
 
 export const data = new SlashCommandBuilder()
-  .setName("start")
-  .setDescription("Create your Navi (name + element)")
-  .addStringOption((o) =>
-    o.setName("name").setDescription("Navi name").setRequired(true).setMaxLength(24)
-  )
-  .addStringOption((o) =>
-    o
-      .setName("element")
-      .setDescription("Choose an element")
-      .setRequired(true)
-      .addChoices(
-        { name: "Fire", value: "Fire" },
-        { name: "Wood", value: "Wood" },
-        { name: "Elec", value: "Elec" },
-        { name: "Aqua", value: "Aqua" },
-        { name: "Neutral", value: "Neutral" }
-      )
-  );
+  .setName('start')
+  .setDescription('Create your Navi and grant starter rewards (once).');
 
 export async function execute(ix: ChatInputCommandInteraction) {
-  const name = ix.options.getString("name", true).trim();
-  const element = ix.options.getString("element", true);
+  const userId = ix.user.id;
 
-  const existing = ensurePlayer(ix.user.id); // 1-arg form
-  setNameAndElement(ix.user.id, name, element);
+  // Ensure player exists
+  const before = getPlayer(userId);
+  const createdNow = !before;
+  ensurePlayer(userId);
+  const p = getPlayer(userId)!;
 
-  ensureStartUnlocked(ix.user.id);
+  // Starter chips — only try to grant on very first run if inventory is empty
+  const invBefore = listInventory(userId);
+  let granted = 0;
+  let unknown: string[] = [];
 
-  const starterZ = Math.max(0, parseInt(process.env.STARTER_ZENNY || "0", 10));
-  if (starterZ > 0 && (existing?.zenny ?? 0) === 0) addZenny(ix.user.id, starterZ);
-
-  const starters = parseStarters(process.env.STARTER_CHIPS || "");
-  if (starters.length) {
-    const ids = new Set(Object.keys(getBundle().chips));
-    for (const s of starters) if (ids.has(s.id)) grantChip(ix.user.id, s.id, s.qty);
+  if (createdNow && invBefore.length === 0) {
+    const tokens = parseStarterChips(process.env.STARTER_CHIPS || '');
+    if (tokens.length) {
+      const { chips } = getBundle();
+      const nameToId = buildNameToIdIndex();
+      for (const t of tokens) {
+        const id = resolveChipToken(t, chips, nameToId);
+        if (id) {
+          grantChip(userId, id, 1);
+          granted += 1;
+        } else {
+          unknown.push(t);
+        }
+      }
+    }
   }
 
-  const embed = new EmbedBuilder()
-    .setAuthor({ name: `${ix.user.username}.EXE`, iconURL: ix.user.displayAvatarURL() })
-    .setTitle("✅ Navi Ready!")
+  // Make sure region unlocking baseline exists
+  await ensureStartUnlocked(userId);
+
+  const emb = new EmbedBuilder()
+    .setTitle(`${ix.user.username}.EXE`)
     .setDescription(
-      `**${name}** created.\nElement: **${element}**\nStarter Zenny: **${starterZ}**`
+      [
+        `Navi Ready!`,
+        '',
+        `**Element:** ${p.element ?? 'Neutral'}`,
+        `**Level:** ${p.level}   **HP:** ${p.hp_max}`,
+        `**Starter Zenny:** ${createdNow ? p.zenny : '(unchanged)'}`,
+        granted ? `**Starter Chips:** +${granted}` : '',
+        unknown.length ? `Unknown tokens skipped: ${unknown.join(', ')}` : '',
+      ].filter(Boolean).join('\n')
     );
 
-  await ix.reply({
-    ephemeral: true,
-    embeds: [embed],
-  });
+  await ix.reply({ ephemeral: true, embeds: [emb] });
+}
+
+/* ---------------- helpers ---------------- */
+
+function parseStarterChips(text: string): string[] {
+  return String(text || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+/** Build a case-insensitive name index for chips. */
+function buildNameToIdIndex(): Map<string, string> {
+  const { chips } = getBundle();
+  const map = new Map<string, string>();
+  for (const id of Object.keys(chips)) {
+    const c: any = chips[id] || {};
+    if (c.name) map.set(String(c.name).toLowerCase(), id);
+  }
+  return map;
+}
+
+/**
+ * Resolve an input token to a chip id.
+ * Order:
+ *  1) exact id match (as-is)
+ *  2) id match lowercased
+ *  3) name match (case-insensitive)
+ */
+function resolveChipToken(
+  token: string,
+  chips: Record<string, any>,
+  nameToId: Map<string, string>
+): string | null {
+  if (!token) return null;
+
+  // exact id
+  if (chips[token]) return token;
+
+  // lowercased id
+  const low = token.toLowerCase();
+  const idLow = Object.prototype.hasOwnProperty.call(chips, low) ? low : null;
+  if (idLow) return idLow;
+
+  // name match
+  const byName = nameToId.get(low);
+  if (byName && chips[byName]) return byName;
+
+  return null;
 }
