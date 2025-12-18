@@ -29,7 +29,6 @@ const BOSS_ENCOUNTER = parseFloat(process.env.BOSS_ENCOUNTER || '0.10');
 
 /* ------------------------------ helpers ------------------------------ */
 
-// Robustly read boss flag regardless of column casing/type.
 function isBossFlag(v: any): boolean {
   const raw = v?.boss ?? v?.is_boss ?? v?.Is_Boss;
   if (raw === true || raw === false) return raw;
@@ -38,9 +37,7 @@ function isBossFlag(v: any): boolean {
   return s === '1' || s === 'true' || s === 'yes' || s === 'y';
 }
 
-/** Pick an encounter (boss chance, else uniform non-boss) using the robust data helper. */
 function pickEncounter(regionId: string, zone: number) {
-  // Pull a tolerant pool: respects region_id/region, zones, and boss/is_boss.
   const pool = listVirusesForRegionZone({
     region_id: String(regionId),
     zone,
@@ -68,6 +65,13 @@ function pickEncounter(regionId: string, zone: number) {
   );
 }
 
+function zoneCountOf(region: any): number {
+  // Accept either `zone_count` (preferred) or `zones` as a total/count.
+  const raw = region?.zone_count ?? region?.zones ?? region?.zoneCount;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 1;
+}
+
 /** Jack-In HUD (Encounter / Travel / Shop). Exported so index.ts can reuse. */
 export async function renderJackInHUD(ix: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction) {
   const userId = ix.user.id;
@@ -79,7 +83,7 @@ export async function renderJackInHUD(ix: ButtonInteraction | StringSelectMenuIn
   const embed = new EmbedBuilder()
     .setTitle('✅ Jacked In')
     .setDescription(`Region: **${region?.name || p?.region_id || '—'}**, Zone: **${zone}**`)
-    .setImage(JACK_GIF || region?.background_url || null)
+    .setImage(JACK_GIF || region?.background_url || region?.background || null)
     .setFooter({ text: 'You can Encounter, Travel, or Shop.' });
 
   const encounterBtn = new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter');
@@ -121,14 +125,14 @@ export async function execute(ix: ChatInputCommandInteraction) {
         .map((r: any) => ({
           label: r.name,
           value: r.id,
-          description: `Min Lv ${r.min_level ?? 1} • ${r.zone_count ?? 1} zones`,
+          description: `Min Lv ${r.min_level ?? 1} • ${r.zone_count ?? r.zones ?? 1} zones`,
         })),
     );
 
   const embed = new EmbedBuilder()
     .setTitle('🔌 Jack In')
     .setDescription('Pick a region to enter. You will start at **Zone 1**.')
-    .setImage(JACK_GIF || regionsUnlocked[0]?.background_url || null)
+    .setImage(JACK_GIF || regionsUnlocked[0]?.background_url || regionsUnlocked[0]?.background || null)
     .setFooter({ text: 'Step 1 — Region' });
 
   await ix.reply({
@@ -161,11 +165,13 @@ export async function onOpenTravel(ix: ButtonInteraction) {
     return;
   }
 
+  const zoneMax = zoneCountOf(region);
+
   const zoneSelect = new StringSelectMenuBuilder()
     .setCustomId('jackin:selectZone')
     .setPlaceholder(`Select a zone in ${region.name}`)
     .addOptions(
-      Array.from({ length: region.zone_count || 1 }, (_, i) => {
+      Array.from({ length: zoneMax }, (_, i) => {
         const z = i + 1;
         return { label: `Zone ${z}`, value: String(z) };
       }),
@@ -200,7 +206,7 @@ export async function onEncounter(ix: ButtonInteraction) {
   const { regions, chips } = getBundle();
   const reg = regions[regionId];
 
-  const maxZone = Math.max(1, Number(reg?.zone_count || 1));
+  const maxZone = Math.max(1, zoneCountOf(reg));
   if (zone < 1 || zone > maxZone) { zone = 1; await setZone(userId, zone); }
 
   try {
@@ -213,14 +219,12 @@ export async function onEncounter(ix: ButtonInteraction) {
       zone,
     });
 
-    // encounter header embed with virus image
     const header = new EmbedBuilder()
       .setTitle(`${(virus as any).name}`)
       .setDescription(`Enemy HP: **${(virus as any).hp ?? 0}** • Kind: **${enemy_kind === 'boss' ? 'Boss' : 'Virus'}**`)
-      .setThumbnail((virus as any).image_url || (virus as any).anim_url || null)
-      .setImage(reg?.background_url || null);
+      .setThumbnail((virus as any).image_url || (virus as any).image || (virus as any).anim_url || null)
+      .setImage(reg?.background_url || reg?.background || null);
 
-    // ----- SINGLE MULTI-SELECT (max 3) + Lock/Run -----
     const hand: string[] = Array.isArray(state?.hand) ? state.hand : [];
 
     const sel = new StringSelectMenuBuilder()
@@ -266,21 +270,19 @@ export async function onEncounter(ix: ButtonInteraction) {
       ephemeral: true,
       content:
         `⚠️ No eligible encounters configured for **${reg?.name || regionId} / Zone ${zone}**.` +
-        `\nDebug — inZone:${dbg.inZone ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${reg?.zone_count ?? '?'})`,
+        `\nDebug — inZone:${dbg.inZone ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${zoneCountOf(reg)})`,
     });
   }
 }
 
 /* ------------------------------ Shop flow ------------------------------ */
 
-// Upgrade effect parser -> immediate stat application
 function applyUpgradeImmediate(userId: string, chip: any): string {
   const text = String(chip.effects || chip.description || '');
   const apply = (rx: RegExp) => {
     const m = text.match(rx);
     return m ? parseInt(m[1], 10) : 0;
   };
-  // forgiving patterns like "HP+50", "atk +2", etc.
   const dHP  = apply(/(?:hp_max|max\s*hp|hp)\s*([+-]?\d+)/i);
   const dATK = apply(/atk\s*([+-]?\d+)/i);
   const dDEF = apply(/def\s*([+-]?\d+)/i);
@@ -342,7 +344,7 @@ export async function onOpenShop(ix: ButtonInteraction) {
   const embed = new EmbedBuilder()
     .setTitle(`🛒 ${region.name} Shop`)
     .setDescription('Pick an item, then **Buy**.\nPrices reflect TSV `price_override` (if present) or chip `zenny_cost`.')
-    .setImage(region.background_url || null);
+    .setImage(region.background_url || region.background || null);
 
   await ix.reply({
     ephemeral: true,
@@ -421,21 +423,18 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
       return;
     }
 
-    // Capacity check BEFORE spending
     const remaining = getFolderRemaining(userId);
     if (remaining <= 0 && !item.is_upgrade) {
       await ix.reply({ ephemeral: true, content: `❌ Folder is full (30/30). Remove a chip from your folder first.` });
       return;
     }
 
-    // Pay
     const pay = spendZenny(userId, item.zenny_price);
     if (!pay.ok) {
       await ix.reply({ ephemeral: true, content: `❌ Not enough Zenny. You need ${item.zenny_price}z.` });
       return;
     }
 
-    // Apply
     if (item.is_upgrade) {
       const summary = applyUpgradeImmediate(userId, item.chip);
       await ix.reply({
@@ -445,7 +444,6 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
       return;
     }
 
-    // Non-upgrade → add to folder (refund on failure)
     const res = tryAddToFolder(userId, chipId, 1);
     if (!res.ok || res.added <= 0) {
       addZenny(userId, item.zenny_price); // refund
