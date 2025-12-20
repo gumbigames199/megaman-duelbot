@@ -22,10 +22,10 @@ type ChipRef = { id: string };
 
 type BattleHandItem = {
   id: string; // IMPORTANT: unique option value (we use hand index as string)
-  name: string;
+  name: string; // we inject letters into this
   power?: number;
   hits?: number;
-  element?: string;
+  element?: string; // only set if NOT Neutral (so UI never shows [Neutral])
   effects?: string;
   description?: string;
 };
@@ -54,7 +54,7 @@ type BattleState = {
 
   /**
    * Selected values from the UI.
-   * NEW: these are usually hand indices ("0","1","2"...), but we also tolerate chip ids
+   * These are usually hand indices ("0","1","2"...), but we also tolerate chip ids
    * for backwards compatibility (resolveTurn/index.ts).
    */
   selected: string[];
@@ -338,19 +338,31 @@ function renderBattle(bs: BattleState) {
 
 /**
  * IMPORTANT: make each option value unique by using the HAND INDEX.
- * This fixes Discord SELECT_COMPONENT_OPTION_VALUE_DUPLICATED when duplicates exist.
+ * Also: Inject letters into name, and suppress Neutral element for UI.
  */
 function toHandItems(hand: ChipRef[]): BattleHandItem[] {
   return hand.map((c, idx) => {
-    const chip = getChipById(c.id);
+    const chip = getChipById(c.id) as any;
+
+    const baseName = chip?.name ?? c.id;
+    const lettersRaw = String(chip?.letters ?? '').trim(); // from chips.tsv
+    const letters = lettersRaw ? lettersRaw : '';
+
+    // Always show letters in the NAME (so render.ts label always contains them).
+    const name = letters ? `${baseName} [${letters}]` : baseName;
+
+    // Only show element in UI if it's not Neutral.
+    const elem = toElement(chip?.element);
+    const elementForUI = elem !== 'Neutral' ? elem : undefined;
+
     return {
       id: String(idx), // unique per card instance
-      name: chip?.name ?? c.id,
-      power: asNum((chip as any)?.power),
-      hits: asNum((chip as any)?.hits),
-      element: (chip as any)?.element,
-      effects: (chip as any)?.effects,
-      description: (chip as any)?.description,
+      name,
+      power: asNum(chip?.power),
+      hits: asNum(chip?.hits),
+      element: elementForUI,
+      effects: chip?.effects,
+      description: chip?.description,
     };
   });
 }
@@ -377,9 +389,8 @@ function fallbackDeck(): ChipRef[] {
   if (cannon) return Array.from({ length: 10 }, () => ({ id: 'cannon' }));
   const guard = getChipById('guard');
   if (guard) return Array.from({ length: 10 }, () => ({ id: 'guard' }));
-  const chips = (require('./data') as typeof import('./data')).listChips?.() ?? [];
-  const first = chips[0]?.id ?? 'chip_001';
-  return Array.from({ length: 10 }, () => ({ id: first }));
+  // very last resort
+  return Array.from({ length: 10 }, () => ({ id: 'chip_001' }));
 }
 
 function drawHand(bs: BattleState) {
