@@ -4,7 +4,7 @@
 // - Per-chip copy caps via chips.tsv (max_copies) with sane defaults
 // - Validation helpers + convenience add/remaining funcs
 
-import { getBundle } from './data';
+import { getBundle, chipIsUpgrade } from './data';
 import {
   listFolder as _listFolder,
   addToFolder as _addToFolder,
@@ -55,10 +55,12 @@ export function validateFolder(user_id: string, chips: string[]): { ok: boolean;
     return { ok: false, error: `Folder exceeds ${MAX_FOLDER} slots.` };
   }
 
-  // No upgrades allowed
+  // No upgrades allowed (STRICT: handles "0"/"1" correctly)
   for (const id of chips) {
     const c: any = b.chips[id] || {};
-    if (c.is_upgrade) return { ok: false, error: `Upgrades can't be placed in the folder (${c.name || id}).` };
+    if (chipIsUpgrade(c)) {
+      return { ok: false, error: `Upgrades can't be placed in the folder (${c.name || id}).` };
+    }
   }
 
   // Per-chip caps (from TSV) and inventory sanity check (soft)
@@ -85,7 +87,8 @@ export function validateFolder(user_id: string, chips: string[]): { ok: boolean;
 export function maxCopiesForChip(id: string): number {
   const b = getBundle();
   const c: any = b.chips[id] || {};
-  if (c.is_upgrade) return 0;
+  if (chipIsUpgrade(c)) return 0;
+
   const n = Number(c.max_copies);
   if (Number.isFinite(n) && n >= 0) return Math.trunc(n);
   return DEFAULT_MAX_COPIES;
@@ -106,9 +109,14 @@ export function tryAddToFolder(user_id: string, chip_id: string, qty = 1): {
   reason?: string;
 } {
   const b = getBundle();
-  const c: any = b.chips[chip_id] || {};
-  if (!c) return { ok: false, added: 0, remaining: getFolderRemaining(user_id), cap: 0, reason: 'Unknown chip.' };
-  if (c.is_upgrade) return { ok: false, added: 0, remaining: getFolderRemaining(user_id), cap: 0, reason: 'Upgrades can’t be added to the folder.' };
+  const c: any = b.chips[chip_id] || null;
+
+  if (!c) {
+    return { ok: false, added: 0, remaining: getFolderRemaining(user_id), cap: 0, reason: 'Unknown chip.' };
+  }
+  if (chipIsUpgrade(c)) {
+    return { ok: false, added: 0, remaining: getFolderRemaining(user_id), cap: 0, reason: 'Upgrades can’t be added to the folder.' };
+  }
 
   const cap = maxCopiesForChip(chip_id);
   const current = getFolder(user_id).filter(id => id === chip_id).length;
@@ -134,9 +142,12 @@ export function tryAddToFolder(user_id: string, chip_id: string, qty = 1): {
 // ---------- small helpers ----------
 
 function envInt(k: string, d: number): number {
-  const n = Number(process.env[k]); return Number.isFinite(n) ? Math.trunc(n) : d;
+  const n = Number(process.env[k]);
+  return Number.isFinite(n) ? Math.trunc(n) : d;
 }
+
 function displayName(id: string): string {
-  const b = getBundle(); const c: any = b.chips[id] || {};
+  const b = getBundle();
+  const c: any = b.chips[id] || {};
   return c.name || id;
 }
