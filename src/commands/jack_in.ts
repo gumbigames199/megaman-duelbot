@@ -59,7 +59,6 @@ function isBossFlag(v: any): boolean {
   return s === '1' || s === 'true' || s === 'yes' || s === 'y';
 }
 function virusZonesMatch(v: any, zone: number): boolean {
-  // Accept: zones (array or CSV), or zone (single number)
   const list = parseZones((v as any).zones ?? (v as any).zone);
   return list.length === 0 ? true : list.includes(zone);
 }
@@ -69,7 +68,7 @@ function pickEncounter(regionId: string, zone: number) {
   const { viruses } = getBundle();
   const wantRegion = normId(regionId);
 
-  const all: any[] = Array.isArray(viruses) ? viruses as any[] : Object.values(viruses as any);
+  const all: any[] = Array.isArray(viruses) ? (viruses as any[]) : Object.values(viruses as any);
   const inRegion = (v: any) => {
     const vr = normId((v as any)?.region_id ?? (v as any)?.region);
     if (vr && vr !== wantRegion) return false;
@@ -102,15 +101,14 @@ export async function renderJackInHUD(ix: ButtonInteraction | StringSelectMenuIn
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
   const { regions } = getBundle();
-  // regions: can be array or object — normalize:
-  const regionsArr: any[] = Array.isArray(regions) ? regions as any[] : Object.values(regions as any);
+  const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
   const region = regionsArr.find(r => normId(r.id) === normId(p?.region_id));
   const zone = getZone(userId) || 1;
 
   const embed = new EmbedBuilder()
     .setTitle('✅ Jacked In')
     .setDescription(`Region: **${region?.name || p?.region_id || '—'}**, Zone: **${zone}**`)
-    .setImage(JACK_GIF || region?.background_url || region?.background || null)
+    .setImage(JACK_GIF || (region as any)?.background_url || null)
     .setFooter({ text: 'You can Encounter, Travel, or Shop.' });
 
   const encounterBtn = new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter');
@@ -159,7 +157,7 @@ export async function execute(ix: ChatInputCommandInteraction) {
   const embed = new EmbedBuilder()
     .setTitle('🔌 Jack In')
     .setDescription('Pick a region to enter. You will start at **Zone 1**.')
-    .setImage(JACK_GIF || regionsUnlocked[0]?.background_url || regionsUnlocked[0]?.background || null)
+    .setImage(JACK_GIF || (regionsUnlocked[0] as any)?.background_url || null)
     .setFooter({ text: 'Step 1 — Region' });
 
   await ix.reply({
@@ -185,7 +183,7 @@ export async function onOpenTravel(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
   const { regions } = getBundle();
-  const regionsArr: any[] = Array.isArray(regions) ? regions as any[] : Object.values(regions as any);
+  const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
   const region = regionsArr.find(r => normId(r.id) === normId(p?.region_id));
 
   if (!region) {
@@ -193,7 +191,7 @@ export async function onOpenTravel(ix: ButtonInteraction) {
     return;
   }
 
-  const zoneCount = Math.max(1, Number(region.zone_count || 1));
+  const zoneCount = Math.max(1, Number((region as any).zone_count || 1));
   const zoneSelect = new StringSelectMenuBuilder()
     .setCustomId('jackin:selectZone')
     .setPlaceholder(`Select a zone in ${region.name}`)
@@ -231,10 +229,10 @@ export async function onEncounter(ix: ButtonInteraction) {
   }
 
   const { regions, chips } = getBundle();
-  const regionsArr: any[] = Array.isArray(regions) ? regions as any[] : Object.values(regions as any);
+  const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
   const reg = regionsArr.find(r => normId(r.id) === normId(regionId));
 
-  const maxZone = Math.max(1, Number(reg?.zone_count || 1));
+  const maxZone = Math.max(1, Number((reg as any)?.zone_count || 1));
   if (zone < 1 || zone > maxZone) { zone = 1; await setZone(userId, zone); }
 
   try {
@@ -249,14 +247,13 @@ export async function onEncounter(ix: ButtonInteraction) {
       zone,
     });
 
-    // encounter header embed with virus image
     const header = new EmbedBuilder()
       .setTitle(`${(virus as any).name ?? (virus as any).id}`)
       .setDescription(`Enemy HP: **${(virus as any).hp ?? 0}** • Kind: **${enemy_kind === 'boss' ? 'Boss' : 'Virus'}**`)
       .setThumbnail((virus as any).image_url || (virus as any).anim_url || (virus as any).sprite || null)
-      .setImage(reg?.background_url || reg?.background || null);
+      .setImage((reg as any)?.background_url || null);
 
-    // ----- SINGLE MULTI-SELECT (max 3) + Lock/Run -----
+    // SINGLE MULTI-SELECT (max 3) + Lock/Run
     const hand: string[] = Array.isArray(state?.hand) ? state.hand : [];
 
     const sel = new StringSelectMenuBuilder()
@@ -301,22 +298,20 @@ export async function onEncounter(ix: ButtonInteraction) {
     await ix.reply({
       ephemeral: true,
       content:
-        `⚠️ No eligible encounters configured for **${reg?.name || regionId} / Zone ${zone}**.` +
-        `\nDebug — inZone:${dbg.inZone ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${reg?.zone_count ?? '?'})`,
+        `⚠️ No eligible encounters configured for **${(reg as any)?.name || regionId} / Zone ${zone}**.` +
+        `\nDebug — inZone:${dbg.inZone ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${(reg as any)?.zone_count ?? '?'})`,
     });
   }
 }
 
 /* ------------------------------ Shop flow ------------------------------ */
 
-// Upgrade effect parser -> immediate stat application
 function applyUpgradeImmediate(userId: string, chip: any): string {
   const text = String(chip.effects || chip.description || '');
   const apply = (rx: RegExp) => {
     const m = text.match(rx);
     return m ? parseInt(m[1], 10) : 0;
   };
-  // forgiving patterns like "HP+50", "atk +2", etc.
   const dHP  = apply(/(?:hp_max|max\s*hp|hp)\s*([+-]?\d+)/i);
   const dATK = apply(/atk\s*([+-]?\d+)/i);
   const dDEF = apply(/def\s*([+-]?\d+)/i);
@@ -345,7 +340,7 @@ export async function onOpenShop(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const { regions } = getBundle();
   const p: any = await getPlayer(userId);
-  const regionsArr: any[] = Array.isArray(regions) ? regions as any[] : Object.values(regions as any);
+  const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
   const region = regionsArr.find(r => normId(r.id) === normId(p?.region_id));
 
   if (!region) {
@@ -380,7 +375,7 @@ export async function onOpenShop(ix: ButtonInteraction) {
   const embed = new EmbedBuilder()
     .setTitle(`🛒 ${region.name} Shop`)
     .setDescription('Pick an item, then **Buy**.\nPrices reflect TSV `price_override` (if present) or chip `zenny_cost`.')
-    .setImage(region.background_url || region.background || null);
+    .setImage((region as any).background_url || null);
 
   await ix.reply({
     ephemeral: true,
@@ -396,7 +391,7 @@ export async function onShopSelect(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
   const { regions } = getBundle();
   const p: any = await getPlayer(userId);
-  const regionsArr: any[] = Array.isArray(regions) ? regions as any[] : Object.values(regions as any);
+  const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
   const region = regionsArr.find(r => normId(r.id) === normId(p?.region_id));
   const items = region ? resolveShopInventory(region.id) : [];
 
@@ -446,7 +441,7 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
     const userId = ix.user.id;
     const { regions } = getBundle();
     const p: any = await getPlayer(userId);
-    const regionsArr: any[] = Array.isArray(regions) ? regions as any[] : Object.values(regions as any);
+    const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
     const region = regionsArr.find(r => normId(r.id) === normId(p?.region_id));
 
     if (!region) {
