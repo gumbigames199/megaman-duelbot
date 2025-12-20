@@ -1,15 +1,18 @@
-// lib/tsv.ts
-// Minimal TSV loader with cache. Default export is callable (tsv() → getBundle())
-// and also exposes properties: tsv.getBundle, tsv.invalidateBundleCache.
+// src/lib/tsv.ts
+// Minimal TSV loader w/ cache.
+// - Reads TSVs from DATA_DIR (Railway) or ./data (local)
+// - Returns raw row objects (strings) — normalization happens in lib/data.ts
+// - Exposes getBundle() + invalidateBundleCache()
+// - Default export is callable (tsv() -> getBundle()) and also has properties.
 
-import fs from "node:fs";
-import path from "node:path";
+import fs from 'node:fs';
+import path from 'node:path';
 
-export type ChipRow   = { id: string; name: string; [k: string]: any };
-export type VirusRow  = { id: string; name: string; region_id?: string; is_boss?: boolean; zones?: number[]; [k: string]: any };
-export type RegionRow = { id: string; label: string; zone_count?: number; [k: string]: any };
-export type ShopRow   = { region_id: string; item_id: string; price_override?: number; [k: string]: any };
-export type ProgramAdvanceRow = { id: string; name: string; [k: string]: any };
+export type ChipRow = { id?: string; name?: string; [k: string]: any };
+export type VirusRow = { id?: string; name?: string; [k: string]: any };
+export type RegionRow = { id?: string; name?: string; label?: string; [k: string]: any };
+export type ShopRow = { id?: string; region_id?: string; entries?: string; [k: string]: any };
+export type ProgramAdvanceRow = { id?: string; name?: string; [k: string]: any };
 
 export type DataBundle = {
   chips: ChipRow[];
@@ -23,93 +26,105 @@ export type DataBundle = {
 };
 
 let _cache: DataBundle | null = null;
-let _mtimeKey = "";
+let _mtimeKey = '';
 
 export function invalidateBundleCache() {
   _cache = null;
-  _mtimeKey = "";
+  _mtimeKey = '';
+}
+
+function resolveDataDir(): string {
+  const fromEnv = String(process.env.DATA_DIR ?? '').trim();
+  // If DATA_DIR is absolute, use it; if relative, resolve from CWD.
+  if (fromEnv) return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
+  return path.resolve(process.cwd(), 'data');
 }
 
 export function getBundle(): DataBundle {
-  const dataDir = path.resolve(process.cwd(), "data");
+  const dataDir = resolveDataDir();
+
   const key = mtimeKeyForDir(dataDir);
-  if (_cache && _mtimeKey === key) return _cache;
+  if (_cache && key && key === _mtimeKey) return _cache;
 
-  const chips      = readTSV(path.join(dataDir, "chips.tsv"));
-  const virusesRaw = readTSV(path.join(dataDir, "viruses.tsv"));
-  const regions    = readTSV(path.join(dataDir, "regions.tsv"));
-  const drops      = readTSV(path.join(dataDir, "drop_tables.tsv"));
-  const missions   = readTSV(path.join(dataDir, "missions.tsv"));
-  const pas        = readTSV(path.join(dataDir, "program_advances.tsv"));
-  const shops      = readTSV(path.join(dataDir, "shops.tsv"));
+  const chips = readTSV(path.join(dataDir, 'chips.tsv'));
+  const viruses = readTSV(path.join(dataDir, 'viruses.tsv'));
+  const regions = readTSV(path.join(dataDir, 'regions.tsv'));
+  const drop_tables = readTSV(path.join(dataDir, 'drop_tables.tsv'));
+  const missions = readTSV(path.join(dataDir, 'missions.tsv'));
+  const program_advances = readTSV(path.join(dataDir, 'program_advances.tsv'));
+  const shops = readTSV(path.join(dataDir, 'shops.tsv'));
 
-  const viruses: VirusRow[] = (virusesRaw as any[]).map((r) => ({
-    ...r,
-    is_boss: truthy((r as any).is_boss),
-    zones: parseZones((r as any).zones),
-  }));
-
-  const bundle: DataBundle = {
-    chips: chips as ChipRow[],
+  _cache = {
+    chips,
     viruses,
-    regions: regions as RegionRow[],
-    drop_tables: drops,
+    regions,
+    drop_tables,
     missions,
-    program_advances: pas as ProgramAdvanceRow[],
-    programAdvances: pas as ProgramAdvanceRow[], // alias
-    shops: shops as ShopRow[],
+    program_advances,
+    programAdvances: program_advances, // alias
+    shops,
   };
-
-  _cache = bundle;
   _mtimeKey = key;
-  return bundle;
+
+  return _cache;
 }
 
-// ---------- helpers ----------
+/* ------------------------------ TSV reader ------------------------------ */
 
-function readTSV(file: string): any[] {
-  if (!fs.existsSync(file)) return [];
-  const raw = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
-  const lines = raw.split("\n").filter((l) => l.length > 0);
+function readTSV(filePath: string): any[] {
+  if (!fs.existsSync(filePath)) return [];
+
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const lines = raw
+    .split(/\r?\n/)
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim().length > 0 && !l.trimStart().startsWith('#'));
+
   if (lines.length === 0) return [];
-  const headers = lines[0].split("\t").map((h) => h.trim());
-  const rows: any[] = [];
+
+  const headers = splitTSVLine(lines[0]).map((h) => h.trim());
+  const out: any[] = [];
+
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split("\t");
-    const obj: any = {};
-    headers.forEach((h, idx) => { obj[h] = cols[idx] ?? ""; });
-    rows.push(obj);
+    const cols = splitTSVLine(lines[i]);
+
+    // Skip if the row is effectively blank
+    const anyData = cols.some((c) => String(c ?? '').trim().length > 0);
+    if (!anyData) continue;
+
+    const row: any = {};
+    for (let c = 0; c < headers.length; c++) {
+      const key = headers[c];
+      if (!key) continue;
+      row[key] = cols[c] ?? '';
+    }
+    out.push(row);
   }
-  return rows;
+
+  return out;
 }
 
-function parseZones(v: any): number[] {
-  if (!v) return [];
-  const s = String(v);
-  const parts = s.split(/[,|; ]+/).filter(Boolean);
-  return parts.map((p) => Number(p)).filter((n) => Number.isFinite(n));
-}
-
-function truthy(v: any): boolean {
-  if (typeof v === "boolean") return v;
-  const s = String(v || "").toLowerCase().trim();
-  return s === "1" || s === "true" || s === "yes";
+function splitTSVLine(line: string): string[] {
+  // TSVs are simple in your project (no quoted cells needed), so split on tabs.
+  return line.split('\t');
 }
 
 function mtimeKeyForDir(dir: string): string {
   try {
-    const names = fs.readdirSync(dir);
+    const names = fs.readdirSync(dir).filter((n) => n.endsWith('.tsv'));
     const stats = names.map((n) => fs.statSync(path.join(dir, n)).mtimeMs);
     return String(Math.max(...stats, 0));
-  } catch { return ""; }
+  } catch {
+    return '';
+  }
 }
 
-// ---- default export (callable) ----
+/* ------------------------------ default export ------------------------------ */
 
 function tsvDefault(): DataBundle {
   return getBundle();
 }
-// also expose properties for both call styles
+
 (tsvDefault as any).getBundle = getBundle;
 (tsvDefault as any).invalidateBundleCache = invalidateBundleCache;
 

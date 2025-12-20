@@ -2,7 +2,20 @@
 import { getBundle, getVirusById } from './data';
 import { addZenny, addXP, grantChip, getPlayer } from './db';
 
+/**
+ * GLOBAL_DROP_RATE_MULT (optional):
+ * Multiplies the overall chance that a drop happens (NOT per-chip weights).
+ * Defaults to 1.0.
+ */
 const GLOBAL_DROP_RATE_MULT = envFloat('GLOBAL_DROP_RATE_MULT', 1.0);
+
+/**
+ * Railway env (you already have VIRUS_CHIP_DROP_RATE):
+ * - VIRUS_CHIP_DROP_RATE: chance a normal virus drops a chip (0..1)
+ * - BOSS_CHIP_DROP_RATE: optional override for bosses (0..1). If unset, bosses use VIRUS_CHIP_DROP_RATE.
+ */
+const VIRUS_CHIP_DROP_RATE = envFloat('VIRUS_CHIP_DROP_RATE', 0.33);
+const BOSS_CHIP_DROP_RATE = envFloat('BOSS_CHIP_DROP_RATE', NaN);
 
 // Fallbacks if a virus row is missing ranges
 const VIRUS_BASE_XP_RANGE = [10, 20] as const;
@@ -26,8 +39,7 @@ export type RewardsResult = {
  * Public (used by newer battle.ts)
  * -----------------------------------------*/
 export function grantVirusRewards(user_id: string, virus_id: string): RewardsResult {
-  const { xp, zenny, drops, leveledUp, xpTotal, levelAfter, nextThreshold } =
-    coreRoll(user_id, virus_id);
+  const { xp, zenny, drops, leveledUp, xpTotal, levelAfter, nextThreshold } = coreRoll(user_id, virus_id);
 
   return {
     xp_gained: xp,
@@ -59,11 +71,21 @@ export function rollBossRewards(user_id: string, virus_id: string) {
 }
 
 /* -------------------------------------------
- * Core logic
+ * Core roll + apply
  * -----------------------------------------*/
-function coreRoll(user_id: string, virus_id: string) {
+function coreRoll(user_id: string, virus_id: string): {
+  xp: number;
+  zenny: number;
+  drops: string[];
+  leveledUp: number;
+  xpTotal: number;
+  levelAfter: number;
+  nextThreshold: number;
+} {
   const b = getBundle();
-  const v = b.viruses[virus_id] || getVirusById(virus_id);
+
+  // tolerate either b.viruses map or getVirusById fallback
+  const v = (b as any).viruses?.[virus_id] || getVirusById(virus_id);
   const isBoss = !!(v as any)?.boss;
 
   // XP — always a concrete range
@@ -101,37 +123,110 @@ function coreRoll(user_id: string, virus_id: string) {
 }
 
 /* -------------------------------------------
- * Drops: parse drop table entries → "chip:rate,..."
+ * Drops
+ *
+ * Your design (recommended):
+ *  - Railway env VIRUS_CHIP_DROP_RATE controls IF a drop happens.
+ *  - drop_tables.tsv entries choose WHAT drops.
+ *
+ * drop_tables.tsv format supported:
+ *  - "ChipA,ChipB,ChipC"                => uniform weights
+ *  - "ChipA:50,ChipB:5"                 => weighted selection (50 vs 5)
+ *  - "ChipA:0.5,ChipB:0.1"              => fractional weights also supported
  * -----------------------------------------*/
+type ParsedDrop = { id: string; weight: number };
+
 function rollDropsForVirus(virus_id: string): string[] {
   const b = getBundle();
-  const v = b.viruses[virus_id];
-  const tableId = (v as any)?.drop_table_id;
+  const v = (b as any).viruses?.[virus_id] || getVirusById(virus_id);
+  if (!v) return [];
 
-  // Tolerate both shapes: dropTables (camel) and drop_tables (snake)
-  const allTables = (b as any).dropTables ?? (b as any).drop_tables ?? {};
-  const dt = tableId ? allTables[tableId] : null;
+  const isBoss = !!(v as any)?.boss;
+  const tableId = String((v as any)?.drop_table_id ?? '').trim();
+  if (!tableId) return [];
+
+  const dt = getDropTableById(b, tableId);
   if (!dt) return [];
 
-  const entries = String(dt.entries || '')
+  const parsed = parseDropEntries(String((dt as any).entries ?? ''), b);
+  if (parsed.length === 0) return [];
+
+  // Chance that ANY drop happens
+  const baseChance = isBoss
+    ? (Number.isFinite(BOSS_CHIP_DROP_RATE) ? BOSS_CHIP_DROP_RATE : VIRUS_CHIP_DROP_RATE)
+    : VIRUS_CHIP_DROP_RATE;
+
+  const chance = clamp01(baseChance * GLOBAL_DROP_RATE_MULT);
+  if (chance <= 0) return [];
+  if (Math.random() >= chance) return [];
+
+  const picked = weightedPick(parsed);
+  return picked ? [picked] : [];
+}
+
+function parseDropEntries(entries: string, b: any): ParsedDrop[] {
+  const chipsMap = (b as any).chips;
+  const chipsArr = Array.isArray((b as any).chips) ? (b as any).chips : null;
+
+  const hasChip = (id: string) => {
+    if (!id) return false;
+    if (chipsMap && typeof chipsMap === 'object' && !Array.isArray(chipsMap)) return !!chipsMap[id];
+    if (chipsArr) return chipsArr.some((c: any) => String(c?.id ?? c?.name ?? '').trim() === id);
+    return true; // if we can't verify, don't block
+  };
+
+  const out: ParsedDrop[] = [];
+  const parts = entries
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
 
-  const won: string[] = [];
-  for (const e of entries) {
-    const [idRaw, rateRaw] = e.split(':').map(s => s?.trim());
-    const id = idRaw || '';
+  for (const p of parts) {
+    const [idRaw, wRaw] = p.split(':').map(s => s?.trim());
+    const id = String(idRaw ?? '').trim();
     if (!id) continue;
+    if (!hasChip(id)) continue;
 
-    const baseRate = Number(rateRaw);
-    const rate = clamp01(
-      Number.isFinite(baseRate) ? baseRate * GLOBAL_DROP_RATE_MULT : 0
-    );
+    let weight = 1;
+    const n = Number(wRaw);
+    if (Number.isFinite(n) && n > 0) weight = n;
 
-    if (rate > 0 && Math.random() < rate) won.push(id);
+    out.push({ id, weight });
   }
-  return won;
+
+  return out;
+}
+
+function weightedPick(items: ParsedDrop[]): string | null {
+  let total = 0;
+  for (const it of items) total += Math.max(0, it.weight);
+  if (!(total > 0)) return null;
+
+  let r = Math.random() * total;
+  for (const it of items) {
+    r -= Math.max(0, it.weight);
+    if (r <= 0) return it.id;
+  }
+  return items[items.length - 1]?.id ?? null;
+}
+
+function getDropTableById(b: any, tableId: string): any | null {
+  // Preferred: normalized map
+  const map1 = (b as any).dropTables;
+  if (map1 && typeof map1 === 'object' && !Array.isArray(map1)) return map1[tableId] ?? null;
+
+  // Alternate: snake map
+  const map2 = (b as any).drop_tables;
+  if (map2 && typeof map2 === 'object' && !Array.isArray(map2)) return map2[tableId] ?? null;
+
+  // Alternate: array of rows
+  const arr = Array.isArray((b as any).drop_tables) ? (b as any).drop_tables
+    : Array.isArray((b as any).dropTables) ? (b as any).dropTables
+    : null;
+
+  if (arr) return arr.find((x: any) => String(x?.id ?? '').trim() === tableId) ?? null;
+
+  return null;
 }
 
 /* -------------------------------------------
@@ -158,6 +253,7 @@ function rollRange(range: [number, number] | readonly [number, number]) {
 }
 
 function envFloat(k: string, d: number) {
-  const v = Number(process.env[k]); return Number.isFinite(v) ? v : d;
+  const v = Number(process.env[k]);
+  return Number.isFinite(v) ? v : d;
 }
 function clamp01(x: number) { return x < 0 ? 0 : x > 1 ? 1 : x; }
