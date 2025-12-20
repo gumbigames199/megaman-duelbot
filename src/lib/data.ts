@@ -50,11 +50,33 @@ export function getBundle(): NormalizedBundle {
  * Helpers
  * -------------------------------------------*/
 
-function toBool(v: any): boolean {
+function toBoolLoose(v: any): boolean {
+  // Loose coercion (used only where we truly want it).
   if (v === true || v === 1) return true;
   if (v === false || v === 0 || v === null || v === undefined) return false;
   const s = String(v).trim().toLowerCase();
   return s === '1' || s === 'true' || s === 'yes' || s === 'y';
+}
+
+/**
+ * STRICT upgrade flag:
+ * Your TSV uses 0/1. We only treat "1"/1/true as upgrade.
+ * This fixes /folder accidentally treating everything as upgrades.
+ */
+export function chipIsUpgrade(c: any): boolean {
+  if (!c) return false;
+  const raw =
+    c.is_upgrade ??
+    c.isUpgrade ??
+    c.Is_Upgrade ??
+    c.upgrade ??
+    c.Upgrade;
+
+  if (raw === true || raw === 1) return true;
+  if (raw === false || raw === 0) return false;
+
+  const s = String(raw ?? '').trim().toLowerCase();
+  return s === '1' || s === 'true';
 }
 
 function parseZones(raw: any): number[] {
@@ -66,7 +88,10 @@ function parseZones(raw: any): number[] {
   const s = String(raw ?? '').trim();
   if (!s) return [];
   const out: number[] = [];
-  for (const part of s.split(/[,;| ]+/).map((x) => x.trim()).filter(Boolean)) {
+  for (const part of s
+    .split(/[,;| ]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)) {
     const m = part.match(/^(\d+)\s*-\s*(\d+)$/);
     if (m) {
       let a = parseInt(m[1], 10);
@@ -81,10 +106,11 @@ function parseZones(raw: any): number[] {
   return Array.from(new Set(out)).sort((a, b) => a - b);
 }
 
-export function chipIsUpgrade(c: any): boolean {
-  if (!c) return false;
-  const raw = c.is_upgrade ?? c.Is_Upgrade ?? c.isUpgrade ?? c.upgrade;
-  return toBool(raw);
+function normStr(v: any): string {
+  return String(v ?? '').trim();
+}
+function normLower(v: any): string {
+  return normStr(v).toLowerCase();
 }
 
 /* ---------------------------------------------
@@ -92,10 +118,10 @@ export function chipIsUpgrade(c: any): boolean {
  * -------------------------------------------*/
 
 type ShopItemRow = {
-  region_id: string;     // region this shop belongs to (for your region-wide shops)
-  item_id: string;       // chip id
+  region_id: string; // region this shop belongs to
+  item_id: string; // chip id
   price_override?: number;
-  _shop_id?: string;     // optional: original shop row id
+  _shop_id?: string; // optional original shop row id
 };
 
 /* ---------------------------------------------
@@ -106,83 +132,109 @@ function normalizeRawBundle(raw: any): NormalizedBundle {
   const chip_list = Array.isArray(raw?.chips) ? raw.chips : [];
   const virus_list = Array.isArray(raw?.viruses) ? raw.viruses : [];
   const region_list = Array.isArray(raw?.regions) ? raw.regions : [];
-  const drop_list = Array.isArray(raw?.drop_tables) ? raw.drop_tables : (Array.isArray(raw?.dropTables) ? raw.dropTables : []);
+  const drop_list = Array.isArray(raw?.drop_tables)
+    ? raw.drop_tables
+    : Array.isArray(raw?.dropTables)
+      ? raw.dropTables
+      : [];
   const mission_list = Array.isArray(raw?.missions) ? raw.missions : [];
-  const pa_list = Array.isArray(raw?.program_advances) ? raw.program_advances : (Array.isArray(raw?.programAdvances) ? raw.programAdvances : []);
+  const pa_list = Array.isArray(raw?.program_advances)
+    ? raw.program_advances
+    : Array.isArray(raw?.programAdvances)
+      ? raw.programAdvances
+      : [];
   const shop_list = Array.isArray(raw?.shops) ? raw.shops : [];
 
   // ---- chips map ----
   const chips: Record<string, any> = {};
   for (const c of chip_list) {
-    let id = String(c?.id ?? '').trim();
-    const name = String(c?.name ?? '').trim();
+    let id = normStr(c?.id);
+    const name = normStr(c?.name);
     if (!id) id = name;
     if (/^\d+$/.test(id) && name) id = name;
+
     (c as any).id = id;
+
+    // normalize is_upgrade to something consistent (keep original but ensure string/number stable)
+    const iu = (c as any).is_upgrade;
+    if (iu === '' || iu === null || iu === undefined) {
+      // leave blank; chipIsUpgrade will treat as false
+    } else if (iu === true) {
+      (c as any).is_upgrade = '1';
+    } else if (iu === false) {
+      (c as any).is_upgrade = '0';
+    } else {
+      // keep as-is (likely "0"/"1")
+      (c as any).is_upgrade = String(iu).trim();
+    }
+
     chips[id] = c;
   }
 
   // ---- regions map ----
   const regions: Record<string, any> = {};
   for (const r of region_list) {
-    const id = String(r?.id ?? '').trim();
+    const id = normStr(r?.id);
     if (!id) continue;
 
-    // Normalize common fields expected by commands
     if (!('label' in r)) (r as any).label = (r as any).name ?? id;
     if (!('name' in r) && (r as any).label) (r as any).name = (r as any).label;
 
-    // normalize numbers
     if ((r as any).zone_count != null) (r as any).zone_count = Number((r as any).zone_count) || 1;
     if ((r as any).min_level != null) (r as any).min_level = Number((r as any).min_level) || 0;
     if ((r as any).encounter_rate != null) (r as any).encounter_rate = Number((r as any).encounter_rate) || 0;
 
+    (r as any).id = id;
     regions[id] = r;
   }
 
   // ---- viruses map ----
   const viruses: Record<string, any> = {};
   for (const v of virus_list) {
-    const id = String(v?.id ?? '').trim();
+    const id = normStr(v?.id);
     if (!id) continue;
 
-    // region normalization (your TSV uses region_id)
-    const rid = String((v as any).region_id ?? (v as any).region ?? '').trim();
+    // region normalization
+    const rid = normStr((v as any).region_id ?? (v as any).region);
     if (rid) (v as any).region_id = rid;
 
     // boss normalization (your TSV uses boss 0/1)
-    const boss = toBool((v as any).boss ?? (v as any).is_boss);
+    const boss = toBoolLoose((v as any).boss ?? (v as any).is_boss);
     (v as any).boss = boss ? 1 : 0;
     (v as any).is_boss = boss;
 
-    // zones normalization (your TSV uses "zone"; older loader used "zones")
+    // zones normalization (your TSV uses "zone"; older code used "zones")
     const z = parseZones((v as any).zones ?? (v as any).zone);
     (v as any).zones = z;
 
+    (v as any).id = id;
     viruses[id] = v;
   }
 
   // ---- drop tables map ----
   const dropTables: Record<string, any> = {};
   for (const dt of drop_list) {
-    const id = String(dt?.id ?? '').trim();
+    const id = normStr(dt?.id);
     if (!id) continue;
+    (dt as any).id = id;
     dropTables[id] = dt;
   }
 
   // ---- missions map ----
   const missions: Record<string, any> = {};
   for (const m of mission_list) {
-    const id = String(m?.id ?? '').trim();
+    const id = normStr(m?.id);
     if (!id) continue;
+    (m as any).id = id;
     missions[id] = m;
   }
 
   // ---- program advances map ----
   const programAdvances: Record<string, any> = {};
   for (const p of pa_list) {
-    const id = String(p?.id ?? '').trim();
+    const id = normStr(p?.id);
     if (!id) continue;
+    (p as any).id = id;
     programAdvances[id] = p;
   }
 
@@ -191,9 +243,9 @@ function normalizeRawBundle(raw: any): NormalizedBundle {
   const shopsByRegion = new Map<string, ShopItemRow[]>();
 
   for (const s of shop_list) {
-    const shopId = String((s as any).id ?? '').trim();
-    const region_id = String((s as any).region_id ?? '').trim();
-    const entriesRaw = String((s as any).entries ?? '').trim();
+    const shopId = normStr((s as any).id);
+    const region_id = normStr((s as any).region_id);
+    const entriesRaw = normStr((s as any).entries);
 
     if (!region_id || !entriesRaw) continue;
 
@@ -236,7 +288,7 @@ function normalizeRawBundle(raw: any): NormalizedBundle {
 }
 
 /* ---------------------------------------------
- * Simple getters (used everywhere)
+ * Simple getters
  * -------------------------------------------*/
 
 export function getChipById(id: string | number) {
@@ -255,7 +307,34 @@ export function listChips()   { return Object.values(getBundle().chips); }
 export function listViruses() { return Object.values(getBundle().viruses); }
 
 /* ---------------------------------------------
- * Queries
+ * Region resolution (id or name/label)
+ * -------------------------------------------*/
+
+function resolveRegionIdLoose(regionOrName: string): string {
+  const b = getBundle();
+  const key = normStr(regionOrName);
+  if (!key) return key;
+
+  // direct id hit
+  if (b.regions[key]) return key;
+
+  // case-insensitive id match
+  const lower = key.toLowerCase();
+  for (const r of Object.values(b.regions)) {
+    if (normLower((r as any).id) === lower) return String((r as any).id ?? key);
+  }
+
+  // name/label match
+  for (const r of Object.values(b.regions)) {
+    const nm = normLower((r as any).name ?? (r as any).label);
+    if (nm && nm === lower) return String((r as any).id ?? key);
+  }
+
+  return key;
+}
+
+/* ---------------------------------------------
+ * Virus queries (tolerant)
  * -------------------------------------------*/
 
 export function listVirusesForRegionZone(opts: {
@@ -265,21 +344,40 @@ export function listVirusesForRegionZone(opts: {
   includeBosses?: boolean;
 }): any[] {
   const { region_id, zone, includeNormals = true, includeBosses = true } = opts;
-  const wantRegion = String(region_id);
 
-  const viruses = getBundle().viruses;
+  const b = getBundle();
+  const wantRegionId = resolveRegionIdLoose(region_id);
+  const wantRegionIdLower = normLower(wantRegionId);
+
+  // Also accept matching by region name/label just in case callers pass that.
+  const wantRegionNameLower = normLower(b.regions[wantRegionId]?.name ?? b.regions[wantRegionId]?.label ?? '');
+
   const out: any[] = [];
 
-  for (const v of Object.values(viruses)) {
-    const vRegion = String((v as any).region_id ?? (v as any).region ?? '').trim();
-    if (vRegion && vRegion !== wantRegion) continue;
+  for (const v of Object.values(b.viruses)) {
+    const vRegionRaw = normStr((v as any).region_id ?? (v as any).region);
+    const vRegionLower = vRegionRaw.toLowerCase();
 
-    const isBoss = toBool((v as any).is_boss ?? (v as any).boss);
+    // If the virus has a region_id, it must match the requested region (by id or by name/label).
+    if (vRegionRaw) {
+      const ok =
+        vRegionLower === wantRegionIdLower ||
+        (wantRegionNameLower && vRegionLower === wantRegionNameLower);
+      if (!ok) continue;
+    }
+
+    const isBoss = !!((v as any).is_boss ?? false) || toBoolLoose((v as any).boss);
     if (!includeBosses && isBoss) continue;
     if (!includeNormals && !isBoss) continue;
 
-    const z = Array.isArray((v as any).zones) ? (v as any).zones : [];
-    if (z.length === 0 || z.includes(zone)) out.push(v);
+    // zones array is normalized in normalizeRawBundle; tolerate strings just in case.
+    const zArrRaw = (v as any).zones;
+    const zArr: number[] = Array.isArray(zArrRaw)
+      ? zArrRaw.map((x: any) => Number(x)).filter((n: any) => Number.isFinite(n))
+      : [];
+
+    // If no zones are specified, treat as "all zones"
+    if (zArr.length === 0 || zArr.includes(Number(zone))) out.push(v);
   }
 
   return out;
@@ -298,23 +396,6 @@ export type ResolvedShopItem = {
   chip: any;
   shop_row: ShopItemRow;
 };
-
-function resolveRegionIdLoose(regionOrName: string): string {
-  const b = getBundle();
-  const key = String(regionOrName ?? '').trim();
-  if (!key) return key;
-
-  // Direct id hit
-  if (b.regions[key]) return key;
-
-  // Name match (case-insensitive)
-  const lower = key.toLowerCase();
-  for (const r of Object.values(b.regions)) {
-    const nm = String((r as any).name ?? (r as any).label ?? '').toLowerCase();
-    if (nm && nm === lower) return String((r as any).id ?? key);
-  }
-  return key;
-}
 
 export function getShopsForRegion(region_id: string): ShopItemRow[] {
   const rid = resolveRegionIdLoose(region_id);
