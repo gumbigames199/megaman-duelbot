@@ -12,7 +12,7 @@ import {
 } from 'discord.js';
 
 import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
-import { getBundle, resolveShopInventory } from '../lib/data';
+import { getBundle, resolveShopInventory, listVirusesForRegionZone } from '../lib/data';
 import {
   getPlayer, setRegion, setZone, getZone,
   addZenny, spendZenny, tryAddToFolder, getFolderRemaining,
@@ -28,8 +28,6 @@ const JACK_GIF =
 const BOSS_ENCOUNTER = parseFloat(process.env.BOSS_ENCOUNTER || '0.10');
 
 /* ------------------------------ helpers ------------------------------ */
-
-const normId = (v: any) => String(v ?? '').trim().toLowerCase();
 
 function parseZones(raw: unknown): number[] {
   if (Array.isArray(raw)) return raw.map(Number).filter(Number.isFinite);
@@ -52,48 +50,40 @@ function parseZones(raw: unknown): number[] {
   return Array.from(new Set(out)).sort((a, b) => a - b);
 }
 function isBossFlag(v: any): boolean {
-  const raw = (v?.boss ?? v?.is_boss);
+  const raw = v?.boss ?? v?.is_boss;
   if (raw === true || raw === false) return raw;
   if (typeof raw === 'number') return raw === 1;
   const s = String(raw ?? '').toLowerCase();
   return s === '1' || s === 'true' || s === 'yes' || s === 'y';
 }
-function virusZonesMatch(v: any, zone: number): boolean {
-  const list = parseZones((v as any).zones ?? (v as any).zone);
-  return list.length === 0 ? true : list.includes(zone);
-}
 
-/** Pick an encounter (boss chance, else uniform non-boss), robust region/zone match. */
-function pickEncounter(regionId: string, zone: number) {
-  const { viruses } = getBundle();
-  const wantRegion = normId(regionId);
+/** Pick an encounter using tolerant region/zone matching (via data.ts). */
+function pickEncounter(regionIdOrName: string, zone: number) {
+  const list = listVirusesForRegionZone({
+    region_id: String(regionIdOrName),
+    zone: Number(zone) || 1,
+    includeNormals: true,
+    includeBosses: true,
+  });
 
-  const all: any[] = Array.isArray(viruses) ? (viruses as any[]) : Object.values(viruses as any);
-  const inRegion = (v: any) => {
-    const vr = normId((v as any)?.region_id ?? (v as any)?.region);
-    if (vr && vr !== wantRegion) return false;
-    return virusZonesMatch(v, zone);
-  };
-
-  const inZone = all.filter(inRegion);
-  const bosses = inZone.filter(isBossFlag);
-  const normals = inZone.filter(v => !isBossFlag(v));
+  const bosses = list.filter(isBossFlag);
+  const normals = list.filter(v => !isBossFlag(v));
 
   if (normals.length === 0 && bosses.length > 0) {
-    return { enemy_kind: 'boss' as const, virus: bosses[0] as any, debug: { inZone: inZone.length, bosses: bosses.length, normals: normals.length } };
+    return { enemy_kind: 'boss' as const, virus: bosses[0] as any };
   }
   if (bosses.length && Math.random() < BOSS_ENCOUNTER) {
-    return { enemy_kind: 'boss' as const, virus: bosses[0] as any, debug: { inZone: inZone.length, bosses: bosses.length, normals: normals.length } };
+    return { enemy_kind: 'boss' as const, virus: bosses[0] as any };
   }
   if (normals.length) {
     const pick = normals[Math.floor(Math.random() * normals.length)];
-    return { enemy_kind: 'virus' as const, virus: pick as any, debug: { inZone: inZone.length, bosses: bosses.length, normals: normals.length } };
+    return { enemy_kind: 'virus' as const, virus: pick as any };
   }
 
-  const dbg = { inZone: inZone.length, bosses: bosses.length, normals: normals.length };
-  const err = new Error(`No encounters for region=${regionId} zone=${zone}`);
-  (err as any).__encounterDebug = dbg;
-  throw err;
+  throw Object.assign(
+    new Error(`No encounters for region=${regionIdOrName} zone=${zone}`),
+    { __encounterDebug: { inList: list.length, bosses: bosses.length, normals: normals.length } }
+  );
 }
 
 /** Jack-In HUD (Encounter / Travel / Shop). Exported so index.ts can reuse. */
@@ -101,14 +91,13 @@ export async function renderJackInHUD(ix: ButtonInteraction | StringSelectMenuIn
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
   const { regions } = getBundle();
-  const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
-  const region = regionsArr.find(r => normId(r.id) === normId(p?.region_id));
+  const region = regions[p?.region_id];
   const zone = getZone(userId) || 1;
 
   const embed = new EmbedBuilder()
     .setTitle('✅ Jacked In')
     .setDescription(`Region: **${region?.name || p?.region_id || '—'}**, Zone: **${zone}**`)
-    .setImage(JACK_GIF || (region as any)?.background_url || null)
+    .setImage(JACK_GIF || (region?.background_url || null))
     .setFooter({ text: 'You can Encounter, Travel, or Shop.' });
 
   const encounterBtn = new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter');
@@ -157,7 +146,7 @@ export async function execute(ix: ChatInputCommandInteraction) {
   const embed = new EmbedBuilder()
     .setTitle('🔌 Jack In')
     .setDescription('Pick a region to enter. You will start at **Zone 1**.')
-    .setImage(JACK_GIF || (regionsUnlocked[0] as any)?.background_url || null)
+    .setImage(JACK_GIF || (regionsUnlocked[0]?.background_url || null))
     .setFooter({ text: 'Step 1 — Region' });
 
   await ix.reply({
@@ -183,15 +172,14 @@ export async function onOpenTravel(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
   const { regions } = getBundle();
-  const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
-  const region = regionsArr.find(r => normId(r.id) === normId(p?.region_id));
+  const region = regions[p?.region_id];
 
   if (!region) {
     await ix.reply({ ephemeral: true, content: 'No region set. Use **/jack_in** first.' });
     return;
   }
 
-  const zoneCount = Math.max(1, Number((region as any).zone_count || 1));
+  const zoneCount = Math.max(1, Number(region.zone_count ?? 1));
   const zoneSelect = new StringSelectMenuBuilder()
     .setCustomId('jackin:selectZone')
     .setPlaceholder(`Select a zone in ${region.name}`)
@@ -216,7 +204,7 @@ export async function onSelectZone(ix: StringSelectMenuInteraction) {
   await renderJackInHUD(ix);
 }
 
-/** Encounter → create battle, show header with virus image, plus single multi-select. */
+/** Encounter → create battle, show an embedded header with the virus image, plus hand picker (single multi-select). */
 export async function onEncounter(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
@@ -229,16 +217,13 @@ export async function onEncounter(ix: ButtonInteraction) {
   }
 
   const { regions, chips } = getBundle();
-  const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
-  const reg = regionsArr.find(r => normId(r.id) === normId(regionId));
+  const reg = regions[regionId];
 
-  const maxZone = Math.max(1, Number((reg as any)?.zone_count || 1));
+  const maxZone = Math.max(1, Number(reg?.zone_count || 1));
   if (zone < 1 || zone > maxZone) { zone = 1; await setZone(userId, zone); }
 
   try {
-    const picked = pickEncounter(regionId, zone);
-    const { enemy_kind, virus } = picked;
-
+    const { enemy_kind, virus } = pickEncounter(reg?.id ?? reg?.name ?? regionId, zone);
     const { battleId, state } = startEncounterBattle({
       user_id: userId,
       enemy_kind,
@@ -247,13 +232,14 @@ export async function onEncounter(ix: ButtonInteraction) {
       zone,
     });
 
+    // encounter header embed with virus image
     const header = new EmbedBuilder()
-      .setTitle(`${(virus as any).name ?? (virus as any).id}`)
+      .setTitle(`${(virus as any).name}`)
       .setDescription(`Enemy HP: **${(virus as any).hp ?? 0}** • Kind: **${enemy_kind === 'boss' ? 'Boss' : 'Virus'}**`)
-      .setThumbnail((virus as any).image_url || (virus as any).anim_url || (virus as any).sprite || null)
-      .setImage((reg as any)?.background_url || null);
+      .setThumbnail((virus as any).image_url || (virus as any).anim_url || null)
+      .setImage(reg?.background_url || JACK_GIF || null);
 
-    // SINGLE MULTI-SELECT (max 3) + Lock/Run
+    // ----- SINGLE MULTI-SELECT (max 3) + Lock/Run -----
     const hand: string[] = Array.isArray(state?.hand) ? state.hand : [];
 
     const sel = new StringSelectMenuBuilder()
@@ -263,7 +249,7 @@ export async function onEncounter(ix: ButtonInteraction) {
       .setMaxValues(Math.min(3, hand.length));
 
     const opts = hand.map((cid) => {
-      const c: any = (chips as any)[cid] || {};
+      const c: any = chips[cid] || {};
       const name = c.name || cid;
       const code = c.code || c.letters || '';
       const pwr  = c.power || c.power_total || '';
@@ -298,20 +284,22 @@ export async function onEncounter(ix: ButtonInteraction) {
     await ix.reply({
       ephemeral: true,
       content:
-        `⚠️ No eligible encounters configured for **${(reg as any)?.name || regionId} / Zone ${zone}**.` +
-        `\nDebug — inZone:${dbg.inZone ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${(reg as any)?.zone_count ?? '?'})`,
+        `⚠️ No eligible encounters configured for **${reg?.name || regionId} / Zone ${zone}**.` +
+        `\nDebug — total:${dbg.inList ?? '?'} normals:${dbg.normals ?? '?'} bosses:${dbg.bosses ?? '?'} (region zone_count=${reg?.zone_count ?? '?'})`,
     });
   }
 }
 
 /* ------------------------------ Shop flow ------------------------------ */
 
+// Upgrade effect parser -> immediate stat application
 function applyUpgradeImmediate(userId: string, chip: any): string {
   const text = String(chip.effects || chip.description || '');
   const apply = (rx: RegExp) => {
     const m = text.match(rx);
     return m ? parseInt(m[1], 10) : 0;
   };
+  // forgiving patterns like "HP+50", "atk +2", etc.
   const dHP  = apply(/(?:hp_max|max\s*hp|hp)\s*([+-]?\d+)/i);
   const dATK = apply(/atk\s*([+-]?\d+)/i);
   const dDEF = apply(/def\s*([+-]?\d+)/i);
@@ -340,16 +328,15 @@ export async function onOpenShop(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const { regions } = getBundle();
   const p: any = await getPlayer(userId);
-  const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
-  const region = regionsArr.find(r => normId(r.id) === normId(p?.region_id));
+  const region = regions[p?.region_id];
 
   if (!region) {
     await ix.reply({ ephemeral: true, content: '🛒 No region selected. Use **/jack_in** first.' });
     return;
   }
 
-  // Shop is by region (same for all zones in that region)
-  const items = resolveShopInventory(region.id);
+  // Region-anchored shop (all zones share the region shop). Accept id or display name.
+  const items = resolveShopInventory((region as any).id ?? (region as any).name);
   if (!items.length) {
     await ix.reply({ ephemeral: true, content: `🛒 No shop available in **${region?.name || 'this region'}**.` });
     return;
@@ -375,7 +362,7 @@ export async function onOpenShop(ix: ButtonInteraction) {
   const embed = new EmbedBuilder()
     .setTitle(`🛒 ${region.name} Shop`)
     .setDescription('Pick an item, then **Buy**.\nPrices reflect TSV `price_override` (if present) or chip `zenny_cost`.')
-    .setImage((region as any).background_url || null);
+    .setImage(region.background_url || JACK_GIF || null);
 
   await ix.reply({
     ephemeral: true,
@@ -391,10 +378,9 @@ export async function onShopSelect(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
   const { regions } = getBundle();
   const p: any = await getPlayer(userId);
-  const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
-  const region = regionsArr.find(r => normId(r.id) === normId(p?.region_id));
-  const items = region ? resolveShopInventory(region.id) : [];
+  const region = regions[p?.region_id];
 
+  const items = region ? resolveShopInventory((region as any).id ?? (region as any).name) : [];
   const id = ix.values?.[0];
   const item = items.find(i => i.item_id === id);
 
@@ -441,15 +427,14 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
     const userId = ix.user.id;
     const { regions } = getBundle();
     const p: any = await getPlayer(userId);
-    const regionsArr: any[] = Array.isArray(regions) ? (regions as any[]) : Object.values(regions as any);
-    const region = regionsArr.find(r => normId(r.id) === normId(p?.region_id));
+    const region = regions[p?.region_id];
 
     if (!region) {
       await ix.reply({ ephemeral: true, content: '⚠️ Pick a region first (use /jack_in).' });
       return;
     }
 
-    const items = resolveShopInventory(region.id);
+    const items = resolveShopInventory((region as any).id ?? (region as any).name);
     const item = items.find(s => s.item_id === chipId);
     if (!item) {
       await ix.reply({ ephemeral: true, content: '❌ That chip is not for sale in this region.' });
