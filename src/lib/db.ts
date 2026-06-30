@@ -18,9 +18,34 @@ import { getChipById, listChips } from "./data";
 // -------------------------------
 
 const DATA_DIR = path.resolve(process.cwd(), "db");
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const DB_PATH = path.join(DATA_DIR, "game.sqlite");
+function cleanSqlitePath(value: string | undefined): string | null {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  // Railway variables should be SQLITE_PATH=/data/game.sqlite.
+  // This tolerates accidental values like =/data/game.sqlite.
+  const withoutLeadingEquals = raw.replace(/^=+/, "").trim();
+  if (!withoutLeadingEquals) return null;
+
+  // Remove accidental wrapping quotes.
+  return withoutLeadingEquals.replace(/^(["'])(.*)\1$/, "$2").trim() || null;
+}
+
+const CONFIGURED_DB_PATH =
+  cleanSqlitePath(process.env.SQLITE_PATH) ||
+  cleanSqlitePath(process.env.SQLITE_Path) ||
+  cleanSqlitePath(process.env.SQLITE_path) ||
+  cleanSqlitePath(process.env.DATABASE_PATH);
+
+const DB_PATH = CONFIGURED_DB_PATH
+  ? path.resolve(CONFIGURED_DB_PATH)
+  : path.join(DATA_DIR, "game.sqlite");
+
+const DB_DIR = path.dirname(DB_PATH);
+if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+
+console.log(`[db] SQLite path: ${DB_PATH}`);
 
 const MAX_HP_CAP = toInt(process.env.MAX_HP_CAP, 500);
 const MAX_ATK_CAP = toInt(process.env.MAX_ATK_CAP, 99);
