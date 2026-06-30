@@ -26,6 +26,7 @@ import {
   spendZenny,
   grantChip,
   applyStatDeltas,
+  addZenny,
   type Player,
 } from '../lib/db';
 
@@ -240,7 +241,7 @@ async function handleBuy(ix: ButtonInteraction, regionId: string, chipId: string
     if (!applied.ok) {
       // Refund if upgrade failed to parse/apply
       // (rare; protects against malformed TSV)
-      spendZenny(userId, -price);
+      addZenny(userId, price);
       await ix.reply({ content: `⚠️ Could not apply upgrade. Purchase canceled & refunded.`, ephemeral: true });
       return;
     }

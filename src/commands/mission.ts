@@ -19,10 +19,14 @@ export async function execute(ix: ChatInputCommandInteraction) {
     const rows = listMissionsFor(ix.user.id);
     const lines = rows.slice(0, 25).map(r => {
       const m = all[r.mission_id];
-      const need = String(m?.requirement || '').split(':')[1] ?? '—';
-      return `**${r.mission_id}** — ${m?.name || '?'} — ${r.state} (${r.counter}/${need})`;
+      const need = needCount(m?.requirement);
+      const counter = Math.max(0, Number((r as any).progress ?? r.counter ?? 0));
+      return `**${r.mission_id}** — ${m?.name || '?'} — ${r.state} (${counter}/${need})`;
     }).join('\n') || '—';
-    const e = new EmbedBuilder().setTitle('📜 Missions').setDescription(lines);
+    const e = new EmbedBuilder()
+      .setTitle('📜 Missions')
+      .setDescription(lines)
+      .setFooter({ text: 'Defeat missions now progress only after /mission accept.' });
     await ix.reply({ ephemeral: true, embeds: [e] });
     return;
   }
@@ -42,4 +46,10 @@ export async function execute(ix: ChatInputCommandInteraction) {
       : '';
     await ix.reply({ ephemeral: !res.ok, content: `${res.msg}${rewardText}` });
   }
+}
+
+function needCount(requirement: any): number {
+  const [, raw] = String(requirement || '').split(':');
+  const n = Number(raw || 1);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 1;
 }

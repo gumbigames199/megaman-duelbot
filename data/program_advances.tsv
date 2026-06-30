@@ -1,1 +1,3 @@
 id	name	result_chip_id	required_chip_ids	required_letters	description
+CannonBurst	Cannon Burst	M-Cannon	Cannon,HiCannon,M-Cannon	*	Combines the Cannon line into a single heavy shot.
+TankVolley	Tank Volley	TankCan3	TankCan1,TankCan2,TankCan3		Combines the TankCan line into a heavier cannon volley.

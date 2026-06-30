@@ -1,45 +1,62 @@
 // src/lib/battle.ts
-import {
-  ButtonInteraction,
-  StringSelectMenuInteraction,
-  ChatInputCommandInteraction,
-} from 'discord.js';
+import { ButtonInteraction, StringSelectMenuInteraction } from "discord.js";
 
-import { getChipById, getVirusById } from './data';
+import { getBundle, getChipById, getVirusById, listChips } from "./data";
 import {
   renderBattleScreen,
   renderRoundResultWithNextHand,
   renderVictoryToHub,
-} from './render';
-import { ensurePlayer, getPlayer, listFolder as listFolderQty } from './db';
-import { grantVirusRewards } from './rewards';
-import { typeMultiplier } from './rules';
-import type { Element } from './types';
+} from "./render";
+import {
+  ensurePlayer,
+  getPlayer,
+  listFolder as listFolderQty,
+  markSeenVirus,
+} from "./db";
+import { grantVirusRewards } from "./rewards";
+import { validateLetterRule } from "./rules";
+import { progressDefeat } from "./missions";
+import { diffNewlyUnlockedRegions, unlockNextFromRegion } from "./unlock";
+import { detectPAResult } from "./pas";
+import { resolveDamageRoll } from "./damage";
+import {
+  type StatusState,
+  addAura,
+  addBarrier,
+  applyBuff,
+  applyStatusEffect,
+  absorbDamage,
+  buffValue,
+  canActFromStatus,
+  parseEffects,
+  statusSummary,
+  tickEnd,
+  tickStart,
+  tryChance,
+} from "./effects";
+import type { Element } from "./types";
 
 const DEFAULT_PLAYER_HP = 100;
 
+type EnemyKind = "virus" | "boss";
 type ChipRef = { id: string };
 
 type BattleHandItem = {
-  id: string; // IMPORTANT: unique option value (we use hand index as string)
-  name: string; // we inject letters into this
+  id: string;
+  name: string;
   power?: number;
   hits?: number;
-  element?: string; // only set if NOT Neutral (so UI never shows [Neutral])
+  element?: string;
   effects?: string;
   description?: string;
-};
-
-type DotStatus = { dur: number }; // duration remaining (turns)
-type BattleStatuses = {
-  burn?: DotStatus;   // 5% Max HP each turn start
-  poison?: DotStatus; // 8% Max HP each turn start
 };
 
 type BattleState = {
   id: string;
   user_id: string;
   virus_id: string;
+  enemy_kind: EnemyKind;
+  region_id: string;
 
   player_hp: number;
   player_hp_max: number;
@@ -47,58 +64,48 @@ type BattleState = {
   enemy_hp_max: number;
 
   turn: number;
-
   deck: ChipRef[];
   discard: ChipRef[];
   hand: ChipRef[];
-
-  /**
-   * Selected values from the UI.
-   * These are usually hand indices ("0","1","2"...), but we also tolerate chip ids
-   * for backwards compatibility (resolveTurn/index.ts).
-   */
   selected: string[];
-
   is_over: boolean;
 
-  player_status: BattleStatuses;
-  enemy_status: BattleStatuses;
+  player_status: StatusState;
+  enemy_status: StatusState;
 };
 
-// ---- Element normalizer (string → Element union) ----
-function toElement(x: unknown): Element {
-  const s = String(x ?? '').toLowerCase();
-  switch (s) {
-    case 'fire': return 'Fire';
-    case 'aqua':
-    case 'water': return 'Aqua';
-    case 'elec':
-    case 'electric': return 'Elec';
-    case 'wood':
-    case 'grass': return 'Wood';
-    case 'neutral':
-    default: return 'Neutral';
-  }
-}
+type BattleActor = "player" | "enemy";
 
-// ---------------- In-memory store ----------------
+type EnemyMove = {
+  name: string;
+  kind?: "attack" | "support" | string;
+  element?: string;
+  power?: number;
+  hits?: number;
+  acc?: number;
+  weight?: number;
+  barrier?: number;
+  crit?: number;
+  status?: { apply?: string; chance?: number; turns?: number };
+  selfBuff?: Record<string, number>;
+};
+
 const battles = new Map<string, BattleState>();
-function nextBattleId() {
-  const n = Math.floor(Date.now() / 1000);
-  const r = randInt(1000, 9999);
-  return `b${n}${r}`;
-}
 
-// ---------------- Public (new UI) ----------------
-export function startBattle(user_id: string, virus_id: string) {
+export function startBattle(
+  user_id: string,
+  virus_id: string,
+  enemy_kind: EnemyKind = "virus",
+) {
   ensurePlayer(user_id);
+  markSeenVirus(user_id, virus_id);
+
   const player = getPlayer(user_id)!;
   const virus = getVirusById(virus_id);
   const enemyHP = Math.max(1, toInt((virus as any)?.hp, 100));
 
   const deck = buildDeckFromFolder(user_id);
   if (deck.length === 0) deck.push(...fallbackDeck());
-
   shuffle(deck);
 
   const id = nextBattleId();
@@ -108,6 +115,10 @@ export function startBattle(user_id: string, virus_id: string) {
     id,
     user_id,
     virus_id,
+    enemy_kind,
+    region_id: String(
+      (player as any)?.region_id || (virus as any)?.region_id || "",
+    ),
     player_hp: hpMax,
     player_hp_max: hpMax,
     enemy_hp: enemyHP,
@@ -131,27 +142,71 @@ export function startBattle(user_id: string, virus_id: string) {
 
 export async function handlePick(ix: StringSelectMenuInteraction) {
   const [prefix, battleId] = parseCustom(ix.customId);
-  if (prefix !== 'pick') return;
+  if (prefix !== "pick") return;
 
   const bs = battles.get(battleId);
   if (!bs || bs.is_over) {
-    return safeUpdate(ix, { content: '⚠️ This battle is no longer active.', components: [], embeds: [] });
+    await safeRespond(ix, {
+      content: "⚠️ This battle is no longer active.",
+      components: [],
+      embeds: [],
+      ephemeral: true,
+    });
+    return;
+  }
+  if (bs.user_id !== ix.user.id) {
+    await safeRespond(ix, {
+      content: "This is not your battle.",
+      ephemeral: true,
+    });
+    return;
   }
 
-  // Values are hand indices ("0","1"...). This allows duplicate chips safely.
-  bs.selected = (ix.values ?? []).slice(0, 3);
+  const selected = resolveToIndexValues(bs, (ix.values ?? []).slice(0, 3));
+  const chipRows = selected.map((idxText) => {
+    const idx = Number(idxText);
+    const chipId = bs.hand[idx]?.id ?? "";
+    const chip: any = getChipById(chipId) || {};
+    return {
+      id: String(chip?.name || chipId),
+      letters: String(chip?.letters || ""),
+    };
+  });
 
+  if (!validateLetterRule(chipRows)) {
+    await ix.reply({
+      ephemeral: true,
+      content:
+        "❌ Invalid combo. Chips must share a letter, exact name, or include *.",
+    });
+    return;
+  }
+
+  bs.selected = selected;
   const view = renderBattle(bs);
   await ix.update({ embeds: [view.embed], components: view.components });
 }
 
 export async function handleLock(ix: ButtonInteraction) {
   const [prefix, battleId] = parseCustom(ix.customId);
-  if (prefix !== 'lock') return;
+  if (prefix !== "lock") return;
 
   const bs = battles.get(battleId);
   if (!bs || bs.is_over) {
-    return safeUpdate(ix, { content: '⚠️ This battle is no longer active.', components: [], embeds: [] });
+    await safeRespond(ix, {
+      content: "⚠️ This battle is no longer active.",
+      components: [],
+      embeds: [],
+      ephemeral: true,
+    });
+    return;
+  }
+  if (bs.user_id !== ix.user.id) {
+    await safeRespond(ix, {
+      content: "This is not your battle.",
+      ephemeral: true,
+    });
+    return;
   }
 
   const round = _resolveRoundInternal(bs);
@@ -161,52 +216,77 @@ export async function handleLock(ix: ButtonInteraction) {
 
     if (bs.enemy_hp <= 0 && bs.player_hp > 0) {
       const rewards = grantVirusRewards(bs.user_id, bs.virus_id);
+      const completedMissions =
+        bs.enemy_kind === "virus"
+          ? progressDefeat(bs.user_id, bs.virus_id)
+          : [];
+
+      const rewardTitle = bs.enemy_kind === "boss" ? "Boss Rewards" : "Rewards";
       const rewardLines = [
-        rewards.zenny_gained ? `+${rewards.zenny_gained}z` : '',
-        rewards.xp_gained ? `+${rewards.xp_gained} XP` : '',
+        `${rewardTitle}: ${rewards.zenny_gained ? `+${rewards.zenny_gained}z` : "+0z"}${rewards.xp_gained ? ` • +${rewards.xp_gained} XP` : ""}`,
         rewards.drops.length
-          ? `Drops: ${rewards.drops.map((d) => `**${d.item_id}** x${d.qty}`).join(', ')}`
-          : '',
+          ? `Drops: ${rewards.drops.map((d) => `**${d.item_id}** x${d.qty}`).join(", ")}`
+          : "",
+        rewards.leveledUp ? `🆙 Level Up x${rewards.leveledUp}` : "",
+        completedMissions.length
+          ? `Mission completed: ${completedMissions.join(", ")}`
+          : "",
       ].filter(Boolean);
+
+      const bossUnlocks =
+        bs.enemy_kind === "boss"
+          ? unlockNextFromRegion(bs.user_id, bs.region_id)
+          : [];
+      const levelUnlocks = diffNewlyUnlockedRegions(bs.user_id);
+      const newly = Array.from(new Set([...bossUnlocks, ...levelUnlocks]));
+      if (newly.length)
+        rewardLines.push(
+          `🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`,
+        );
 
       const victoryView = renderVictoryToHub({
         enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
-        victory: { title: 'Victory!', rewardLines },
+        victory: { title: "Victory!", rewardLines },
       });
 
-      await ix.update({ embeds: [victoryView.embed], components: victoryView.components });
+      await ix.update({
+        embeds: [victoryView.embed],
+        components: victoryView.components,
+      });
       battles.delete(battleId);
       return;
     }
 
     const lossView = renderVictoryToHub({
       enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
-      victory: { title: bs.player_hp <= 0 ? 'Defeat…' : 'Battle End', rewardLines: [] },
+      victory: {
+        title: bs.player_hp <= 0 ? "Defeat…" : "Battle End",
+        rewardLines: [],
+      },
     });
 
-    await ix.update({ embeds: [lossView.embed], components: lossView.components });
+    await ix.update({
+      embeds: [lossView.embed],
+      components: lossView.components,
+    });
     battles.delete(battleId);
     return;
   }
 
-  // New hand
   drawHand(bs);
-  const nextHand = toHandItems(bs.hand);
-
-  const hpBlock = {
-    playerHP: bs.player_hp,
-    playerHPMax: bs.player_hp_max,
-    enemyHP: bs.enemy_hp,
-    enemyHPMax: bs.enemy_hp_max,
-  };
-
   const view = renderRoundResultWithNextHand({
     battleId,
     enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
-    hp: hpBlock,
+    hp: {
+      playerHP: bs.player_hp,
+      playerHPMax: bs.player_hp_max,
+      enemyHP: bs.enemy_hp,
+      enemyHPMax: bs.enemy_hp_max,
+    },
     round,
-    nextHand,
+    nextHand: toHandItems(bs.hand),
     selectedIds: [],
+    ...statusPayload(bs),
   });
 
   bs.selected = [];
@@ -217,11 +297,24 @@ export async function handleLock(ix: ButtonInteraction) {
 
 export async function handleRun(ix: ButtonInteraction) {
   const [prefix, battleId] = parseCustom(ix.customId);
-  if (prefix !== 'run') return;
+  if (prefix !== "run") return;
 
   const bs = battles.get(battleId);
   if (!bs || bs.is_over) {
-    return safeUpdate(ix, { content: '⚠️ This battle is no longer active.', components: [], embeds: [] });
+    await safeRespond(ix, {
+      content: "⚠️ This battle is no longer active.",
+      components: [],
+      embeds: [],
+      ephemeral: true,
+    });
+    return;
+  }
+  if (bs.user_id !== ix.user.id) {
+    await safeRespond(ix, {
+      content: "This is not your battle.",
+      ephemeral: true,
+    });
+    return;
   }
 
   const escaped = randInt(1, 100) <= 50;
@@ -229,7 +322,7 @@ export async function handleRun(ix: ButtonInteraction) {
     bs.is_over = true;
     const view = renderVictoryToHub({
       enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
-      victory: { title: 'Escaped', rewardLines: [] },
+      victory: { title: "Escaped", rewardLines: [] },
     });
     await ix.update({ embeds: [view.embed], components: view.components });
     battles.delete(battleId);
@@ -240,32 +333,35 @@ export async function handleRun(ix: ButtonInteraction) {
   await ix.update({ embeds: [view.embed], components: view.components });
 }
 
-// ---------------- Compatibility API (for index.ts & older flows) ----------------
-
+// ---------------- Compatibility API ----------------
 export function startEncounterBattle(init: {
   user_id: string;
-  enemy_kind: 'virus' | 'boss';
+  enemy_kind: EnemyKind;
   enemy_id: string;
   region_id?: string;
   zone?: number;
 }): { battleId: string; state: any } {
-  const { battleId } = startBattle(init.user_id, init.enemy_id);
+  const { battleId } = startBattle(
+    init.user_id,
+    init.enemy_id,
+    init.enemy_kind,
+  );
   const bs = battles.get(battleId)!;
-  return { battleId, state: toCompatState(bs, init.enemy_kind) };
+  return { battleId, state: toCompatState(bs) };
 }
 
 export function load(battleId: string): any | null {
   const bs = battles.get(battleId);
-  return bs ? toCompatState(bs, 'virus') : null;
+  return bs ? toCompatState(bs) : null;
 }
 
 export function save(s: any): void {
   if (!s?.id) return;
   const bs = battles.get(s.id);
   if (!bs) return;
-
-  const locked = Array.isArray(s.locked) ? s.locked.filter(Boolean).slice(0, 3) : [];
-  // Convert chip ids (legacy) to indices where possible
+  const locked = Array.isArray(s.locked)
+    ? s.locked.filter(Boolean).slice(0, 3)
+    : [];
   bs.selected = resolveToIndexValues(bs, locked);
 }
 
@@ -273,32 +369,26 @@ export function end(battleId: string): void {
   battles.delete(battleId);
 }
 
-/** 50% run success. (index.ts expects this export) */
 export function tryRun(_s: any): boolean {
   return Math.random() < 0.5;
 }
 
-/**
- * index.ts expects this export:
- * resolveTurn(state, chosenIds) -> { log, enemy_hp, player_hp, outcome }
- *
- * chosenIds may be chip ids (legacy) OR index values (new UI).
- */
 export function resolveTurn(s: any, chosenIds: string[]) {
-  if (!s?.id) throw new Error('battle state missing id');
+  if (!s?.id) throw new Error("battle state missing id");
   const bs = battles.get(s.id);
-  if (!bs) throw new Error('battle not found');
+  if (!bs) throw new Error("battle not found");
 
-  // Normalize selection into index-values
-  bs.selected = resolveToIndexValues(bs, (chosenIds ?? []).filter(Boolean).slice(0, 3));
-
+  bs.selected = resolveToIndexValues(
+    bs,
+    (chosenIds ?? []).filter(Boolean).slice(0, 3),
+  );
   const round = _resolveRoundInternal(bs);
 
-  let outcome: 'ongoing' | 'victory' | 'defeat' = 'ongoing';
-  if (bs.enemy_hp <= 0 && bs.player_hp > 0) outcome = 'victory';
-  else if (bs.player_hp <= 0) outcome = 'defeat';
+  let outcome: "ongoing" | "victory" | "defeat" = "ongoing";
+  if (bs.enemy_hp <= 0 && bs.player_hp > 0) outcome = "victory";
+  else if (bs.player_hp <= 0) outcome = "defeat";
 
-  if (outcome === 'ongoing') {
+  if (outcome === "ongoing") {
     drawHand(bs);
     bs.selected = [];
     bs.turn += 1;
@@ -306,11 +396,11 @@ export function resolveTurn(s: any, chosenIds: string[]) {
 
   s.enemy_hp = bs.enemy_hp;
   s.player_hp = bs.player_hp;
-  s.hand = bs.hand.map((c: ChipRef) => c.id);
+  s.hand = bs.hand.map((c) => c.id);
   s.locked = [];
 
   return {
-    log: [...round.playerLogLines, ...round.enemyLogLines].join(' • ') || '—',
+    log: [...round.playerLogLines, ...round.enemyLogLines].join(" • ") || "—",
     enemy_hp: bs.enemy_hp,
     player_hp: bs.player_hp,
     outcome,
@@ -319,48 +409,38 @@ export function resolveTurn(s: any, chosenIds: string[]) {
 
 // ---------------- Render helpers ----------------
 function renderBattle(bs: BattleState) {
-  const hp = {
-    playerHP: bs.player_hp,
-    playerHPMax: bs.player_hp_max,
-    enemyHP: bs.enemy_hp,
-    enemyHPMax: bs.enemy_hp_max,
-  };
-  const handItems = toHandItems(bs.hand);
-
+  const playerStatus = statusSummary(bs.player_status);
+  const enemyStatus = statusSummary(bs.enemy_status);
   return renderBattleScreen({
     battleId: bs.id,
     enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
-    hp,
-    hand: handItems,
+    hp: {
+      playerHP: bs.player_hp,
+      playerHPMax: bs.player_hp_max,
+      enemyHP: bs.enemy_hp,
+      enemyHPMax: bs.enemy_hp_max,
+    },
+    hand: toHandItems(bs.hand),
     selectedIds: bs.selected.slice(),
+    ...(playerStatus || enemyStatus
+      ? { status: { player: playerStatus, enemy: enemyStatus } }
+      : {}),
   });
 }
 
-/**
- * IMPORTANT: make each option value unique by using the HAND INDEX.
- * Also: Inject letters into name, and suppress Neutral element for UI.
- */
 function toHandItems(hand: ChipRef[]): BattleHandItem[] {
   return hand.map((c, idx) => {
     const chip = getChipById(c.id) as any;
-
     const baseName = chip?.name ?? c.id;
-    const lettersRaw = String(chip?.letters ?? '').trim(); // from chips.tsv
-    const letters = lettersRaw ? lettersRaw : '';
-
-    // Always show letters in the NAME (so render.ts label always contains them).
-    const name = letters ? `${baseName} [${letters}]` : baseName;
-
-    // Only show element in UI if it's not Neutral.
+    const letters = String(chip?.letters ?? "").trim();
     const elem = toElement(chip?.element);
-    const elementForUI = elem !== 'Neutral' ? elem : undefined;
 
     return {
-      id: String(idx), // unique per card instance
-      name,
+      id: String(idx),
+      name: letters ? `${baseName} [${letters}]` : baseName,
       power: asNum(chip?.power),
       hits: asNum(chip?.hits),
-      element: elementForUI,
+      element: elem !== "Neutral" ? elem : undefined,
       effects: chip?.effects,
       description: chip?.description,
     };
@@ -379,18 +459,18 @@ function buildDeckFromFolder(user_id: string): ChipRef[] {
   for (const f of folder) {
     const chipId = String((f as any).chip_id);
     const qty = Math.max(0, toInt((f as any).qty, 0));
+    if (!getChipById(chipId)) continue;
     for (let i = 0; i < qty; i++) deck.push({ id: chipId });
   }
   return deck;
 }
 
 function fallbackDeck(): ChipRef[] {
-  const cannon = getChipById('cannon');
-  if (cannon) return Array.from({ length: 10 }, () => ({ id: 'cannon' }));
-  const guard = getChipById('guard');
-  if (guard) return Array.from({ length: 10 }, () => ({ id: 'guard' }));
-  // very last resort
-  return Array.from({ length: 10 }, () => ({ id: 'chip_001' }));
+  const id =
+    resolveChipIdLoose("Cannon") ||
+    resolveChipIdLoose("Guard") ||
+    firstUsableChipId();
+  return id ? Array.from({ length: 10 }, () => ({ id })) : [];
 }
 
 function drawHand(bs: BattleState) {
@@ -404,37 +484,33 @@ function drawHand(bs: BattleState) {
   }
 
   while (bs.hand.length < 5 && bs.deck.length > 0) {
-    const card = bs.deck.shift()!;
-    bs.hand.push(card);
+    bs.hand.push(bs.deck.shift()!);
   }
 }
 
 // ---------------- Selection mapping ----------------
-
-/**
- * Converts chosen values to index-values ("0","1",...)
- * - If a value is a valid index in hand, uses it.
- * - Otherwise treats it as a chip id and picks the first matching unused card.
- */
 function resolveToIndexValues(bs: BattleState, chosen: string[]): string[] {
   const out: string[] = [];
   const used = new Set<number>();
 
   for (const raw of chosen.slice(0, 3)) {
-    const v = String(raw ?? '').trim();
+    const v = String(raw ?? "").trim();
     if (!v) continue;
 
-    // Index path
     if (/^\d+$/.test(v)) {
       const idx = Number(v);
-      if (Number.isFinite(idx) && idx >= 0 && idx < bs.hand.length && !used.has(idx)) {
+      if (
+        Number.isFinite(idx) &&
+        idx >= 0 &&
+        idx < bs.hand.length &&
+        !used.has(idx)
+      ) {
         used.add(idx);
         out.push(String(idx));
         continue;
       }
     }
 
-    // Chip-id path
     const idx = bs.hand.findIndex((c, i) => !used.has(i) && c.id === v);
     if (idx >= 0) {
       used.add(idx);
@@ -446,32 +522,9 @@ function resolveToIndexValues(bs: BattleState, chosen: string[]): string[] {
 }
 
 function selectedIndices(bs: BattleState): number[] {
-  const idxs: number[] = [];
-  const used = new Set<number>();
-
-  for (const raw of (bs.selected ?? []).slice(0, 3)) {
-    const v = String(raw ?? '').trim();
-    if (!v) continue;
-
-    // index
-    if (/^\d+$/.test(v)) {
-      const idx = Number(v);
-      if (Number.isFinite(idx) && idx >= 0 && idx < bs.hand.length && !used.has(idx)) {
-        used.add(idx);
-        idxs.push(idx);
-        continue;
-      }
-    }
-
-    // legacy chip id
-    const idx = bs.hand.findIndex((c, i) => !used.has(i) && c.id === v);
-    if (idx >= 0) {
-      used.add(idx);
-      idxs.push(idx);
-    }
-  }
-
-  return idxs;
+  return resolveToIndexValues(bs, bs.selected)
+    .map(Number)
+    .filter((n) => Number.isFinite(n));
 }
 
 // ---------------- Combat resolution ----------------
@@ -479,145 +532,472 @@ function _resolveRoundInternal(bs: BattleState) {
   const playerLog: string[] = [];
   const enemyLog: string[] = [];
 
-  // ---- START OF TURN DOT (Burn/Poison) ----
-  if (tickDot('enemy', bs)) {
-    const d = lastTickDamage.enemy ?? 0;
-    if (d > 0) enemyLog.push(`DOT dealt **${d}** to enemy.`);
-  }
-  if (tickDot('player', bs)) {
-    const d = lastTickDamage.player ?? 0;
-    if (d > 0) playerLog.push(`You took **${d}** DOT.`);
-  }
+  applyStartTicks(bs, playerLog, enemyLog);
+  if (bs.enemy_hp <= 0)
+    return {
+      playerLogLines: playerLog,
+      enemyLogLines: [...enemyLog, "Enemy deleted."],
+    };
+  if (bs.player_hp <= 0)
+    return { playerLogLines: playerLog, enemyLogLines: enemyLog };
 
-  const virus = getVirusById(bs.virus_id) as any;
-  const defenderElem: Element = toElement(virus?.element);
-
-  const idxs = selectedIndices(bs);
-
-  // Execute chips by selected card instance
-  for (const idx of idxs) {
-    const chipId = bs.hand[idx]?.id;
-    if (!chipId) continue;
-
-    const chip = getChipById(chipId) as any;
-    if (!chip) {
-      playerLog.push(`Used ${chipId} (unknown) — no effect.`);
-      continue;
-    }
-
-    const power = Math.max(0, asNum(chip.power, 0));
-    const hits = Math.max(1, asNum(chip.hits, 1));
-    const attElem: Element = toElement(chip?.element);
-
-    const mult = Number(typeMultiplier(attElem, defenderElem) || 1);
-    const dmgPerHit = Math.round(power * Math.max(0.25, mult));
-    const total = Math.max(0, dmgPerHit * hits);
-
-    if (total > 0) {
-      bs.enemy_hp = Math.max(0, bs.enemy_hp - total);
-      const tag =
-        mult > 1 ? ' (super effective!)' :
-        mult < 1 ? ' (not very effective)' : '';
-      playerLog.push(`**${chip.name}** dealt **${total}** dmg (${hits} hit${hits > 1 ? 's' : ''})${tag}.`);
-    } else {
-      playerLog.push(`**${chip.name}** had no direct damage.`);
-    }
-
-    // Apply status effects from chip effects text
-    const effTxt = String(chip.effects ?? '');
-    const applied: string[] = [];
-    if (tryApplyDotFromText('burn', effTxt, bs.enemy_status)) applied.push('Burn');
-    if (tryApplyDotFromText('poison', effTxt, bs.enemy_status)) applied.push('Poison');
-    if (applied.length) playerLog.push(`Effects applied: ${applied.join(', ')}`);
-
-    if (bs.enemy_hp <= 0) break;
+  const playerCanAct = canActFromStatus(bs.player_status, Math.random);
+  if (!playerCanAct.canAct) {
+    playerLog.push(`You are ${playerCanAct.reason} and could not act.`);
+  } else {
+    resolvePlayerChips(bs, selectedIndices(bs), playerLog);
   }
 
-  // Move USED CARD INSTANCES to discard (by index), not by chip id
-  if (idxs.length) {
-    const sel = new Set(idxs);
-    bs.discard.push(...idxs.map(i => bs.hand[i]).filter(Boolean));
-    bs.hand = bs.hand.filter((_, i) => !sel.has(i));
-  }
+  discardSelected(bs);
 
   if (bs.enemy_hp <= 0) {
-    enemyLog.push(`Enemy deleted.`);
+    enemyLog.push("Enemy deleted.");
+    tickEnd(bs.enemy_status);
+    tickEnd(bs.player_status);
     return { playerLogLines: playerLog, enemyLogLines: enemyLog };
   }
 
-  // Enemy attack (basic)
-  const enemyAtk = Math.max(0, asNum(virus?.atk, randInt(5, 15)));
-  const dmgToPlayer = randInt(
-    Math.max(1, Math.floor(enemyAtk * 0.6)),
-    Math.max(2, Math.floor(enemyAtk * 1.2)),
-  );
-  bs.player_hp = Math.max(0, bs.player_hp - dmgToPlayer);
-  enemyLog.push(`${virus?.name ?? 'Virus'} hit you for **${dmgToPlayer}** dmg.`);
+  const enemyCanAct = canActFromStatus(bs.enemy_status, Math.random);
+  if (!enemyCanAct.canAct) {
+    enemyLog.push(
+      `${getVirusName(bs.virus_id)} is ${enemyCanAct.reason} and could not act.`,
+    );
+  } else {
+    resolveEnemyAction(bs, enemyLog);
+  }
 
-  // ---- END OF TURN: decrement DOT durations ----
-  decDot(bs.enemy_status);
-  decDot(bs.player_status);
+  tickEnd(bs.enemy_status);
+  tickEnd(bs.player_status);
 
   return { playerLogLines: playerLog, enemyLogLines: enemyLog };
 }
 
-// ---- DOT helpers (Burn/Poison) ----
-const lastTickDamage: { player?: number; enemy?: number } = {};
-function tickDot(who: 'player' | 'enemy', bs: BattleState) {
-  const st = who === 'player' ? bs.player_status : bs.enemy_status;
-  const maxHP = who === 'player' ? bs.player_hp_max : bs.enemy_hp_max;
-  let total = 0;
+function applyStartTicks(
+  bs: BattleState,
+  playerLog: string[],
+  enemyLog: string[],
+) {
+  const enemyTick = tickStart(bs.enemy_hp, bs.enemy_hp_max, bs.enemy_status);
+  bs.enemy_hp = enemyTick.hp;
+  if (enemyTick.notes.length)
+    enemyLog.push(`Enemy took ${enemyTick.notes.join(" + ")}.`);
 
-  if (st.burn?.dur && st.burn.dur > 0) {
-    total += Math.max(1, Math.floor(maxHP * 0.05));
-  }
-  if (st.poison?.dur && st.poison.dur > 0) {
-    total += Math.max(1, Math.floor(maxHP * 0.08));
-  }
-
-  if (total > 0) {
-    if (who === 'player') bs.player_hp = Math.max(0, bs.player_hp - total);
-    else bs.enemy_hp = Math.max(0, bs.enemy_hp - total);
-  }
-
-  lastTickDamage[who] = total;
-  return total > 0;
-}
-function decDot(st: BattleStatuses) {
-  if (st.burn?.dur) st.burn.dur = Math.max(0, st.burn.dur - 1);
-  if (st.poison?.dur) st.poison.dur = Math.max(0, st.poison.dur - 1);
+  const playerTick = tickStart(
+    bs.player_hp,
+    bs.player_hp_max,
+    bs.player_status,
+  );
+  bs.player_hp = playerTick.hp;
+  if (playerTick.notes.length)
+    playerLog.push(`You took ${playerTick.notes.join(" + ")}.`);
 }
 
-// Parse text like "Burn(20%,2t)" / "Poison(100%,3t)"
-function tryApplyDotFromText(kind: 'burn' | 'poison', text: string, target: BattleStatuses) {
-  const re = new RegExp(`${kind}\\((\\d+)%?,\\s*(\\d+)t\\)`, 'i');
-  const m = String(text ?? '').match(re);
-  if (!m) return false;
+function resolvePlayerChips(
+  bs: BattleState,
+  idxs: number[],
+  playerLog: string[],
+) {
+  const selectedChipIds = idxs
+    .map((i) => bs.hand[i]?.id)
+    .filter(Boolean) as string[];
+  const pa = detectPAResult(selectedChipIds);
 
-  const chance = Number(m[1]) || 0;
-  const dur = Math.max(1, Number(m[2]) || 1);
+  if (pa) {
+    playerLog.push(
+      `Program Advance **${pa.name}** activated → **${pa.result_chip_id}**.`,
+    );
+    executeChip(bs, pa.result_chip_id, playerLog, {
+      displayName: pa.name,
+      forceAttackPlusReset: true,
+    });
+    return;
+  }
 
-  if (randInt(1, 100) <= chance) {
-    if (kind === 'burn') target.burn = { dur };
-    else target.poison = { dur };
+  let pendingAttackPlus = 0;
+  for (const idx of idxs) {
+    const chipId = bs.hand[idx]?.id;
+    if (!chipId) continue;
+    pendingAttackPlus = executeChip(bs, chipId, playerLog, {
+      pendingAttackPlus,
+    });
+    if (bs.enemy_hp <= 0) break;
+  }
+}
+
+function executeChip(
+  bs: BattleState,
+  chipId: string,
+  playerLog: string[],
+  opts: {
+    pendingAttackPlus?: number;
+    displayName?: string;
+    forceAttackPlusReset?: boolean;
+  } = {},
+): number {
+  const player = getPlayer(bs.user_id) as any;
+  const virus = getVirusById(bs.virus_id) as any;
+  const chip = getChipById(chipId) as any;
+
+  if (!chip) {
+    playerLog.push(`Used ${chipId} (unknown) — no effect.`);
+    return opts.pendingAttackPlus ?? 0;
+  }
+
+  const chipName = String(opts.displayName || chip.name || chipId);
+  const effects = parseEffects(String(chip.effects ?? ""));
+  const supportOnly = isSupportOnlyChip(chip, effects);
+  let pendingAttackPlus = opts.pendingAttackPlus ?? 0;
+
+  for (const eff of effects) {
+    if (eff.attackPlus) {
+      pendingAttackPlus += eff.attackPlus;
+      playerLog.push(`**${chipName}** queued Attack+${eff.attackPlus}.`);
+    }
+    if (eff.heal) {
+      const before = bs.player_hp;
+      bs.player_hp = Math.min(bs.player_hp_max, bs.player_hp + eff.heal.amount);
+      playerLog.push(`**${chipName}** healed **${bs.player_hp - before}** HP.`);
+    }
+    if (eff.barrier) {
+      addBarrier(bs.player_status, eff.barrier.hp);
+      playerLog.push(`**${chipName}** gave you Barrier ${eff.barrier.hp}.`);
+    }
+    if (eff.aura) {
+      addAura(bs.player_status, eff.aura.element, eff.aura.hp);
+      playerLog.push(`**${chipName}** gave you ${eff.aura.element} Aura.`);
+    }
+  }
+
+  const basePower = Math.max(0, asNum(chip.power, 0));
+  if (!supportOnly && basePower + pendingAttackPlus > 0) {
+    const element = toElement(chip.element);
+    const roll = resolveDamageRoll({
+      chip_pow: basePower + pendingAttackPlus,
+      hits: Math.max(1, asNum(chip.hits, 1)),
+      navi_atk: asNum(player?.atk, 0) + buffValue(bs.player_status, "atk"),
+      target_def: asNum(virus?.def, 0) + buffValue(bs.enemy_status, "def"),
+      chip_element: element,
+      navi_element: toElement(player?.element),
+      def_element: toElement(virus?.element),
+      acc: normalizeAcc(chip.acc, 0.95),
+      navi_acc: asNum(player?.acc, 100) + buffValue(bs.player_status, "acc"),
+      target_evasion:
+        asNum(virus?.evasion ?? virus?.eva, 0) +
+        buffValue(bs.enemy_status, "evasion"),
+      crit_chance:
+        (asNum(player?.crit, 0) + buffValue(bs.player_status, "crit")) / 100,
+      blind: bs.player_status.blind,
+      rng: Math.random,
+    });
+
+    pendingAttackPlus = opts.forceAttackPlusReset ? 0 : 0;
+
+    if (!roll.hit) {
+      playerLog.push(`**${chipName}** missed.`);
+    } else {
+      const absorbed = absorbDamage(bs.enemy_status, roll.total, element);
+      bs.enemy_hp = Math.max(0, bs.enemy_hp - absorbed.damage);
+      const tags = [
+        roll.crit ? "crit" : "",
+        roll.multiplier > 1
+          ? "super effective"
+          : roll.multiplier < 1
+            ? "resisted"
+            : "",
+      ].filter(Boolean);
+      playerLog.push(
+        `**${chipName}** dealt **${absorbed.damage}** dmg${tags.length ? ` (${tags.join(", ")})` : ""}.`,
+      );
+      for (const note of absorbed.notes) playerLog.push(note);
+    }
+  }
+
+  for (const eff of effects)
+    applyOffensiveEffects(chipName, eff, bs.enemy_status, playerLog);
+  return pendingAttackPlus;
+}
+
+function applyOffensiveEffects(
+  chipName: string,
+  eff: ReturnType<typeof parseEffects>[number],
+  target: StatusState,
+  log: string[],
+) {
+  const entries: Array<
+    [
+      "burn" | "poison" | "freeze" | "paralyze" | "blind",
+      { chance: number; turns: number } | undefined,
+      string,
+    ]
+  > = [
+    ["burn", eff.burn, "Burn"],
+    ["poison", eff.poison, "Poison"],
+    ["freeze", eff.freeze, "Freeze"],
+    ["paralyze", eff.paralyze, "Paralyze"],
+    ["blind", eff.blind, "Blind"],
+  ];
+
+  for (const [key, value, label] of entries) {
+    if (!value) continue;
+    if (tryChance(value.chance, Math.random)) {
+      applyStatusEffect(target, key, value.turns);
+      log.push(`**${chipName}** applied ${label} (${value.turns}t).`);
+    }
+  }
+}
+
+function discardSelected(bs: BattleState) {
+  const idxs = selectedIndices(bs);
+  if (!idxs.length) return;
+  const sel = new Set(idxs);
+  bs.discard.push(...idxs.map((i) => bs.hand[i]).filter(Boolean));
+  bs.hand = bs.hand.filter((_, i) => !sel.has(i));
+}
+
+function resolveEnemyAction(bs: BattleState, enemyLog: string[]) {
+  const virus = getVirusById(bs.virus_id) as any;
+  const move = chooseEnemyMove(virus);
+  if (!move) {
+    resolveFallbackEnemyAttack(bs, enemyLog);
+    return;
+  }
+
+  const name = String(move.name || "Attack");
+  const kind = String(move.kind || "attack").toLowerCase();
+
+  if (move.barrier && Number(move.barrier) > 0) {
+    addBarrier(bs.enemy_status, Number(move.barrier));
+    enemyLog.push(
+      `${virus?.name ?? "Virus"} used **${name}** and gained Barrier ${Number(move.barrier)}.`,
+    );
+  }
+
+  if (move.selfBuff && typeof move.selfBuff === "object") {
+    applyBuff(bs.enemy_status, { ...move.selfBuff, turns: 3 });
+    enemyLog.push(`${virus?.name ?? "Virus"} used **${name}** and powered up.`);
+  }
+
+  if (kind !== "attack" || Number(move.power ?? 0) <= 0) return;
+
+  const player = getPlayer(bs.user_id) as any;
+  const element = toElement(move.element);
+  const roll = resolveDamageRoll({
+    chip_pow: Math.max(0, asNum(move.power, asNum(virus?.atk, 10))),
+    hits: Math.max(1, asNum(move.hits, 1)),
+    navi_atk: asNum(virus?.atk, 0) + buffValue(bs.enemy_status, "atk"),
+    target_def: asNum(player?.def, 0) + buffValue(bs.player_status, "def"),
+    chip_element: element,
+    navi_element: toElement(virus?.element),
+    def_element: toElement(player?.element),
+    acc: normalizeAcc(move.acc, normalizeAcc(virus?.acc, 0.9)),
+    navi_acc: asNum(virus?.acc, 95) + buffValue(bs.enemy_status, "acc"),
+    target_evasion:
+      asNum(player?.evasion, 0) + buffValue(bs.player_status, "evasion"),
+    crit_chance: normalizeCrit(move.crit ?? virus?.cr),
+    blind: bs.enemy_status.blind,
+    rng: Math.random,
+  });
+
+  if (!roll.hit) {
+    enemyLog.push(`${virus?.name ?? "Virus"} used **${name}** but missed.`);
+    return;
+  }
+
+  const absorbed = absorbDamage(bs.player_status, roll.total, element);
+  bs.player_hp = Math.max(0, bs.player_hp - absorbed.damage);
+  const tags = [
+    roll.crit ? "crit" : "",
+    roll.multiplier > 1
+      ? "super effective"
+      : roll.multiplier < 1
+        ? "resisted"
+        : "",
+  ].filter(Boolean);
+  enemyLog.push(
+    `${virus?.name ?? "Virus"} used **${name}** for **${absorbed.damage}** dmg${tags.length ? ` (${tags.join(", ")})` : ""}.`,
+  );
+  for (const note of absorbed.notes) enemyLog.push(note);
+
+  if (
+    move.status?.apply &&
+    tryChance(Number(move.status.chance ?? 1), Math.random)
+  ) {
+    const key = normalizeStatusKey(move.status.apply);
+    if (key) {
+      const turns = Math.max(1, toInt(move.status.turns ?? 1, 1));
+      applyStatusEffect(bs.player_status, key, turns);
+      enemyLog.push(`${name} applied ${move.status.apply} (${turns}t).`);
+    }
+  }
+}
+
+function resolveFallbackEnemyAttack(bs: BattleState, enemyLog: string[]) {
+  const virus = getVirusById(bs.virus_id) as any;
+  const player = getPlayer(bs.user_id) as any;
+  const element = toElement(virus?.element);
+
+  const roll = resolveDamageRoll({
+    chip_pow: Math.max(5, asNum(virus?.atk, randInt(5, 15))),
+    hits: 1,
+    navi_atk: asNum(virus?.atk, 0) + buffValue(bs.enemy_status, "atk"),
+    target_def: asNum(player?.def, 0) + buffValue(bs.player_status, "def"),
+    chip_element: element,
+    navi_element: element,
+    def_element: toElement(player?.element),
+    acc: normalizeAcc(virus?.acc, 0.9),
+    navi_acc: asNum(virus?.acc, 95) + buffValue(bs.enemy_status, "acc"),
+    target_evasion:
+      asNum(player?.evasion, 0) + buffValue(bs.player_status, "evasion"),
+    crit_chance: normalizeCrit(virus?.cr),
+    blind: bs.enemy_status.blind,
+    rng: Math.random,
+  });
+
+  if (!roll.hit) {
+    enemyLog.push(`${virus?.name ?? "Virus"} attacked but missed.`);
+    return;
+  }
+
+  const absorbed = absorbDamage(bs.player_status, roll.total, element);
+  bs.player_hp = Math.max(0, bs.player_hp - absorbed.damage);
+  enemyLog.push(
+    `${virus?.name ?? "Virus"} hit you for **${absorbed.damage}** dmg${roll.crit ? " (crit)" : ""}.`,
+  );
+  for (const note of absorbed.notes) enemyLog.push(note);
+}
+
+function chooseEnemyMove(virus: any): EnemyMove | null {
+  const moves = parseEnemyMoves(virus);
+  if (!moves.length) return null;
+
+  const totalWeight = moves.reduce(
+    (sum, m) => sum + Math.max(1, asNum(m.weight, 1)),
+    0,
+  );
+  let roll = Math.random() * totalWeight;
+  for (const m of moves) {
+    roll -= Math.max(1, asNum(m.weight, 1));
+    if (roll <= 0) return m;
+  }
+  return moves[moves.length - 1] ?? null;
+}
+
+function parseEnemyMoves(virus: any): EnemyMove[] {
+  const out: EnemyMove[] = [];
+  for (const key of ["move_1json", "move_2json", "move_3json", "move_4json"]) {
+    const raw = String(virus?.[key] ?? "").trim();
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") out.push(parsed as EnemyMove);
+    } catch {
+      // Phase 2 tolerates malformed TSV move JSON and falls back to basic enemy attacks.
+    }
+  }
+  return out;
+}
+
+function isSupportOnlyChip(
+  chip: any,
+  effects: ReturnType<typeof parseEffects>,
+): boolean {
+  const category = String(chip?.category ?? "").toLowerCase();
+  const power = asNum(chip?.power, 0);
+  if (power > 0) return false;
+  if (
+    category.includes("support") ||
+    category.includes("barrier") ||
+    category.includes("recovery")
+  )
     return true;
-  }
-  return false;
+  return (
+    effects.some((e) => e.heal || e.barrier || e.aura || e.attackPlus) &&
+    !effects.some(
+      (e) => e.burn || e.poison || e.freeze || e.paralyze || e.blind,
+    )
+  );
+}
+
+function normalizeStatusKey(
+  x: any,
+): "burn" | "poison" | "freeze" | "paralyze" | "blind" | null {
+  const s = String(x ?? "")
+    .trim()
+    .toLowerCase();
+  if (s === "burn") return "burn";
+  if (s === "poison") return "poison";
+  if (s === "freeze" || s === "frozen") return "freeze";
+  if (s === "paralyze" || s === "paralysis") return "paralyze";
+  if (s === "blind") return "blind";
+  return null;
+}
+
+function statusPayload(bs: BattleState): {
+  status?: { player?: string; enemy?: string };
+} {
+  const playerStatus = statusSummary(bs.player_status);
+  const enemyStatus = statusSummary(bs.enemy_status);
+  return playerStatus || enemyStatus
+    ? { status: { player: playerStatus, enemy: enemyStatus } }
+    : {};
 }
 
 // ---------------- Utils ----------------
+function toElement(x: unknown): Element {
+  const s = String(x ?? "").toLowerCase();
+  switch (s) {
+    case "fire":
+      return "Fire";
+    case "aqua":
+    case "water":
+      return "Aqua";
+    case "elec":
+    case "electric":
+      return "Elec";
+    case "wood":
+    case "grass":
+      return "Wood";
+    case "neutral":
+    default:
+      return "Neutral";
+  }
+}
+
 function parseCustom(customId: string): [string, string] {
-  const [prefix, battleId] = customId.split(':', 2);
+  const [prefix, battleId] = customId.split(":", 2);
   return [prefix, battleId];
 }
+
 function asNum(v: any, d = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
 }
+
 function toInt(v: any, d = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : d;
 }
+
+function normalizeAcc(v: any, fallback: number) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return n > 1 ? n / 100 : n;
+}
+
+function normalizeCrit(v: any) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0.06;
+  return n > 1
+    ? Math.max(0, Math.min(1, n / 100))
+    : Math.max(0, Math.min(1, n));
+}
+
+function nextBattleId() {
+  const n = Math.floor(Date.now() / 1000);
+  const r = randInt(1000, 9999);
+  return `b${n}${r}`;
+}
+
 function shuffle<T>(a: T[]) {
   for (let i = a.length - 1; i > 0; i--) {
     const j = randInt(0, i);
@@ -626,16 +1006,17 @@ function shuffle<T>(a: T[]) {
     a[j] = t;
   }
 }
+
 function randInt(a: number, b: number) {
   return a + Math.floor(Math.random() * (b - a + 1));
 }
-async function safeUpdate(ix: any, payload: any) {
+
+async function safeRespond(ix: any, payload: any) {
   try {
-    if (ix.isRepliable?.() && !ix.deferred && !ix.replied) {
-      await ix.reply({ ...payload, ephemeral: true });
-      return;
-    }
-    await ix.editReply?.(payload);
+    if (ix.replied || ix.deferred) await ix.followUp?.(payload);
+    else if (ix.isButton?.() || ix.isStringSelectMenu?.())
+      await ix.reply?.(payload);
+    else await ix.reply?.(payload);
   } catch {
     try {
       await ix.update?.(payload);
@@ -643,39 +1024,53 @@ async function safeUpdate(ix: any, payload: any) {
   }
 }
 
-// ---------------- Compat conversion ----------------
-function lockedChipIds(bs: BattleState): string[] {
-  const idxs = selectedIndices(bs);
-  return idxs.map(i => bs.hand[i]?.id).filter(Boolean) as string[];
+function resolveChipIdLoose(token: string): string | null {
+  const b = getBundle();
+  if (b.chips[token]) return token;
+
+  const low = token.toLowerCase();
+  for (const c of listChips() as any[]) {
+    if (String(c?.id ?? "").toLowerCase() === low) return String(c.id);
+    if (String(c?.name ?? "").toLowerCase() === low) return String(c.id);
+  }
+  return null;
 }
 
-function toCompatState(bs: BattleState, enemy_kind: 'virus' | 'boss') {
+function firstUsableChipId(): string | null {
+  for (const c of listChips() as any[]) {
+    const id = String(c?.id ?? "").trim();
+    if (id && Number(c?.is_upgrade ?? 0) !== 1) return id;
+  }
+  return null;
+}
+
+function lockedChipIds(bs: BattleState): string[] {
+  const idxs = selectedIndices(bs);
+  return idxs.map((i) => bs.hand[i]?.id).filter(Boolean) as string[];
+}
+
+function toCompatState(bs: BattleState) {
   const p = getPlayer(bs.user_id) as any;
   return {
     id: bs.id,
     user_id: bs.user_id,
-
-    enemy_kind,
+    enemy_kind: bs.enemy_kind,
+    region_id: bs.region_id,
     enemy_id: bs.virus_id,
     enemy_hp: bs.enemy_hp,
-
-    player_element: (p?.element as any) || 'Neutral',
+    player_element: (p?.element as any) || "Neutral",
     player_hp: bs.player_hp,
     player_hp_max: bs.player_hp_max,
     navi_atk: p?.atk ?? 10,
     navi_def: p?.def ?? 6,
     navi_acc: p?.acc ?? 90,
     navi_eva: p?.evasion ?? 10,
-
     turn: bs.turn,
     seed: 0,
     draw_pile: bs.deck.map((c) => c.id),
     discard_pile: bs.discard.map((c) => c.id),
     hand: bs.hand.map((c) => c.id),
-
-    // Keep legacy expectations: chip ids here
     locked: lockedChipIds(bs),
-
     player_status: bs.player_status,
     enemy_status: bs.enemy_status,
   };

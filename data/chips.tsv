@@ -34,8 +34,8 @@ BubStar2	BubStar2	Aqua	O,P,Q	34	80	1	0.95	Bomb		Single shot attack	https://stati
 BubStar3	BubStar3	Aqua	R,S,T	40	100	1	0.95	Bomb		Single shot attack	https://static.wikia.nocookie.net/megaman/images/0/0f/BN6Chip028.png/revision/latest?cb=20111231222133	3	0	0	0	4
 Thunder	Thunder	Elec	E,F,G	22	40	1	0.95	Shot	Paralyze(13)	Paralyze eneny 3 turns	https://static.wikia.nocookie.net/megaman/images/f/f5/BN6Chip029.png/revision/latest?cb=20111231222142	1	0	0	0	4
 DolThdr1	DolThdr1	Elec	A,E,Q	26	120	1	0.95	Shot	Paralyze(12)	Paralyze eneny 2 turns	https://static.wikia.nocookie.net/megaman/images/d/de/BN6Chip030.png/revision/latest?cb=20111231222215	1	0	0	0	4
-DolThdr1	DolThdr1	Elec	C,L,P	34	150	1	0.95	Shot	Paralyze(12)	Paralyze enemy 2 turns	https://static.wikia.nocookie.net/megaman/images/6/6d/BN6Chip031.png/revision/latest?cb=20111231222315	2	0	0	0	4
-DolThdr1	DolThdr1	Elec	B,R,V	42	180	1	0.95	Shot	Paralyze(12)	Paralyze enemy 2 turns	https://static.wikia.nocookie.net/megaman/images/5/5f/BN6Chip032.png/revision/latest?cb=20111231222325	3	0	0	0	4
+DolThdr2	DolThdr2	Elec	C,L,P	34	150	1	0.95	Shot	Paralyze(12)	Paralyze enemy 2 turns	https://static.wikia.nocookie.net/megaman/images/6/6d/BN6Chip031.png/revision/latest?cb=20111231222315	2	0	0	0	4
+DolThdr3	DolThdr3	Elec	B,R,V	42	180	1	0.95	Shot	Paralyze(12)	Paralyze enemy 2 turns	https://static.wikia.nocookie.net/megaman/images/5/5f/BN6Chip032.png/revision/latest?cb=20111231222325	3	0	0	0	4
 ElcPuls1	ElcPuls1	Elec	J,K,M	22	100	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/6/6d/BN6Chip033.png/revision/latest?cb=20111231222333	1	0	0	0	4
 ElcPuls2	ElcPuls2	Elec	M,N,O	28	120	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/b/bc/BN6Chip034.png/revision/latest?cb=20111231222343	2	0	0	0	4
 ElcPuls3	ElcPuls3	Elec	P,Q,R	34	140	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/1/13/BN6Chip035.png/revision/latest?cb=20111231222353	3	0	0	0	4

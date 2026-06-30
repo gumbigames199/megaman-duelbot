@@ -33,7 +33,7 @@ const MAX_CRIT_CAP = toInt(process.env.MAX_CRIT_CAP, 25);
 const STARTER_ZENNY = toInt(process.env.STARTER_ZENNY, 0);
 
 // Folder limit (total slots = sum of qty in folder)
-const FOLDER_CAP = toInt(process.env.FOLDER_CAP, 30);
+const FOLDER_CAP = toInt(process.env.MAX_FOLDER ?? process.env.FOLDER_CAP, 30);
 
 // -------------------------------
 // DB init

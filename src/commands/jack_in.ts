@@ -15,7 +15,7 @@ import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
 import { getBundle, resolveShopInventory, listVirusesForRegionZone } from '../lib/data';
 import {
   getPlayer, setRegion, setZone, getZone,
-  addZenny, spendZenny, tryAddToFolder, getFolderRemaining,
+  addZenny, spendZenny, grantChip,
   addHPMax, addATK, addDEF, addSPD, addACC, addEvasion,
 } from '../lib/db';
 import { startBattle } from '../lib/battle';
@@ -257,7 +257,7 @@ export async function onEncounter(ix: ButtonInteraction) {
   try {
     // ✅ go straight into combat UI
     const virusId = String((picked.virus as any).id);
-    const view = startBattle(userId, virusId);
+    const view = startBattle(userId, virusId, picked.enemy_kind);
 
     await ix.reply({
       ephemeral: true,
@@ -441,12 +441,6 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
       return;
     }
 
-    const remaining = getFolderRemaining(userId);
-    if (remaining <= 0 && !item.is_upgrade) {
-      await ix.reply({ ephemeral: true, content: `❌ Folder is full (30/30). Remove a chip from your folder first.` });
-      return;
-    }
-
     const pay = spendZenny(userId, item.zenny_price);
     if (!pay.ok) {
       await ix.reply({ ephemeral: true, content: `❌ Not enough Zenny. You need ${item.zenny_price}z.` });
@@ -462,17 +456,11 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
       return;
     }
 
-    const res = tryAddToFolder(userId, chipId, 1);
-    if (!res.ok || res.added <= 0) {
-      addZenny(userId, item.zenny_price); // refund
-      const why = res.reason ? ` ${res.reason}` : '';
-      await ix.reply({ ephemeral: true, content: `❌ Purchase failed.${why}` });
-      return;
-    }
+    grantChip(userId, chipId, 1);
 
     await ix.reply({
       ephemeral: true,
-      content: `✅ Bought **${item.name}** for **${item.zenny_price}z**.\nAdded to your folder.`,
+      content: `✅ Bought **${item.name}** for **${item.zenny_price}z**.\nAdded to your inventory. Use **/folder** to add it to your active folder.`,
     });
   } catch (err: any) {
     console.error('onShopBuy error:', err);

@@ -30,13 +30,16 @@ export function renderBattleScreen(args: {
   hp: { playerHP: number; playerHPMax: number; enemyHP: number; enemyHPMax: number };
   hand: Array<{ id: string; name: string; power?: number; hits?: number; element?: string; effects?: string; description?: string }>;
   selectedIds: string[];
+  status?: { player?: string; enemy?: string };
 }) {
-  const { battleId, enemy, hp, hand } = args;
+  const { battleId, enemy, hp, hand, status } = args;
 
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
       `**Your HP:** ${hp.playerHP}/${hp.playerHPMax}`,
       `**Enemy HP:** ${hp.enemyHP}/${hp.enemyHPMax}`,
+      status?.player ? `**Your Status:** ${status.player}` : undefined,
+      status?.enemy ? `**Enemy Status:** ${status.enemy}` : undefined,
       '',
       hand.length ? '**Choose up to 3 chips**' : '📁 Your hand is empty.',
     ].join('\n')
@@ -76,13 +79,16 @@ export function renderRoundResultWithNextHand(args: {
   round: { playerLogLines: string[]; enemyLogLines: string[] };
   nextHand: Array<{ id: string; name: string; power?: number; hits?: number; element?: string; effects?: string; description?: string }>;
   selectedIds: string[];
+  status?: { player?: string; enemy?: string };
 }) {
-  const { battleId, enemy, hp, round, nextHand } = args;
+  const { battleId, enemy, hp, round, nextHand, status } = args;
 
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
       `**Your HP:** ${hp.playerHP}/${hp.playerHPMax}`,
       `**Enemy HP:** ${hp.enemyHP}/${hp.enemyHPMax}`,
+      status?.player ? `**Your Status:** ${status.player}` : undefined,
+      status?.enemy ? `**Enemy Status:** ${status.enemy}` : undefined,
       '',
       round.playerLogLines.length ? '🟦 **Your turn**' : undefined,
       round.playerLogLines.join('\n'),

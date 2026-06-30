@@ -1,1 +1,3 @@
 id	name	type	requirement	region_id	reward_zenny	reward_chip_ids	description	image_url
+green_mettaur_cleanup	Mettaur Cleanup	Defeat	Mettaur2:3	green_area	500	Cannon	Delete 3 Mettaur2 viruses in Green Area.	
+green_bombcorn_cleanup	Cornfield Sweep	Defeat	BombCorn:2	green_area	750	AirShot	Delete 2 BombCorn viruses in Green Area.	

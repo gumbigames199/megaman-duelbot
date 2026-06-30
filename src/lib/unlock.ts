@@ -3,7 +3,6 @@ import { db, getPlayer } from './db';
 import { getBundle } from './data';
 import type { RegionRow } from './types';
 
-// --- table ---
 db.exec(`
   CREATE TABLE IF NOT EXISTS unlocked_regions (
     user_id   TEXT NOT NULL,
@@ -18,89 +17,97 @@ const Q = {
   allForUser: db.prepare(`SELECT region_id FROM unlocked_regions WHERE user_id=?`),
 };
 
-// --- helpers ---
 function starterRegionId(): string {
-  return process.env.START_REGION_ID || 'den_city';
+  return process.env.START_REGION_ID || 'green_area';
 }
 
 function playerLevel(userId: string): number {
   const p: any = getPlayer(userId) || {};
-  // support both xp/level schemas; default 1
   return Number(p.level ?? 1);
 }
 
 function eligibleRegionIdsForLevel(level: number): string[] {
   const { regions } = getBundle();
-  const ids = Object.keys(regions).filter(id => {
-    const r = regions[id];
-    const minLv = Number(r?.min_level ?? 1);
-    return level >= minLv;
-  });
-  // Always include starter (even if its min_level > level by data mistake)
+  const ids = Object.keys(regions).filter(id => level >= Number((regions as any)[id]?.min_level ?? 1));
   const start = starterRegionId();
-  if (!ids.includes(start) && regions[start]) ids.push(start);
+  if (!ids.includes(start) && (regions as any)[start]) ids.push(start);
   return ids;
 }
 
-// --- public API ---
-
-/** Ensure the starter region is unlocked for this user (idempotent). */
 export function ensureStartUnlocked(userId: string): void {
   const start = starterRegionId();
   Q.add.run(userId, start);
 }
 
-/**
- * Return the list of unlocked regions as RegionRow objects.
- * This function also syncs unlocked_regions to include any regions
- * the player qualifies for by level (idempotent).
- */
 export function listUnlocked(userId: string): RegionRow[] {
   ensureStartUnlocked(userId);
 
   const level = playerLevel(userId);
-  const eligibleIds = eligibleRegionIdsForLevel(level);
+  for (const id of eligibleRegionIdsForLevel(level)) Q.add.run(userId, id);
 
-  // sync DB rows for any newly-eligible regions
-  for (const id of eligibleIds) Q.add.run(userId, id);
-
+  const existing = (Q.allForUser.all(userId) as any[]).map(r => String(r.region_id));
   const { regions } = getBundle();
-  const out = eligibleIds
-    .map(id => regions[id])
-    .filter(Boolean) as RegionRow[];
-
-  return out;
+  return existing.map(id => (regions as any)[id]).filter(Boolean) as RegionRow[];
 }
 
-/**
- * Compute which regions *newly* unlocked based on current level,
- * persist them, and return their names (for notifications).
- */
 export function diffNewlyUnlockedRegions(userId: string): string[] {
   const level = playerLevel(userId);
   const eligible = new Set(eligibleRegionIdsForLevel(level));
-
-  const prev = new Set<string>(
-    (Q.allForUser.all(userId) as any[]).map(r => r.region_id as string)
-  );
-
+  const prev = currentUnlockedSet(userId);
   const newly: string[] = [];
   const { regions } = getBundle();
 
   for (const id of eligible) {
     if (!prev.has(id)) {
       Q.add.run(userId, id);
-      const name = regions[id]?.name || id;
-      newly.push(name);
+      newly.push(String((regions as any)[id]?.name || id));
     }
   }
   return newly;
 }
 
 /**
- * Back-compat: original code unlocked neighbors after a boss.
- * We now gate by level, so this is a harmless no-op returning [].
+ * Boss progression unlocks explicit next_region_ids when present. If absent,
+ * it unlocks the next region by min_level order.
  */
-export function unlockNextFromRegion(_userId: string, _regionId: string): string[] {
-  return [];
+export function unlockNextFromRegion(userId: string, regionId: string): string[] {
+  const { regions } = getBundle() as any;
+  const cur = regions[String(regionId)];
+  if (!cur) return [];
+
+  const prev = currentUnlockedSet(userId);
+  const nextIds = nextRegionIds(cur, regions);
+  const names: string[] = [];
+
+  for (const id of nextIds) {
+    if (!regions[id] || prev.has(id)) continue;
+    Q.add.run(userId, id);
+    names.push(String(regions[id]?.name || id));
+  }
+  return names;
+}
+
+function currentUnlockedSet(userId: string): Set<string> {
+  ensureStartUnlocked(userId);
+  return new Set((Q.allForUser.all(userId) as any[]).map(r => String(r.region_id)));
+}
+
+function nextRegionIds(cur: any, regions: Record<string, any>): string[] {
+  const explicit = String(cur.next_region_ids || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .filter(id => !!regions[id]);
+  if (explicit.length) return explicit;
+
+  const curLevel = Number(cur.min_level ?? 0);
+  const ordered = Object.values(regions)
+    .filter((r: any) => String(r.id) !== String(cur.id))
+    .filter((r: any) => Number(r.min_level ?? 0) > curLevel)
+    .sort((a: any, b: any) => Number(a.min_level ?? 0) - Number(b.min_level ?? 0) || String(a.name || a.id).localeCompare(String(b.name || b.id)));
+
+  const first = ordered[0] as any;
+  if (!first) return [];
+  const min = Number(first.min_level ?? 0);
+  return ordered.filter((r: any) => Number(r.min_level ?? 0) === min).map((r: any) => String(r.id));
 }
