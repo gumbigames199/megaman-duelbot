@@ -83,6 +83,7 @@ type PvpBattle = {
   timer?: NodeJS.Timeout;
   lastLog: string[];
   message?: any;
+  client?: any;
 };
 
 const challenges = new Map<string, PvpChallenge>();
@@ -147,6 +148,7 @@ export async function handlePvpButton(ix: ButtonInteraction) {
   if (action === 'hand') return openHand(ix, id);
   if (action === 'lock') return lockPlayer(ix, id);
   if (action === 'forfeit') return forfeitPlayer(ix, id);
+  if (action === 'resolve') return manualResolveRound(ix, id);
 }
 
 export async function handlePvpSelect(ix: StringSelectMenuInteraction) {
@@ -242,6 +244,7 @@ async function acceptChallenge(ix: ButtonInteraction, challengeId: string) {
     deadlineAt: Date.now() + ROUND_SECONDS * 1000,
     lastLog: [],
     message: ix.message,
+    client: ix.client,
   };
   battles.set(battleId, bs);
   startRoundTimer(bs);
@@ -305,11 +308,46 @@ async function lockPlayer(ix: ButtonInteraction, battleId: string) {
 
   if (bs.p1.locked && bs.p2.locked) {
     clearTimer(bs.timer);
-    await resolveRoundAndUpdate(bs, ix);
+    try {
+      await resolveRoundAndUpdate(bs, ix);
+    } catch (err: any) {
+      console.error('resolveRoundAndUpdate error:', err);
+      try {
+        await ix.followUp({ ephemeral: true, content: `PvP round failed to resolve: ${err?.message || String(err)}` });
+      } catch {}
+    }
     return;
   }
 
   await updatePublicBattleMessage(bs, ix);
+}
+
+
+async function manualResolveRound(ix: ButtonInteraction, battleId: string) {
+  const bs = battles.get(battleId);
+  if (!bs || bs.isOver) {
+    await ix.reply({ ephemeral: true, content: 'This PvP battle is no longer active.' });
+    return;
+  }
+  const side = sideForUser(bs, ix.user.id);
+  if (!side) {
+    await ix.reply({ ephemeral: true, content: 'This is not your duel.' });
+    return;
+  }
+  if (!bs.p1.locked || !bs.p2.locked) {
+    await ix.reply({ ephemeral: true, content: 'Both players need to lock first, or wait for the round timer to expire.' });
+    return;
+  }
+
+  await ix.deferReply({ ephemeral: true });
+  try {
+    clearTimer(bs.timer);
+    await resolveRoundAndUpdate(bs, ix);
+    await ix.editReply({ content: 'Round resolved.' });
+  } catch (err: any) {
+    console.error('manualResolveRound error:', err);
+    await ix.editReply({ content: `PvP round failed to resolve: ${err?.message || String(err)}` });
+  }
 }
 
 async function forfeitPlayer(ix: ButtonInteraction, battleId: string) {
@@ -639,6 +677,7 @@ function publicBattleComponents(bs: PvpBattle) {
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId(`pvp:hand:${bs.id}`).setStyle(ButtonStyle.Primary).setLabel('Open Hand'),
+      new ButtonBuilder().setCustomId(`pvp:resolve:${bs.id}`).setStyle(ButtonStyle.Secondary).setLabel('Resolve Round'),
       new ButtonBuilder().setCustomId(`pvp:forfeit:${bs.id}`).setStyle(ButtonStyle.Danger).setLabel('Forfeit'),
     ),
   ];
@@ -697,29 +736,51 @@ function buildPrivateHandControls(bs: PvpBattle, side: SideKey): { embed: EmbedB
   return { embed, components: [rowSelect, rowButton] };
 }
 
+
 async function updatePublicBattleMessage(bs: PvpBattle, ix?: ButtonInteraction) {
   const payload = { embeds: [renderPvpEmbed(bs)], components: publicBattleComponents(bs) };
 
-  // PvP chip selection and Lock Turn are handled through ephemeral private hand
-  // messages. In those cases ix.message is the player's private controls, not
-  // the public duel embed. Always prefer the stored public battle message so
-  // that both players see the combat round advance immediately after lock-in.
-  const publicMessage = bs.message;
-  if (publicMessage?.edit) {
-    await publicMessage.edit(payload).catch(async () => {
-      // Only fall back to the interaction message when no public message edit is
-      // available. Avoid editing ephemeral hand controls into the public battle UI.
-      if (ix && !ix.replied && !ix.deferred && ix.message?.edit) {
-        await ix.message.edit(payload).catch(() => {});
+  // Private hand interactions are ephemeral, so ix.message is usually NOT the
+  // public PvP battle message. Always edit the stored public message first.
+  if (await tryEditMessage(bs.message, payload)) return;
+
+  // If the stored Message object is stale, fetch the public message directly
+  // from the channel/message id captured when the challenge was accepted.
+  const client = bs.client || ix?.client;
+  if (client && bs.channelId && bs.messageId) {
+    try {
+      const channel: any = await client.channels.fetch(bs.channelId);
+      const msg = await channel?.messages?.fetch?.(bs.messageId);
+      if (msg) {
+        bs.message = msg;
+        if (await tryEditMessage(msg, payload)) return;
       }
-    });
-    return;
+    } catch (err) {
+      console.error('PvP public message fetch/edit failed:', err);
+    }
   }
 
-  if (ix && !ix.replied && !ix.deferred && ix.message?.edit) {
-    await ix.message.edit(payload).catch(() => {});
+  // Last resort: only edit ix.message when the interaction came from the
+  // public duel message itself. Never transform an ephemeral hand message into
+  // the public combat UI.
+  if (ix?.message?.id && ix.message.id === bs.messageId) {
+    if (await tryEditMessage(ix.message, payload)) return;
+  }
+
+  console.error(`PvP public battle message update failed for battle=${bs.id}, channel=${bs.channelId}, message=${bs.messageId}`);
+}
+
+async function tryEditMessage(message: any, payload: any): Promise<boolean> {
+  if (!message?.edit) return false;
+  try {
+    await message.edit(payload);
+    return true;
+  } catch (err) {
+    console.error('PvP message edit failed:', err);
+    return false;
   }
 }
+
 
 function applyStartTicks(p: PvpPlayerState, log: string[]) {
   const tick = tickStart(p.hp, p.hpMax, p.status);
