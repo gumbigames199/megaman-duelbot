@@ -398,7 +398,7 @@ async function forfeitPlayer(ix: ButtonInteraction, battleId: string) {
   loser.hp = 0;
   bs.isOver = true;
   clearTimer(bs.timer);
-  bs.lastLog = [`${loser.username}.EXE forfeited.`, `${winner.username}.EXE wins.`];
+  bs.lastLog = [`${loser.username}.EXE forfeited.`];
   scheduleBattleCleanup(bs);
   await announcePublicIfComplete(bs).catch(console.error);
 
@@ -458,9 +458,8 @@ function resolveRoundAndAdvance(bs: PvpBattle) {
 
   if (bs.p1.hp <= 0 || bs.p2.hp <= 0) {
     bs.isOver = true;
-    const winner = bs.p1.hp > 0 ? bs.p1 : bs.p2.hp > 0 ? bs.p2 : null;
-    bs.lastLog.push(winner ? `${winner.username}.EXE wins.` : 'Double deletion. The duel is a draw.');
     scheduleBattleCleanup(bs);
+
     return;
   }
 
@@ -744,7 +743,9 @@ function buildPrivateCombatControls(bs: PvpBattle, side: SideKey): { embed: Embe
       `Locked: **${opponent.locked ? 'Yes' : 'No'}**`,
       '',
       bs.lastLog.length ? `**Combat Log**\n${bs.lastLog.slice(-16).join('\n')}` : 'No combat has resolved yet.',
-    ].join('\n'))
+      bs.isOver ? '' : '',
+      bs.isOver ? finalResultBanner(bs) : '',
+    ].filter(line => line !== '').join('\n'))
     .setFooter({ text: bs.isOver ? 'PvP duel complete.' : actor.locked ? 'Locked in. Waiting for opponent.' : 'Select up to 3 chips, then lock your turn.' });
 
   if (actor.avatarUrl) embed.setThumbnail(actor.avatarUrl);
@@ -788,6 +789,13 @@ function buildPrivateCombatControls(bs: PvpBattle, side: SideKey): { embed: Embe
   return { embed, components };
 }
 
+
+
+function finalResultBanner(bs: PvpBattle): string {
+  const winner = winnerForBattle(bs);
+  if (winner) return `**WINNER: ${winner.username.toUpperCase()}.EXE**`;
+  return '**DOUBLE DELETION — DRAW**';
+}
 
 function rememberPrivatePanel(bs: PvpBattle, side: SideKey, ix: any) {
   bs[side].panelInteraction = ix;
@@ -868,11 +876,6 @@ async function announcePublicIfComplete(bs: PvpBattle) {
 function winnerForBattle(bs: PvpBattle): PvpPlayerState | null {
   if (bs.p1.hp > 0 && bs.p2.hp <= 0) return bs.p1;
   if (bs.p2.hp > 0 && bs.p1.hp <= 0) return bs.p2;
-
-  const p1Win = bs.lastLog.some(line => line.includes(`${bs.p1.username}.EXE wins.`));
-  const p2Win = bs.lastLog.some(line => line.includes(`${bs.p2.username}.EXE wins.`));
-  if (p1Win && !p2Win) return bs.p1;
-  if (p2Win && !p1Win) return bs.p2;
 
   return null;
 }
