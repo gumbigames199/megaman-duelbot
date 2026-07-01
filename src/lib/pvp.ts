@@ -717,36 +717,105 @@ function publicBattleComponents(bs: PvpBattle) {
   ];
 }
 
+
+function hpBar(cur: number, max: number): string {
+  const safeMax = Math.max(1, Math.floor(Number(max) || 1));
+  const safeCur = Math.max(0, Math.floor(Number(cur) || 0));
+  const ratio = Math.max(0, Math.min(1, safeCur / safeMax));
+  const filled = Math.round(ratio * 10);
+  const empty = 10 - filled;
+  const block = ratio > 0.5 ? '🟩' : ratio > 0.25 ? '🟨' : '🟥';
+  return `${block.repeat(filled)}${'⬛'.repeat(empty)} **${safeCur}/${safeMax} HP**`;
+}
+
+function statusBadges(text?: string): string {
+  const raw = String(text || '').trim();
+  if (!raw || raw === '—') return '—';
+  return raw
+    .replace(/burn/gi, '🔥 Burn')
+    .replace(/poison/gi, '☠️ Poison')
+    .replace(/freeze|frozen/gi, '❄️ Freeze')
+    .replace(/paralyze|paralysis/gi, '⚡ Paralyze')
+    .replace(/blind/gi, '🌫️ Blind')
+    .replace(/barrier/gi, '🛡️ Barrier')
+    .replace(/aura/gi, '✨ Aura');
+}
+
+function chipRole(chip: any): string {
+  const eff = String(chip?.effects || '').toLowerCase();
+  if (eff.includes('heal')) return '❤️ Heal';
+  if (eff.includes('barrier') || eff.includes('aura')) return '🛡️ Defense';
+  if (eff.includes('atk+') || eff.includes('attack+')) return '🔧 Boost';
+  if (Number(chip?.power || 0) > 0) return `💥 ${chip.power} PWR${Number(chip.hits ?? 1) > 1 ? ` ×${chip.hits}` : ''}`;
+  return '⚙️ Support';
+}
+
+function queuedChipLines(p: PvpPlayerState): string[] {
+  return p.selected.map((raw, i) => {
+    const idx = Number(raw);
+    const chipId = p.hand[idx]?.id;
+    const chip: any = chipId ? getChipById(chipId) : null;
+    return `${i + 1}️⃣ **${chip ? formatChipName(chip) : chipId || '?'}** — ${chipRole(chip)}`;
+  });
+}
+
+function formatCombatLog(lines: string[]): string[] {
+  return lines.map((line) => {
+    let out = String(line || '').trim();
+    if (!out) return out;
+    if (/missed|could not act|did not select|forfeited/i.test(out)) return `⚠️ ${out}`;
+    if (/healed|recover/i.test(out)) return `❤️ ${out}`;
+    if (/barrier|aura/i.test(out)) return `🛡️ ${out}`;
+    if (/burn|poison|freeze|paralyze|blind/i.test(out)) return `✨ ${out}`;
+    if (/dmg|damage|used|attached/i.test(out)) return `💥 ${out}`;
+    return `• ${out}`;
+  }).filter(Boolean);
+}
+
 function buildPrivateCombatControls(bs: PvpBattle, side: SideKey): { embed: EmbedBuilder; components: any[] } {
   const actor = bs[side];
   const opponent = bs[side === 'p1' ? 'p2' : 'p1'];
   const timer = Math.max(0, Math.ceil((bs.deadlineAt - Date.now()) / 1000));
   const statusLine = bs.isOver
-    ? '**Battle End**'
-    : `**Round ${bs.round}** • ${timer}s to lock`;
+    ? '🏁 **BATTLE END**'
+    : `⚔️ **ROUND ${bs.round}** • ${timer}s to lock`;
+
+  const logBlock = bs.lastLog.length
+    ? `📜 **Combat Log**\n${formatCombatLog(bs.lastLog).slice(-18).join('\n')}`
+    : '📜 **Combat Log**\nNo combat has resolved yet.';
+
+  const queueBlock = !bs.isOver && !actor.locked && actor.selected.length
+    ? `\n\n⚡ **Chip Queue (${actor.selected.length}/3)**\n${queuedChipLines(actor).join('\n')}\n✅ Valid queue.`
+    : '';
+
+  const footerText = bs.isOver
+    ? 'PvP duel complete.'
+    : actor.locked
+      ? 'Locked in. Waiting for opponent.'
+      : 'Select up to 3 chips, then lock your turn.';
 
   const embed = new EmbedBuilder()
     .setTitle(`PvP Combat — ${actor.username}.EXE`)
     .setDescription([
       statusLine,
       '',
-      `**${actor.username}.EXE**`,
-      `HP: **${actor.hp}/${actor.hpMax}**`,
-      `Status: ${statusSummary(actor.status) || '—'}`,
-      `Locked: **${actor.locked ? 'Yes' : 'No'}**`,
+      `🟦 **${actor.username}.EXE**`,
+      hpBar(actor.hp, actor.hpMax),
+      `Status: ${statusBadges(statusSummary(actor.status))}`,
+      `Lock: ${actor.locked ? '✅ Locked' : '⏳ Choosing'}`,
       '',
       '**VS**',
       '',
-      `**${opponent.username}.EXE**`,
-      `HP: **${opponent.hp}/${opponent.hpMax}**`,
-      `Status: ${statusSummary(opponent.status) || '—'}`,
-      `Locked: **${opponent.locked ? 'Yes' : 'No'}**`,
+      `🟥 **${opponent.username}.EXE**`,
+      hpBar(opponent.hp, opponent.hpMax),
+      `Status: ${statusBadges(statusSummary(opponent.status))}`,
+      `Lock: ${opponent.locked ? '✅ Locked' : '⏳ Choosing'}`,
       '',
-      bs.lastLog.length ? `**Combat Log**\n${bs.lastLog.slice(-16).join('\n')}` : 'No combat has resolved yet.',
-      bs.isOver ? '' : '',
-      bs.isOver ? finalResultBanner(bs) : '',
+      logBlock,
+      queueBlock,
+      bs.isOver ? `\n\n${finalResultBanner(bs)}` : '',
     ].filter(line => line !== '').join('\n'))
-    .setFooter({ text: bs.isOver ? 'PvP duel complete.' : actor.locked ? 'Locked in. Waiting for opponent.' : 'Select up to 3 chips, then lock your turn.' });
+    .setFooter({ text: footerText });
 
   if (actor.avatarUrl) embed.setThumbnail(actor.avatarUrl);
 
@@ -765,7 +834,7 @@ function buildPrivateCombatControls(bs: PvpBattle, side: SideKey): { embed: Embe
       const chip: any = getChipById(c.id) || {};
       const bits: string[] = [];
       if (chip.element && String(chip.element).toLowerCase() !== 'neutral') bits.push(String(chip.element));
-      if (Number(chip.power ?? 0) > 0) bits.push(`P${chip.power}${Number(chip.hits ?? 1) > 1 ? `×${chip.hits}` : ''}`);
+      if (Number(chip.power ?? 0) > 0) bits.push(`${chip.power} PWR${Number(chip.hits ?? 1) > 1 ? ` ×${chip.hits}` : ''}`);
       if (chip.effects) bits.push(String(chip.effects).replace(/\s+/g, ' ').trim());
       return {
         label: formatChipName(chip || c.id).slice(0, 100),
@@ -780,15 +849,14 @@ function buildPrivateCombatControls(bs: PvpBattle, side: SideKey): { embed: Embe
 
   const buttons: ButtonBuilder[] = [];
   if (!actor.locked) {
-    buttons.push(new ButtonBuilder().setCustomId(`pvp:lock:${bs.id}`).setStyle(ButtonStyle.Success).setLabel('Lock Turn'));
+    buttons.push(new ButtonBuilder().setCustomId(`pvp:lock:${bs.id}`).setStyle(ButtonStyle.Success).setLabel('Lock Turn').setEmoji('✅'));
   }
-  buttons.push(new ButtonBuilder().setCustomId(`pvp:refresh:${bs.id}`).setStyle(ButtonStyle.Secondary).setLabel('Refresh Combat'));
-  buttons.push(new ButtonBuilder().setCustomId(`pvp:forfeit:${bs.id}`).setStyle(ButtonStyle.Danger).setLabel('Forfeit'));
+  buttons.push(new ButtonBuilder().setCustomId(`pvp:refresh:${bs.id}`).setStyle(ButtonStyle.Secondary).setLabel('Refresh Combat').setEmoji('🔄'));
+  buttons.push(new ButtonBuilder().setCustomId(`pvp:forfeit:${bs.id}`).setStyle(ButtonStyle.Danger).setLabel('Forfeit').setEmoji('🏳️'));
   components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons));
 
   return { embed, components };
 }
-
 
 
 function finalResultBanner(bs: PvpBattle): string {
