@@ -146,6 +146,7 @@ export async function handlePvpButton(ix: ButtonInteraction) {
   if (action === 'accept') return acceptChallenge(ix, id);
   if (action === 'decline') return declineChallenge(ix, id);
   if (action === 'hand') return openHand(ix, id);
+  if (action === 'refresh') return refreshCombat(ix, id);
   if (action === 'lock') return lockPlayer(ix, id);
   if (action === 'forfeit') return forfeitPlayer(ix, id);
   if (action === 'resolve') return manualResolveRound(ix, id);
@@ -197,7 +198,7 @@ export async function handlePvpSelect(ix: StringSelectMenuInteraction) {
   }
 
   actor.selected = selected;
-  const controls = buildPrivateHandControls(bs, side);
+  const controls = buildPrivateCombatControls(bs, side);
   await ix.update({ embeds: [controls.embed], components: controls.components });
 }
 
@@ -249,10 +250,10 @@ async function acceptChallenge(ix: ButtonInteraction, challengeId: string) {
   battles.set(battleId, bs);
   startRoundTimer(bs);
 
-  await ix.update({ embeds: [renderPvpEmbed(bs)], components: publicBattleComponents(bs) });
+  await ix.update({ embeds: [renderPublicDuelStatusEmbed(bs)], components: publicBattleComponents(bs) });
   await ix.followUp({
     ephemeral: true,
-    content: `Duel accepted. Use **Open Hand** on the public message to choose your chips. You have ${ROUND_SECONDS} seconds this round.`,
+    content: `Duel accepted. Use **Open Combat** to choose your chips privately. You have ${ROUND_SECONDS} seconds this round.`,
   });
 }
 
@@ -286,8 +287,28 @@ async function openHand(ix: ButtonInteraction, battleId: string) {
     return;
   }
 
-  const view = buildPrivateHandControls(bs, side);
+  const view = buildPrivateCombatControls(bs, side);
   await ix.reply({ ephemeral: true, embeds: [view.embed], components: view.components });
+}
+
+async function refreshCombat(ix: ButtonInteraction, battleId: string) {
+  const bs = battles.get(battleId);
+  if (!bs) {
+    await ix.reply({ ephemeral: true, content: 'This PvP battle is no longer active.' });
+    return;
+  }
+  const side = sideForUser(bs, ix.user.id);
+  if (!side) {
+    await ix.reply({ ephemeral: true, content: 'This is not your duel.' });
+    return;
+  }
+
+  const view = buildPrivateCombatControls(bs, side);
+  try {
+    await ix.update({ embeds: [view.embed], components: view.components });
+  } catch {
+    await ix.reply({ ephemeral: true, embeds: [view.embed], components: view.components });
+  }
 }
 
 async function lockPlayer(ix: ButtonInteraction, battleId: string) {
@@ -301,25 +322,23 @@ async function lockPlayer(ix: ButtonInteraction, battleId: string) {
     await ix.reply({ ephemeral: true, content: 'This is not your duel.' });
     return;
   }
+
   const actor = bs[side];
   actor.locked = true;
-
-  await ix.update({ embeds: [buildPrivateHandControls(bs, side).embed], components: [] });
 
   if (bs.p1.locked && bs.p2.locked) {
     clearTimer(bs.timer);
     try {
-      await resolveRoundAndUpdate(bs, ix);
+      resolveRoundAndAdvance(bs);
     } catch (err: any) {
-      console.error('resolveRoundAndUpdate error:', err);
-      try {
-        await ix.followUp({ ephemeral: true, content: `PvP round failed to resolve: ${err?.message || String(err)}` });
-      } catch {}
+      console.error('resolveRoundAndAdvance error:', err);
+      await ix.reply({ ephemeral: true, content: `PvP round failed to resolve: ${err?.message || String(err)}` });
+      return;
     }
-    return;
   }
 
-  await updatePublicBattleMessage(bs, ix);
+  const view = buildPrivateCombatControls(bs, side);
+  await ix.update({ embeds: [view.embed], components: view.components });
 }
 
 
@@ -339,16 +358,17 @@ async function manualResolveRound(ix: ButtonInteraction, battleId: string) {
     return;
   }
 
-  await ix.deferReply({ ephemeral: true });
   try {
     clearTimer(bs.timer);
-    await resolveRoundAndUpdate(bs, ix);
-    await ix.editReply({ content: 'Round resolved.' });
+    resolveRoundAndAdvance(bs);
+    const view = buildPrivateCombatControls(bs, side);
+    await ix.update({ embeds: [view.embed], components: view.components });
   } catch (err: any) {
     console.error('manualResolveRound error:', err);
-    await ix.editReply({ content: `PvP round failed to resolve: ${err?.message || String(err)}` });
+    await ix.reply({ ephemeral: true, content: `PvP round failed to resolve: ${err?.message || String(err)}` });
   }
 }
+
 
 async function forfeitPlayer(ix: ButtonInteraction, battleId: string) {
   const bs = battles.get(battleId);
@@ -366,7 +386,17 @@ async function forfeitPlayer(ix: ButtonInteraction, battleId: string) {
   clearTimer(bs.timer);
   bs.lastLog = [`${bs[side].username}.EXE forfeited.`, `${winner.username}.EXE wins.`];
   battles.delete(bs.id);
-  await ix.update({ embeds: [renderPvpEmbed(bs)], components: [] });
+
+  if (ix.message?.id === bs.messageId) {
+    await ix.update({
+      embeds: [new EmbedBuilder().setTitle('PvP Duel Ended').setDescription(bs.lastLog.join('\n'))],
+      components: [],
+    });
+    return;
+  }
+
+  const view = buildPrivateCombatControls(bs, side);
+  await ix.update({ embeds: [view.embed], components: view.components });
 }
 
 async function expireChallenge(challengeId: string) {
@@ -383,10 +413,16 @@ async function expireChallenge(challengeId: string) {
 function startRoundTimer(bs: PvpBattle) {
   clearTimer(bs.timer);
   bs.deadlineAt = Date.now() + ROUND_SECONDS * 1000;
-  bs.timer = setTimeout(() => resolveRoundAndUpdate(bs).catch(console.error), ROUND_SECONDS * 1000);
+  bs.timer = setTimeout(() => {
+    try {
+      resolveRoundAndAdvance(bs);
+    } catch (err) {
+      console.error('PvP timed round resolution failed:', err);
+    }
+  }, ROUND_SECONDS * 1000);
 }
 
-async function resolveRoundAndUpdate(bs: PvpBattle, ix?: ButtonInteraction) {
+function resolveRoundAndAdvance(bs: PvpBattle) {
   if (bs.isOver) return;
   clearTimer(bs.timer);
 
@@ -408,14 +444,13 @@ async function resolveRoundAndUpdate(bs: PvpBattle, ix?: ButtonInteraction) {
     const winner = bs.p1.hp > 0 ? bs.p1 : bs.p2.hp > 0 ? bs.p2 : null;
     bs.lastLog.push(winner ? `${winner.username}.EXE wins.` : 'Double deletion. The duel is a draw.');
     battles.delete(bs.id);
-    await updatePublicBattleMessage(bs, ix);
     return;
   }
 
   prepareNextRound(bs);
   startRoundTimer(bs);
-  await updatePublicBattleMessage(bs, ix);
 }
+
 
 function resolvePvpRound(bs: PvpBattle): string[] {
   const log: string[] = [];
@@ -639,36 +674,20 @@ function discardSelected(p: PvpPlayerState) {
   p.hand = p.hand.filter((_, i) => !sel.has(i));
 }
 
-function renderPvpEmbed(bs: PvpBattle): EmbedBuilder {
-  const p1Status = statusSummary(bs.p1.status) || '—';
-  const p2Status = statusSummary(bs.p2.status) || '—';
-  const p1Lock = bs.p1.locked ? 'Locked' : 'Choosing';
-  const p2Lock = bs.p2.locked ? 'Locked' : 'Choosing';
-  const timer = Math.max(0, Math.ceil((bs.deadlineAt - Date.now()) / 1000));
-
+function renderPublicDuelStatusEmbed(bs: PvpBattle): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setTitle(`⚔️ ${bs.p1.username}.EXE  VS  ${bs.p2.username}.EXE`)
     .setDescription([
-      `**Round ${bs.round}**${bs.isOver ? ' — Battle End' : ` • ${timer}s to lock`}`,
+      '**Duel accepted.**',
       '',
-      `**${bs.p1.username}.EXE**`,
-      `HP: **${bs.p1.hp}/${bs.p1.hpMax}**`,
-      `Status: ${p1Status}`,
-      `State: ${p1Lock}`,
+      `**${bs.p1.username}.EXE** vs **${bs.p2.username}.EXE**`,
       '',
-      '**VS**',
-      '',
-      `**${bs.p2.username}.EXE**`,
-      `HP: **${bs.p2.hp}/${bs.p2.hpMax}**`,
-      `Status: ${p2Status}`,
-      `State: ${p2Lock}`,
-      '',
-      bs.lastLog.length ? `**Combat Log**\n${bs.lastLog.slice(-12).join('\n')}` : 'Use **Open Hand** to choose chips privately.',
+      'Use **Open Combat** to manage your private PvP combat panel.',
+      'Combat results and next hands are shown privately to each duelist.',
     ].join('\n'))
     .setFooter({ text: 'PvP alpha: no rewards are granted.' });
 
   if (bs.p1.avatarUrl) embed.setThumbnail(bs.p1.avatarUrl);
-  if (bs.p2.avatarUrl) embed.setImage(bs.p2.avatarUrl);
   return embed;
 }
 
@@ -676,15 +695,16 @@ function publicBattleComponents(bs: PvpBattle) {
   if (bs.isOver) return [];
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId(`pvp:hand:${bs.id}`).setStyle(ButtonStyle.Primary).setLabel('Open Hand'),
-      new ButtonBuilder().setCustomId(`pvp:resolve:${bs.id}`).setStyle(ButtonStyle.Secondary).setLabel('Resolve Round'),
+      new ButtonBuilder().setCustomId(`pvp:hand:${bs.id}`).setStyle(ButtonStyle.Primary).setLabel('Open Combat'),
       new ButtonBuilder().setCustomId(`pvp:forfeit:${bs.id}`).setStyle(ButtonStyle.Danger).setLabel('Forfeit'),
     ),
   ];
 }
 
-function buildPrivateHandControls(bs: PvpBattle, side: SideKey): { embed: EmbedBuilder; components: any[] } {
+function buildPrivateCombatControls(bs: PvpBattle, side: SideKey): { embed: EmbedBuilder; components: any[] } {
   const actor = bs[side];
+  const opponent = bs[side === 'p1' ? 'p2' : 'p1'];
+  const timer = Math.max(0, Math.ceil((bs.deadlineAt - Date.now()) / 1000));
   const selectedLines = actor.selected.length
     ? actor.selected.map((idxText, n) => {
         const chip = actor.hand[Number(idxText)]?.id;
@@ -692,93 +712,83 @@ function buildPrivateHandControls(bs: PvpBattle, side: SideKey): { embed: EmbedB
       }).join('\n')
     : '—';
 
+  const statusLine = bs.isOver
+    ? '**Battle End**'
+    : `**Round ${bs.round}** • ${timer}s to lock`;
+
   const embed = new EmbedBuilder()
-    .setTitle(`Your PvP Hand — Round ${bs.round}`)
+    .setTitle(`PvP Combat — ${actor.username}.EXE`)
     .setDescription([
+      statusLine,
+      '',
+      `**${actor.username}.EXE**`,
       `HP: **${actor.hp}/${actor.hpMax}**`,
       `Status: ${statusSummary(actor.status) || '—'}`,
       `Locked: **${actor.locked ? 'Yes' : 'No'}**`,
       '',
-      `**Selected Chips (${actor.selected.length}/3)**`,
+      '**VS**',
+      '',
+      `**${opponent.username}.EXE**`,
+      `HP: **${opponent.hp}/${opponent.hpMax}**`,
+      `Status: ${statusSummary(opponent.status) || '—'}`,
+      `Locked: **${opponent.locked ? 'Yes' : 'No'}**`,
+      '',
+      bs.lastLog.length ? `**Combat Log**\n${bs.lastLog.slice(-12).join('\n')}` : 'No combat has resolved yet.',
+      '',
+      `**Your Selected Chips (${actor.selected.length}/3)**`,
       selectedLines,
-    ].join('\n'));
+    ].join('\n'))
+    .setFooter({ text: bs.isOver ? 'PvP duel complete.' : 'Use Refresh Combat if your opponent resolved the round.' });
 
   if (actor.avatarUrl) embed.setThumbnail(actor.avatarUrl);
 
-  if (actor.locked) return { embed, components: [] };
+  if (bs.isOver) return { embed, components: [] };
 
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(`pvp:pick:${bs.id}`)
-    .setPlaceholder(`Select up to 3 chips (${actor.selected.length}/3)`)
-    .setMinValues(0)
-    .setMaxValues(Math.min(3, actor.hand.length));
+  const components: any[] = [];
 
-  const options = actor.hand.map((c, idx) => {
-    const chip: any = getChipById(c.id) || {};
-    const bits: string[] = [];
-    if (chip.element && String(chip.element).toLowerCase() !== 'neutral') bits.push(String(chip.element));
-    if (Number(chip.power ?? 0) > 0) bits.push(`P${chip.power}${Number(chip.hits ?? 1) > 1 ? `×${chip.hits}` : ''}`);
-    if (chip.effects) bits.push(String(chip.effects).replace(/\s+/g, ' ').trim());
-    return {
-      label: formatChipName(chip || c.id).slice(0, 100),
-      description: bits.join(' • ').slice(0, 100) || undefined,
-      value: String(idx),
-      default: actor.selected.includes(String(idx)),
-    };
-  });
-  if (options.length) select.addOptions(options);
+  if (!actor.locked) {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(`pvp:pick:${bs.id}`)
+      .setPlaceholder(`Select up to 3 chips (${actor.selected.length}/3)`)
+      .setMinValues(0)
+      .setMaxValues(Math.min(3, actor.hand.length));
 
-  const rowSelect = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
-  const rowButton = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`pvp:lock:${bs.id}`).setStyle(ButtonStyle.Success).setLabel('Lock Turn'),
-  );
+    const options = actor.hand.map((c, idx) => {
+      const chip: any = getChipById(c.id) || {};
+      const bits: string[] = [];
+      if (chip.element && String(chip.element).toLowerCase() !== 'neutral') bits.push(String(chip.element));
+      if (Number(chip.power ?? 0) > 0) bits.push(`P${chip.power}${Number(chip.hits ?? 1) > 1 ? `×${chip.hits}` : ''}`);
+      if (chip.effects) bits.push(String(chip.effects).replace(/\s+/g, ' ').trim());
+      return {
+        label: formatChipName(chip || c.id).slice(0, 100),
+        description: bits.join(' • ').slice(0, 100) || undefined,
+        value: String(idx),
+        default: actor.selected.includes(String(idx)),
+      };
+    });
+    if (options.length) select.addOptions(options);
+    components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select));
+  }
 
-  return { embed, components: [rowSelect, rowButton] };
+  const buttons: ButtonBuilder[] = [];
+  if (!actor.locked) {
+    buttons.push(new ButtonBuilder().setCustomId(`pvp:lock:${bs.id}`).setStyle(ButtonStyle.Success).setLabel('Lock Turn'));
+  }
+  buttons.push(new ButtonBuilder().setCustomId(`pvp:refresh:${bs.id}`).setStyle(ButtonStyle.Secondary).setLabel('Refresh Combat'));
+  buttons.push(new ButtonBuilder().setCustomId(`pvp:forfeit:${bs.id}`).setStyle(ButtonStyle.Danger).setLabel('Forfeit'));
+  components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons));
+
+  return { embed, components };
 }
 
 
-async function updatePublicBattleMessage(bs: PvpBattle, ix?: ButtonInteraction) {
-  const payload = { embeds: [renderPvpEmbed(bs)], components: publicBattleComponents(bs) };
-
-  // Private hand interactions are ephemeral, so ix.message is usually NOT the
-  // public PvP battle message. Always edit the stored public message first.
-  if (await tryEditMessage(bs.message, payload)) return;
-
-  // If the stored Message object is stale, fetch the public message directly
-  // from the channel/message id captured when the challenge was accepted.
-  const client = bs.client || ix?.client;
-  if (client && bs.channelId && bs.messageId) {
-    try {
-      const channel: any = await client.channels.fetch(bs.channelId);
-      const msg = await channel?.messages?.fetch?.(bs.messageId);
-      if (msg) {
-        bs.message = msg;
-        if (await tryEditMessage(msg, payload)) return;
-      }
-    } catch (err) {
-      console.error('PvP public message fetch/edit failed:', err);
-    }
-  }
-
-  // Last resort: only edit ix.message when the interaction came from the
-  // public duel message itself. Never transform an ephemeral hand message into
-  // the public combat UI.
-  if (ix?.message?.id && ix.message.id === bs.messageId) {
-    if (await tryEditMessage(ix.message, payload)) return;
-  }
-
-  console.error(`PvP public battle message update failed for battle=${bs.id}, channel=${bs.channelId}, message=${bs.messageId}`);
+async function updatePublicBattleMessage(_bs: PvpBattle, _ix?: ButtonInteraction) {
+  // Phase 5.3 intentionally does not use the public message for combat progression.
+  // PvP combat advances through each player's private ephemeral combat panel.
 }
 
-async function tryEditMessage(message: any, payload: any): Promise<boolean> {
-  if (!message?.edit) return false;
-  try {
-    await message.edit(payload);
-    return true;
-  } catch (err) {
-    console.error('PvP message edit failed:', err);
-    return false;
-  }
+async function tryEditMessage(_message: any, _payload: any): Promise<boolean> {
+  return false;
 }
 
 
