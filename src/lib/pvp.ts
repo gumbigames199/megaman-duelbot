@@ -393,10 +393,12 @@ async function forfeitPlayer(ix: ButtonInteraction, battleId: string) {
     await ix.reply({ ephemeral: true, content: 'This is not your duel.' });
     return;
   }
+  const loser = bs[side];
   const winner = side === 'p1' ? bs.p2 : bs.p1;
+  loser.hp = 0;
   bs.isOver = true;
   clearTimer(bs.timer);
-  bs.lastLog = [`${bs[side].username}.EXE forfeited.`, `${winner.username}.EXE wins.`];
+  bs.lastLog = [`${loser.username}.EXE forfeited.`, `${winner.username}.EXE wins.`];
   scheduleBattleCleanup(bs);
   await announcePublicIfComplete(bs).catch(console.error);
 
@@ -720,13 +722,6 @@ function buildPrivateCombatControls(bs: PvpBattle, side: SideKey): { embed: Embe
   const actor = bs[side];
   const opponent = bs[side === 'p1' ? 'p2' : 'p1'];
   const timer = Math.max(0, Math.ceil((bs.deadlineAt - Date.now()) / 1000));
-  const selectedLines = actor.selected.length
-    ? actor.selected.map((idxText, n) => {
-        const chip = actor.hand[Number(idxText)]?.id;
-        return `${n + 1}. ${formatChipName(chip || idxText)}`;
-      }).join('\n')
-    : '—';
-
   const statusLine = bs.isOver
     ? '**Battle End**'
     : `**Round ${bs.round}** • ${timer}s to lock`;
@@ -748,12 +743,9 @@ function buildPrivateCombatControls(bs: PvpBattle, side: SideKey): { embed: Embe
       `Status: ${statusSummary(opponent.status) || '—'}`,
       `Locked: **${opponent.locked ? 'Yes' : 'No'}**`,
       '',
-      bs.lastLog.length ? `**Combat Log**\n${bs.lastLog.slice(-12).join('\n')}` : 'No combat has resolved yet.',
-      '',
-      `**Your Selected Chips (${actor.selected.length}/3)**`,
-      selectedLines,
+      bs.lastLog.length ? `**Combat Log**\n${bs.lastLog.slice(-16).join('\n')}` : 'No combat has resolved yet.',
     ].join('\n'))
-    .setFooter({ text: bs.isOver ? 'PvP duel complete.' : 'Use Refresh Combat if your opponent resolved the round.' });
+    .setFooter({ text: bs.isOver ? 'PvP duel complete.' : actor.locked ? 'Locked in. Waiting for opponent.' : 'Select up to 3 chips, then lock your turn.' });
 
   if (actor.avatarUrl) embed.setThumbnail(actor.avatarUrl);
 
@@ -839,11 +831,20 @@ async function broadcastPrivateCombatPanelsFromTimer(bs: PvpBattle) {
 
 async function announcePublicIfComplete(bs: PvpBattle) {
   if (!bs.isOver) return;
+
+  const winner = winnerForBattle(bs);
   const summary = bs.lastLog.slice(-10).join('\n') || 'PvP duel complete.';
   const embed = new EmbedBuilder()
-    .setTitle('🏁 PvP Duel Complete')
-    .setDescription(summary)
+    .setTitle(winner ? `🏆 Winner: ${winner.username}.EXE` : '🏁 PvP Duel Complete — Draw')
+    .setDescription([
+      winner ? `**${winner.username}.EXE** wins the NetBattle.` : '**Double deletion.** The duel ends in a draw.',
+      '',
+      '**Final Combat Log**',
+      summary,
+    ].join('\n'))
     .setFooter({ text: 'PvP alpha: no rewards are granted.' });
+
+  if (winner?.avatarUrl) embed.setThumbnail(winner.avatarUrl);
 
   try {
     if (bs.message?.reply) {
@@ -862,6 +863,18 @@ async function announcePublicIfComplete(bs: PvpBattle) {
   } catch (err) {
     console.error('PvP public completion send failed:', err);
   }
+}
+
+function winnerForBattle(bs: PvpBattle): PvpPlayerState | null {
+  if (bs.p1.hp > 0 && bs.p2.hp <= 0) return bs.p1;
+  if (bs.p2.hp > 0 && bs.p1.hp <= 0) return bs.p2;
+
+  const p1Win = bs.lastLog.some(line => line.includes(`${bs.p1.username}.EXE wins.`));
+  const p2Win = bs.lastLog.some(line => line.includes(`${bs.p2.username}.EXE wins.`));
+  if (p1Win && !p2Win) return bs.p1;
+  if (p2Win && !p1Win) return bs.p2;
+
+  return null;
 }
 
 function scheduleBattleCleanup(bs: PvpBattle) {
