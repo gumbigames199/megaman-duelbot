@@ -176,11 +176,11 @@ Sword_S	Sword	Neutral	S	10	80	1	0.98	Sword		Sword attack	https://static.wikia.no
 Sword_STAR	Sword	Neutral	*	10	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/7/70/BN6Chip070.png/revision/latest?cb=20111231223046	1	1500	1	0	4	Sword	*	E,L,S,*
 WideSwrd_E	WideSwrd	Neutral	E	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	E	E,L,s,*
 WideSwrd_L	WideSwrd	Neutral	L	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	L	E,L,s,*
-WideSwrd_S	WideSwrd	Neutral	s	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	s	E,L,s,*
+WideSwrd_S	WideSwrd	Neutral	S	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	s	E,L,s,*
 WideSwrd_STAR	WideSwrd	Neutral	*	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	*	E,L,s,*
 LongSwrd_E	LongSwrd	Neutral	E	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	0	0	0	4	LongSwrd	E	E,L,s,*
 LongSwrd_L	LongSwrd	Neutral	L	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	0	0	0	4	LongSwrd	L	E,L,s,*
-LongSwrd_S	LongSwrd	Neutral	s	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	0	0	0	4	LongSwrd	s	E,L,s,*
+LongSwrd_S	LongSwrd	Neutral	S	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	0	0	0	4	LongSwrd	s	E,L,s,*
 LongSwrd_STAR	LongSwrd	Neutral	*	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	0	0	0	4	LongSwrd	*	E,L,s,*
 StepSwrd_B	StepSwrd	Neutral	B	28	160	1	1	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/b/b5/BN6Chip080.png/revision/latest?cb=20111231223306	5	0	0	0	4	StepSwrd	B	B,L,P
 StepSwrd_L	StepSwrd	Neutral	L	28	160	1	1	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/b/b5/BN6Chip080.png/revision/latest?cb=20111231223306	5	0	0	0	4	StepSwrd	L	B,L,P
