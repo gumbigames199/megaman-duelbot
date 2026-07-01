@@ -699,14 +699,26 @@ function buildPrivateHandControls(bs: PvpBattle, side: SideKey): { embed: EmbedB
 
 async function updatePublicBattleMessage(bs: PvpBattle, ix?: ButtonInteraction) {
   const payload = { embeds: [renderPvpEmbed(bs)], components: publicBattleComponents(bs) };
-  const message = ix?.message || bs.message;
-  if (message?.edit) {
-    await message.edit(payload).catch(async () => {
-      if (ix && !ix.replied && !ix.deferred) await ix.update(payload).catch(() => {});
+
+  // PvP chip selection and Lock Turn are handled through ephemeral private hand
+  // messages. In those cases ix.message is the player's private controls, not
+  // the public duel embed. Always prefer the stored public battle message so
+  // that both players see the combat round advance immediately after lock-in.
+  const publicMessage = bs.message;
+  if (publicMessage?.edit) {
+    await publicMessage.edit(payload).catch(async () => {
+      // Only fall back to the interaction message when no public message edit is
+      // available. Avoid editing ephemeral hand controls into the public battle UI.
+      if (ix && !ix.replied && !ix.deferred && ix.message?.edit) {
+        await ix.message.edit(payload).catch(() => {});
+      }
     });
     return;
   }
-  if (ix && !ix.replied && !ix.deferred) await ix.update(payload).catch(() => {});
+
+  if (ix && !ix.replied && !ix.deferred && ix.message?.edit) {
+    await ix.message.edit(payload).catch(() => {});
+  }
 }
 
 function applyStartTicks(p: PvpPlayerState, log: string[]) {
