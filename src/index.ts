@@ -26,6 +26,7 @@ import * as Leaderboard from './commands/leaderboard';
 import * as Chip from './commands/chip';
 import * as VirusDex from './commands/virusdex';
 import * as JackIn from './commands/jack_in';
+import * as PvP from './commands/pvp';
 import * as Battle from './lib/battle';
 
 const TOKEN = process.env.DISCORD_TOKEN!;
@@ -52,6 +53,7 @@ const commands = [
   Chip.data,
   VirusDex.data,
   JackIn.data,
+  PvP.data,
 ].map((c: any) => c.toJSON());
 
 async function registerCommands() {
@@ -172,6 +174,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.commandName === 'chip') { await Chip.execute(ix); return; }
       if (ix.commandName === 'virusdex') { await VirusDex.execute(ix); return; }
       if (ix.commandName === 'jack_in') { await JackIn.execute(ix); return; }
+      if (ix.commandName === 'pvp') { await PvP.execute(ix); return; }
       return;
     }
 
@@ -182,6 +185,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'folder:addSelect') { await Folder.onAddSelect(ix); return; }
       if (ix.customId === 'folder:removeSelect') { await Folder.onRemoveSelect(ix); return; }
       if (ix.customId === 'shop:select') { await ShopCmd.handleShopSelect(ix); return; }
+      if (ix.customId.startsWith('pvp:pick:')) { await PvP.onSelect(ix); return; }
       if (ix.customId.startsWith('pick:')) { await Battle.handlePick(ix); return; }
     }
 
@@ -201,6 +205,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'folder:removeOpen') { await Folder.onOpenRemove(ix); return; }
       if (ix.customId === 'folder:save') { await Folder.onSave(ix); return; }
 
+      if (ix.customId.startsWith('pvp:')) { await PvP.onButton(ix); return; }
       if (ix.customId.startsWith('shop:')) { await ShopCmd.handleShopButton(ix); return; }
       if (ix.customId.startsWith('lock:')) { await Battle.handleLock(ix); return; }
       if (ix.customId.startsWith('run:')) { await Battle.handleRun(ix); return; }
@@ -210,7 +215,7 @@ client.on('interactionCreate', async (ix) => {
   }
 });
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`🤖 Logged in as ${client.user?.tag}`);
   await registerCommands().catch(e => console.error('registerCommands', e));
 });
