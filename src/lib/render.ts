@@ -23,16 +23,41 @@ export function buildBattleHeaderEmbed(opts: { virusId: string; displayName?: st
   return e;
 }
 
+
+type BattleHandRenderItem = {
+  id: string;
+  name: string;
+  power?: number;
+  hits?: number;
+  element?: string;
+  effects?: string;
+  description?: string;
+};
+
+function selectedChipLines(hand: BattleHandRenderItem[], selectedIds: string[]): string[] {
+  const selected = (selectedIds || [])
+    .map((id) => hand.find((c) => c.id === id))
+    .filter((c): c is BattleHandRenderItem => !!c);
+
+  return selected.map((c, i) => `${i + 1}. ${c.name}`);
+}
+
+function selectedChipBlock(hand: BattleHandRenderItem[], selectedIds: string[]): string | undefined {
+  const lines = selectedChipLines(hand, selectedIds);
+  if (!lines.length) return undefined;
+  return [`**Selected Chips (${lines.length}/3):**`, ...lines].join('\n');
+}
+
 /** First screen of a battle with a single multi-select (max 3) + Lock/Run buttons. */
 export function renderBattleScreen(args: {
   battleId: string;
   enemy: EnemyRef;
   hp: { playerHP: number; playerHPMax: number; enemyHP: number; enemyHPMax: number };
-  hand: Array<{ id: string; name: string; power?: number; hits?: number; element?: string; effects?: string; description?: string }>;
+  hand: BattleHandRenderItem[];
   selectedIds: string[];
   status?: { player?: string; enemy?: string };
 }) {
-  const { battleId, enemy, hp, hand, status } = args;
+  const { battleId, enemy, hp, hand, selectedIds, status } = args;
 
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
@@ -41,8 +66,9 @@ export function renderBattleScreen(args: {
       status?.player ? `**Your Status:** ${status.player}` : undefined,
       status?.enemy ? `**Enemy Status:** ${status.enemy}` : undefined,
       '',
+      selectedChipBlock(hand, selectedIds),
       hand.length ? '**Choose up to 3 chips**' : '📁 Your hand is empty.',
-    ].join('\n')
+    ].filter((line) => line !== undefined).join('\n')
   );
 
   const select = new StringSelectMenuBuilder()
@@ -77,11 +103,11 @@ export function renderRoundResultWithNextHand(args: {
   enemy: EnemyRef;
   hp: { playerHP: number; playerHPMax: number; enemyHP: number; enemyHPMax: number };
   round: { playerLogLines: string[]; enemyLogLines: string[] };
-  nextHand: Array<{ id: string; name: string; power?: number; hits?: number; element?: string; effects?: string; description?: string }>;
+  nextHand: BattleHandRenderItem[];
   selectedIds: string[];
   status?: { player?: string; enemy?: string };
 }) {
-  const { battleId, enemy, hp, round, nextHand, status } = args;
+  const { battleId, enemy, hp, round, nextHand, selectedIds, status } = args;
 
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
@@ -94,6 +120,7 @@ export function renderRoundResultWithNextHand(args: {
       round.playerLogLines.join('\n'),
       round.enemyLogLines.length ? '\n🟥 **Enemy turn**' : undefined,
       round.enemyLogLines.join('\n'),
+      selectedChipBlock(nextHand, selectedIds),
       '\n**Next hand:** pick up to 3',
     ].filter(Boolean).join('\n')
   );

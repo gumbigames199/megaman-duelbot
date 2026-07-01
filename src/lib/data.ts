@@ -306,6 +306,78 @@ export function listRegions() { return Object.values(getBundle().regions); }
 export function listChips()   { return Object.values(getBundle().chips); }
 export function listViruses() { return Object.values(getBundle().viruses); }
 
+export function chipBaseId(cOrId: any): string {
+  const c = typeof cOrId === 'string' || typeof cOrId === 'number'
+    ? getChipById(cOrId)
+    : cOrId;
+  const raw = c?.base_id ?? c?.baseId ?? c?.base ?? c?.name ?? c?.id ?? cOrId;
+  return normStr(raw);
+}
+
+export function chipCode(cOrId: any): string {
+  const c = typeof cOrId === 'string' || typeof cOrId === 'number'
+    ? getChipById(cOrId)
+    : cOrId;
+  return normStr(c?.code ?? c?.letter ?? c?.letters);
+}
+
+export function formatChipName(cOrId: any): string {
+  const c = typeof cOrId === 'string' || typeof cOrId === 'number'
+    ? getChipById(cOrId)
+    : cOrId;
+  if (!c) return String(cOrId ?? '');
+  const name = normStr(c.name ?? c.id);
+  const code = chipCode(c);
+  return code ? `${name} [${code}]` : name;
+}
+
+export function listChipVariants(baseOrName: string | number): any[] {
+  const key = normStr(baseOrName);
+  if (!key) return [];
+  const low = key.toLowerCase();
+  return listChips().filter((c: any) => {
+    if (!c || chipIsUpgrade(c)) return false;
+    const id = normLower(c.id);
+    const base = normLower(c.base_id ?? c.baseId ?? c.name);
+    const name = normLower(c.name);
+    return id === low || base === low || name === low;
+  });
+}
+
+export function resolveChipIdLoose(token: string | number): string | null {
+  const raw = normStr(token);
+  if (!raw) return null;
+
+  if (getBundle().chips[raw]) return raw;
+  const low = raw.toLowerCase();
+
+  for (const c of listChips() as any[]) {
+    if (normLower(c.id) === low) return String(c.id);
+  }
+
+  const variants = listChipVariants(raw);
+  if (variants.length) return String((variants[0] as any).id);
+
+  return null;
+}
+
+export function resolveRandomChipVariant(token: string | number, rng: () => number = Math.random): string | null {
+  const raw = normStr(token);
+  if (!raw) return null;
+
+  const exact = getChipById(raw) as any;
+  if (exact) return String(exact.id ?? raw);
+
+  const variants = listChipVariants(raw);
+  if (!variants.length) return null;
+  const i = Math.max(0, Math.min(variants.length - 1, Math.floor(rng() * variants.length)));
+  return String((variants[i] as any).id);
+}
+
+export function resolveChipForGrant(token: string | number, rng: () => number = Math.random): string | null {
+  return resolveRandomChipVariant(token, rng) ?? resolveChipIdLoose(token);
+}
+
 /* ---------------------------------------------
  * Region resolution (id or name/label)
  * -------------------------------------------*/
@@ -415,13 +487,24 @@ export function resolveShopInventory(region_id: string): ResolvedShopItem[] {
 
   const out: ResolvedShopItem[] = [];
   for (const s of rows) {
-    const chip = getChipById((s as any).item_id);
+    const rawItemId = String((s as any).item_id ?? '').trim();
+    if (!rawItemId) continue;
+
+    const exact = getChipById(rawItemId) as any;
+    const variants = exact ? [] : listChipVariants(rawItemId);
+    const chip = exact || variants[0];
     if (!chip) continue;
+
+    const isRandomBase = !exact && variants.length > 0;
+    const display = isRandomBase
+      ? `${(chip as any).name ?? rawItemId} [Random Code]`
+      : formatChipName(chip);
 
     out.push({
       region_id: String(rid),
-      item_id: String((chip as any).id ?? (s as any).item_id),
-      name: (chip as any).name ?? String((chip as any).id ?? (s as any).item_id),
+      // Keep base ids intact for random-code shop items; grantChip() resolves them.
+      item_id: isRandomBase ? rawItemId : String((chip as any).id ?? rawItemId),
+      name: display,
       zenny_price: priceForShopItem(s, chip),
       is_upgrade: chipIsUpgrade(chip),
       chip,

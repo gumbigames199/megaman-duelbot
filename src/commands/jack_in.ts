@@ -12,7 +12,7 @@ import {
 } from 'discord.js';
 
 import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
-import { getBundle, resolveShopInventory, listVirusesForRegionZone } from '../lib/data';
+import { getBundle, resolveShopInventory, listVirusesForRegionZone, formatChipName } from '../lib/data';
 import {
   getPlayer, setRegion, setZone, getZone,
   addZenny, spendZenny, grantChip,
@@ -334,7 +334,7 @@ export async function onOpenShop(ix: ButtonInteraction) {
 
   const options = items
     .map((it) => {
-      const lbl = `${it.name}${(it.chip as any).letters ? ` [${(it.chip as any).letters}]` : ''} — ${it.zenny_price}z`;
+      const lbl = `${it.name} — ${it.zenny_price}z`;
       return { label: lbl.slice(0, 100), value: it.item_id };
     })
     .slice(0, 25);
@@ -389,7 +389,7 @@ export async function onShopSelect(ix: StringSelectMenuInteraction) {
   const price = item.zenny_price;
 
   const embed = new EmbedBuilder()
-    .setTitle(c.name || id)
+    .setTitle(item.name || formatChipName(c || id))
     .setDescription(`${c.description || '—'}\n\nPrice: **${price}z**`)
     .setThumbnail(c.image_url || (c as any).image || null);
 
@@ -402,9 +402,9 @@ export async function onShopSelect(ix: StringSelectMenuInteraction) {
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
         new StringSelectMenuBuilder()
           .setCustomId('jackin:shopSelect')
-          .setPlaceholder(`Selected: ${c.name || id}`)
+          .setPlaceholder(`Selected: ${item.name || formatChipName(c || id)}`)
           .setMinValues(0).setMaxValues(1)
-          .addOptions([{ label: `${c.name || id} — ${price}z`, value: id }]),
+          .addOptions([{ label: `${item.name || formatChipName(c || id)} — ${price}z`.slice(0, 100), value: id }]),
       ),
       new ActionRowBuilder<ButtonBuilder>().addComponents(buy, exit),
     ],

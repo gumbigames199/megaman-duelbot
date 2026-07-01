@@ -1,5 +1,11 @@
 // src/lib/pas.ts
-import { getBundle, getChipById } from './data';
+import {
+  chipBaseId,
+  chipCode,
+  getBundle,
+  getChipById,
+  resolveChipIdLoose,
+} from './data';
 import type { ProgramAdvanceRow } from './types';
 
 export type ProgramAdvanceMatch = {
@@ -11,16 +17,14 @@ export type ProgramAdvanceMatch = {
   description?: string;
 };
 
-/**
- * Back-compat helper: returns only the replacement chip id when a PA matches.
- */
+/** Back-compat helper: returns only the replacement chip id when a PA matches. */
 export function detectPA(chosenIds: string[]): string | null {
   return detectPAResult(chosenIds)?.result_chip_id ?? null;
 }
 
 /**
- * Collapse the chosen chips into a Program Advance when the selected chip multiset
- * satisfies a row in program_advances.tsv.
+ * Collapse selected exact chip variants into a Program Advance when their base chip
+ * names and codes satisfy a row in program_advances.tsv.
  */
 export function detectPAResult(chosenIds: string[]): ProgramAdvanceMatch | null {
   const normalizedChosen = chosenIds.map(id => String(id ?? '').trim()).filter(Boolean);
@@ -30,7 +34,7 @@ export function detectPAResult(chosenIds: string[]): ProgramAdvanceMatch | null 
   const list = Object.values((b as any).programAdvances || {}) as ProgramAdvanceRow[];
   if (!list.length) return null;
 
-  const chosenBag = makeBag(normalizedChosen);
+  const chosenBaseBag = makeBag(normalizedChosen.map(baseForToken));
 
   for (const pa of list) {
     const required = String((pa as any).required_chip_ids ?? (pa as any).parts ?? '')
@@ -40,15 +44,17 @@ export function detectPAResult(chosenIds: string[]): ProgramAdvanceMatch | null 
     if (!required.length) continue;
     if (required.length !== normalizedChosen.length) continue;
 
-    const resultId = String((pa as any).result_chip_id ?? '').trim();
+    const resultRaw = String((pa as any).result_chip_id ?? '').trim();
+    const resultId = getChipById(resultRaw) ? resultRaw : resolveChipIdLoose(resultRaw);
     if (!resultId || !getChipById(resultId)) continue;
 
-    if (!bagEquals(chosenBag, makeBag(required))) continue;
+    const requiredBaseBag = makeBag(required.map(baseForToken));
+    if (!bagEquals(chosenBaseBag, requiredBaseBag)) continue;
     if (!lettersSatisfied(normalizedChosen, String((pa as any).required_letters ?? '').trim())) continue;
 
     return {
       id: String((pa as any).id || resultId),
-      name: String((pa as any).name || resultId),
+      name: String((pa as any).name || resultRaw || resultId),
       result_chip_id: resultId,
       required_chip_ids: required,
       required_letters: String((pa as any).required_letters ?? '').trim(),
@@ -57,6 +63,12 @@ export function detectPAResult(chosenIds: string[]): ProgramAdvanceMatch | null 
   }
 
   return null;
+}
+
+function baseForToken(token: string): string {
+  const chip = getChipById(token) as any;
+  if (chip) return chipBaseId(chip) || String(chip.name ?? chip.id ?? token);
+  return String(token ?? '').trim();
 }
 
 function makeBag(ids: string[]): Map<string, number> {
@@ -74,20 +86,16 @@ function bagEquals(a: Map<string, number>, b: Map<string, number>): boolean {
 function lettersSatisfied(chosenIds: string[], requiredLettersRaw: string): boolean {
   const requiredLetters = requiredLettersRaw
     .split(/[,+| ]+/)
-    .map(s => s.trim())
+    .map(s => s.trim().toUpperCase())
     .filter(Boolean);
 
   if (!requiredLetters.length) return true;
   if (requiredLetters.includes('*')) return true;
 
-  const b = getBundle() as any;
   for (const chipId of chosenIds) {
-    const letters = String(b.chips?.[chipId]?.letters || '')
-      .split(/[,+| ]+/)
-      .map((x: string) => x.trim())
-      .filter(Boolean);
-
-    if (!letters.includes('*') && !requiredLetters.some(req => letters.includes(req))) return false;
+    const chip = getChipById(chipId) as any;
+    const code = chipCode(chip).toUpperCase();
+    if (code !== '*' && !requiredLetters.includes(code)) return false;
   }
   return true;
 }

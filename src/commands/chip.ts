@@ -14,7 +14,7 @@ import {
   inlineCode,
 } from 'discord.js';
 
-import { listChips } from '../lib/data';
+import { listChips, formatChipName, chipCode } from '../lib/data';
 
 export const data = new SlashCommandBuilder()
   .setName('chip')
@@ -60,7 +60,9 @@ export async function executeIndex(interaction: ChatInputCommandInteraction) {
       const name = (c.name ?? '').toLowerCase();
       const elem = ((c as any).element ?? '').toLowerCase();
       const eff  = ((c as any).effects ?? '').toLowerCase();
-      return name.includes(q) || elem.includes(q) || eff.includes(q);
+      const code = String((c as any).code ?? (c as any).letters ?? '').toLowerCase();
+      const base = String((c as any).base_id ?? '').toLowerCase();
+      return name.includes(q) || elem.includes(q) || eff.includes(q) || code.includes(q) || base.includes(q);
     });
   }
 
@@ -76,7 +78,7 @@ export async function executeIndex(interaction: ChatInputCommandInteraction) {
 
   const lines = slice.map((c) => {
     const parts: string[] = [];
-    parts.push(`**${c.name}** (${inlineCode(c.id)})`);
+    parts.push(`**${formatChipName(c)}** (${inlineCode(c.id)})`);
 
     const element = (c as any).element ? ` ${inlineCode(String((c as any).element))}` : '';
     const power   = Number.isFinite((c as any).power) ? ` P${(c as any).power}` : '';

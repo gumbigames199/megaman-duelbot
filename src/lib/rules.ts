@@ -9,43 +9,61 @@ export function typeMultiplier(att: Element | 'Neutral', def: Element | 'Neutral
   if (att === 'Neutral' || def === 'Neutral') return 1.0;
   const i = TYPE_ORDER.indexOf(att as Element);
   if (i < 0) return 1.0;
-  const loses = TYPE_ORDER[(i + 1) % 4]; // att beats -> loses for defender (super effective)
-  const beats = TYPE_ORDER[(i + 3) % 4]; // att is resisted by -> defender beats attacker
+  const loses = TYPE_ORDER[(i + 1) % 4];
+  const beats = TYPE_ORDER[(i + 3) % 4];
   if (def === loses) return 2.0;
   if (def === beats) return 0.5;
   return 1.0;
 }
 
+export type ChipRuleRef = {
+  id?: string;
+  name?: string;
+  base_id?: string;
+  baseId?: string;
+  code?: string;
+  letter?: string;
+  letters?: string;
+};
+
+function chipBase(c: ChipRuleRef): string {
+  return String(c.base_id ?? c.baseId ?? c.name ?? c.id ?? '').trim().toLowerCase();
+}
+
+function chipCodes(c: ChipRuleRef): Set<string> {
+  const raw = String(c.code ?? c.letter ?? c.letters ?? '').trim();
+  return new Set(
+    raw
+      .split(/[,+|; ]+/)
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean),
+  );
+}
+
 /**
- * Letter-rule validator (up to 3 chips):
- *  ✓ All same chip name/id, OR
- *  ✓ Share a common letter (case-insensitive), with '*' acting as wildcard.
+ * Battle Network style chip-selection rule for up to 3 chips:
+ *  - all selected chips share the same base chip name, OR
+ *  - all selected chips share one chip code, OR
+ *  - wildcard * can stand in for any shared code.
  */
-export function validateLetterRule(chips: Array<{ id: string; letters: string }>): boolean {
-  if (!chips || chips.length === 0) return true; // defend
+export function validateLetterRule(chips: ChipRuleRef[]): boolean {
+  if (!chips || chips.length === 0) return true;
   if (chips.length > 3) return false;
 
-  // Same-name rule
-  if (chips.every(c => c.id === chips[0].id)) return true;
+  const bases = chips.map(chipBase).filter(Boolean);
+  if (bases.length === chips.length && bases.every(b => b === bases[0])) return true;
 
-  // Build letter sets (uppercased), allow '*' wildcard
-  const letterSets = chips.map(c =>
-    new Set(
-      String(c.letters || '')
-        .split(',')
-        .map(s => s.trim().toUpperCase())
-        .filter(Boolean)
-    )
-  );
+  const codeSets = chips.map(chipCodes);
+  if (codeSets.some(s => s.size === 0)) return false;
 
-  // Try any shared non-wildcard letter
-  const candidates = [...letterSets[0]].filter(L => L !== '*');
-  for (const L of candidates) {
-    if (letterSets.every(set => set.has(L) || set.has('*'))) return true;
+  const concreteCandidates = new Set<string>();
+  for (const set of codeSets) {
+    for (const c of set) if (c !== '*') concreteCandidates.add(c);
   }
 
-  // Edge: all are wildcard-only
-  if (letterSets.every(set => set.size > 0 && [...set].every(L => L === '*'))) return true;
+  for (const code of concreteCandidates) {
+    if (codeSets.every(set => set.has(code) || set.has('*'))) return true;
+  }
 
-  return false;
+  return codeSets.every(set => set.has('*'));
 }

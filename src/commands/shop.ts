@@ -36,6 +36,7 @@ import {
   priceForShopItem,
   type ResolvedShopItem,
   getChipById,
+  formatChipName,
 } from '../lib/data';
 
 // -------------------------------

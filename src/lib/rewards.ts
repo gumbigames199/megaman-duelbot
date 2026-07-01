@@ -1,5 +1,5 @@
 // src/lib/rewards.ts
-import { getBundle, getVirusById } from './data';
+import { getBundle, getVirusById, resolveChipForGrant, formatChipName } from './data';
 import { addZenny, addXP, grantChip, getPlayer } from './db';
 
 /**
@@ -164,17 +164,7 @@ function rollDropsForVirus(virus_id: string): string[] {
   return picked ? [picked] : [];
 }
 
-function parseDropEntries(entries: string, b: any): ParsedDrop[] {
-  const chipsMap = (b as any).chips;
-  const chipsArr = Array.isArray((b as any).chips) ? (b as any).chips : null;
-
-  const hasChip = (id: string) => {
-    if (!id) return false;
-    if (chipsMap && typeof chipsMap === 'object' && !Array.isArray(chipsMap)) return !!chipsMap[id];
-    if (chipsArr) return chipsArr.some((c: any) => String(c?.id ?? c?.name ?? '').trim() === id);
-    return true; // if we can't verify, don't block
-  };
-
+function parseDropEntries(entries: string, _b: any): ParsedDrop[] {
   const out: ParsedDrop[] = [];
   const parts = entries
     .split(',')
@@ -185,7 +175,10 @@ function parseDropEntries(entries: string, b: any): ParsedDrop[] {
     const [idRaw, wRaw] = p.split(':').map(s => s?.trim());
     const id = String(idRaw ?? '').trim();
     if (!id) continue;
-    if (!hasChip(id)) continue;
+
+    // Exact variants and base chip names are both valid. grantChip() resolves base names
+    // into one random legal code variant when the reward is applied.
+    if (!resolveChipForGrant(id)) continue;
 
     let weight = 1;
     const n = Number(wRaw);

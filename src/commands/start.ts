@@ -6,7 +6,7 @@ import {
 } from 'discord.js';
 
 import { ensureStartUnlocked } from '../lib/unlock';
-import { getBundle } from '../lib/data';
+import { resolveChipForGrant } from '../lib/data';
 import {
   ensurePlayer,
   getPlayer,
@@ -39,10 +39,8 @@ export async function execute(ix: ChatInputCommandInteraction) {
     const starterText = (process.env.STARTER_CHIPS || '').trim() || 'Cannon,Cannon,Cannon,Cannon';
     const tokens = parseStarterChips(starterText);
     if (tokens.length) {
-      const { chips } = getBundle();
-      const nameToId = buildNameToIdIndex();
       for (const t of tokens) {
-        const id = resolveChipToken(t, chips, nameToId);
+        const id = resolveChipForGrant(t);
         if (id) {
           grantChip(userId, id, 1);
           granted += 1;
@@ -81,32 +79,4 @@ function parseStarterChips(text: string): string[] {
     .split(',')
     .map(s => s.trim())
     .filter(Boolean);
-}
-
-function buildNameToIdIndex(): Map<string, string> {
-  const { chips } = getBundle();
-  const map = new Map<string, string>();
-  for (const id of Object.keys(chips)) {
-    const c: any = chips[id] || {};
-    if (c.name) map.set(String(c.name).toLowerCase(), id);
-  }
-  return map;
-}
-
-function resolveChipToken(
-  token: string,
-  chips: Record<string, any>,
-  nameToId: Map<string, string>
-): string | null {
-  if (!token) return null;
-  if (chips[token]) return token;
-
-  const low = token.toLowerCase();
-  for (const id of Object.keys(chips)) {
-    if (id.toLowerCase() === low) return id;
-  }
-
-  const byName = nameToId.get(low);
-  if (byName && chips[byName]) return byName;
-  return null;
 }

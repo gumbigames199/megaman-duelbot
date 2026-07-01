@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 // NOTE: used only for chip-id normalization (no circular import back to db.ts)
-import { getChipById, listChips } from "./data";
+import { getChipById, listChips, resolveChipForGrant, resolveChipIdLoose } from "./data";
 
 // -------------------------------
 // Environment & Caps
@@ -320,10 +320,14 @@ function normalizeChipIdLocal(id: string): string {
   const raw = String(id ?? "").trim();
   if (!raw) return raw;
 
-  // already valid id?
+  // exact variant id or upgrade id
   if (getChipById(raw)) return raw;
 
-  // numeric index -> chips[row].id
+  // base chip/name -> random exact variant for grants, starters, drops, and shop buys
+  const grantId = resolveChipForGrant(raw);
+  if (grantId && getChipById(grantId)) return grantId;
+
+  // numeric index -> chips[row].id, kept for old local testing data
   if (/^\d+$/.test(raw)) {
     const idx = Number(raw);
     const chips = listChips() as any[];
@@ -333,10 +337,8 @@ function normalizeChipIdLocal(id: string): string {
     }
   }
 
-  // exact name match
-  const low = raw.toLowerCase();
-  const byName = (listChips() as any[]).find(c => String(c?.name ?? "").toLowerCase() === low);
-  if (byName && getChipById(String(byName.id))) return String(byName.id);
+  const loose = resolveChipIdLoose(raw);
+  if (loose && getChipById(loose)) return loose;
 
   return raw;
 }

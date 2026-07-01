@@ -19,7 +19,7 @@ import {
   maxCopiesForChip,
 } from '../lib/folder';
 import { getInventory, grantChip } from '../lib/db';
-import { getChipById, listChips, chipIsUpgrade } from '../lib/data';
+import { getChipById, chipIsUpgrade, formatChipName, resolveChipForGrant } from '../lib/data';
 
 export const data = new SlashCommandBuilder()
   .setName('folder')
@@ -32,7 +32,7 @@ function formatFolder(chips: string[]) {
   const lines: string[] = [];
   for (const [id, qty] of counts) {
     const c: any = getChipById(id) || {};
-    lines.push(`• ${c.name || String(id)} ×${qty}`);
+    lines.push(`• ${formatChipName(c || String(id))} ×${qty}`);
   }
   return lines.join('\n');
 }
@@ -84,7 +84,7 @@ export async function onOpenAdd(ix: ButtonInteraction) {
     })
     .filter(({ chip }) => chip && !chipIsUpgrade(chip))
     .map(({ row, chipId, chip }) => {
-      const name = chip.name || chipId;
+      const name = formatChipName(chip || chipId);
       const cap = maxCopiesForChip(chipId);
       return { label: `${name} (own ${row.qty}, cap ${cap})`.slice(0, 100), value: chipId };
     })
@@ -119,7 +119,7 @@ export async function onOpenRemove(ix: ButtonInteraction) {
   const options = folder.slice(0, 25).map((id, i) => {
     const chipId = String(id);
     const c: any = getChipById(chipId) || {};
-    const name = c.name || chipId;
+    const name = formatChipName(c || chipId);
     return { label: `${i + 1}. ${name}`.slice(0, 100), value: `${i}:${chipId}` };
   });
 
@@ -203,16 +203,7 @@ function parseStarterTokens(text: string): string[] {
 }
 
 function resolveChipToken(token: string): string | null {
-  if (!token) return null;
-  const byId = getChipById(token);
-  if (byId) return token;
-  const low = String(token).toLowerCase();
-  const byLow = getChipById(low);
-  if (byLow) return low;
-  for (const c of listChips() as any[]) {
-    if (String(c?.name || '').toLowerCase() === low) return c.id;
-  }
-  return null;
+  return resolveChipForGrant(token);
 }
 
 function grantStartersFromEnvIfAny(userId: string): number {

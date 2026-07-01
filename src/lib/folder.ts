@@ -4,7 +4,7 @@
 // - Per-chip copy caps via chips.tsv (max_copies) with sane defaults
 // - Validation helpers + convenience add/remaining funcs
 
-import { getBundle, chipIsUpgrade } from './data';
+import { getBundle, chipIsUpgrade, chipBaseId, formatChipName } from './data';
 import {
   listFolder as _listFolder,
   addToFolder as _addToFolder,
@@ -65,18 +65,29 @@ export function validateFolder(user_id: string, chips: string[]): { ok: boolean;
 
   // Per-chip caps (from TSV) and inventory sanity check (soft)
   const inv = new Map(listInventory(user_id).map(r => [r.chip_id, r.qty]));
-  const counts = new Map<string, number>();
-  for (const id of chips) counts.set(id, (counts.get(id) || 0) + 1);
+  const exactCounts = new Map<string, number>();
+  const baseCounts = new Map<string, number>();
+  for (const id of chips) {
+    const c: any = b.chips[id] || {};
+    const base = chipBaseId(c || id) || id;
+    exactCounts.set(id, (exactCounts.get(id) || 0) + 1);
+    baseCounts.set(base, (baseCounts.get(base) || 0) + 1);
+  }
 
-  for (const [id, qty] of counts) {
-    const cap = maxCopiesForChip(id);
-    if (qty > cap) {
-      return { ok: false, error: `Too many copies of ${displayName(id)}. Cap is ${cap}.` };
-    }
-    // If you only add via UI this is naturally enforced, but keep a friendly guard:
+  // Exact ownership check.
+  for (const [id, qty] of exactCounts) {
     const own = inv.get(id) ?? qty; // default assume ok if inventory not tracked
     if (qty > own) {
       return { ok: false, error: `You don't own enough copies of ${displayName(id)} (need ${qty}, have ${own}).` };
+    }
+  }
+
+  // BN-like copy cap is by base chip name, not by each code variant.
+  for (const [base, qty] of baseCounts) {
+    const representativeId = chips.find(id => chipBaseId(b.chips[id] || id) === base) || base;
+    const cap = maxCopiesForChip(representativeId);
+    if (qty > cap) {
+      return { ok: false, error: `Too many copies of ${displayName(representativeId)} variants. Cap is ${cap}.` };
     }
   }
 
@@ -119,10 +130,14 @@ export function tryAddToFolder(user_id: string, chip_id: string, qty = 1): {
   }
 
   const cap = maxCopiesForChip(chip_id);
-  const current = getFolder(user_id).filter(id => id === chip_id).length;
+  const base = chipBaseId(c || chip_id) || chip_id;
+  const current = getFolder(user_id).filter(id => {
+    const fc: any = b.chips[id] || {};
+    return (chipBaseId(fc || id) || id) === base;
+  }).length;
   const canAddOfThis = Math.max(0, cap - current);
   if (canAddOfThis <= 0) {
-    return { ok: false, added: 0, remaining: getFolderRemaining(user_id), cap, reason: `Reached cap of ${cap} for ${displayName(chip_id)}.` };
+    return { ok: false, added: 0, remaining: getFolderRemaining(user_id), cap, reason: `Reached cap of ${cap} for ${displayName(chip_id)} variants.` };
   }
 
   const free = getFolderRemaining(user_id);
@@ -149,5 +164,5 @@ function envInt(k: string, d: number): number {
 function displayName(id: string): string {
   const b = getBundle();
   const c: any = b.chips[id] || {};
-  return c.name || id;
+  return formatChipName(c || id);
 }

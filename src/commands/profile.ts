@@ -5,7 +5,7 @@ import {
   EmbedBuilder,
 } from 'discord.js';
 import { getPlayer, listInventory } from '../lib/db';
-import { getChipById, chipIsUpgrade } from '../lib/data';
+import { getChipById, chipIsUpgrade, formatChipName } from '../lib/data';
 
 export const data = new SlashCommandBuilder()
   .setName('profile')
@@ -29,7 +29,7 @@ function formatInventoryTop(userId: string, limit = 12) {
     // hide upgrades from the preview line
     .filter(({ chip }) => chip && !chipIsUpgrade(chip))
     // convert to "Name ×qty"
-    .map(({ chip, qty, rawId }) => `${chip?.name || rawId} ×${qty}`);
+    .map(({ chip, qty, rawId }) => `${formatChipName(chip || rawId)} ×${qty}`);
 
   if (!pretty.length) return '—';
   return pretty.slice(0, limit).join(' • ');

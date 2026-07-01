@@ -1,7 +1,7 @@
 // src/lib/battle.ts
 import { ButtonInteraction, StringSelectMenuInteraction } from "discord.js";
 
-import { getBundle, getChipById, getVirusById, listChips } from "./data";
+import { getBundle, getChipById, getVirusById, listChips, chipBaseId, chipCode, formatChipName } from "./data";
 import {
   renderBattleScreen,
   renderRoundResultWithNextHand,
@@ -168,8 +168,11 @@ export async function handlePick(ix: StringSelectMenuInteraction) {
     const chipId = bs.hand[idx]?.id ?? "";
     const chip: any = getChipById(chipId) || {};
     return {
-      id: String(chip?.name || chipId),
-      letters: String(chip?.letters || ""),
+      id: String(chip?.id || chipId),
+      name: String(chip?.name || chipId),
+      base_id: chipBaseId(chip),
+      code: chipCode(chip),
+      letters: chipCode(chip),
     };
   });
 
@@ -431,13 +434,11 @@ function renderBattle(bs: BattleState) {
 function toHandItems(hand: ChipRef[]): BattleHandItem[] {
   return hand.map((c, idx) => {
     const chip = getChipById(c.id) as any;
-    const baseName = chip?.name ?? c.id;
-    const letters = String(chip?.letters ?? "").trim();
     const elem = toElement(chip?.element);
 
     return {
       id: String(idx),
-      name: letters ? `${baseName} [${letters}]` : baseName,
+      name: formatChipName(chip || c.id),
       power: asNum(chip?.power),
       hits: asNum(chip?.hits),
       element: elem !== "Neutral" ? elem : undefined,
@@ -643,7 +644,7 @@ function executeChip(
     return opts.pendingAttackPlus ?? 0;
   }
 
-  const chipName = String(opts.displayName || chip.name || chipId);
+  const chipName = String(opts.displayName || formatChipName(chip) || chip.name || chipId);
   const effects = parseEffects(String(chip.effects ?? ""));
   const supportOnly = isSupportOnlyChip(chip, effects);
   let pendingAttackPlus = opts.pendingAttackPlus ?? 0;

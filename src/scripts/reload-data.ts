@@ -54,6 +54,8 @@ function main() {
 
   const regionIds = new Set<string>(regions.map((r: any) => String(r.id ?? '').trim()).filter(Boolean));
   const chipIds = new Set<string>(chips.map((c: any) => String(c.id ?? '').trim()).filter(Boolean));
+  const chipBaseIds = new Set<string>(chips.map((c: any) => String(c.base_id ?? c.name ?? c.id ?? '').trim()).filter(Boolean));
+  const validChipToken = (id: string) => chipIds.has(id) || chipBaseIds.has(id);
   const virusIds = new Set<string>(viruses.map((v: any) => String(v.id ?? '').trim()).filter(Boolean));
   const dropTableIds = new Set<string>(asArray(dropTables).map((d: any) => String(d.id ?? '').trim()).filter(Boolean));
 
@@ -86,7 +88,7 @@ function main() {
     }
   }
   for (const item of resolvedShopItems) {
-    if (item.item_id && !chipIds.has(String(item.item_id))) {
+    if (item.item_id && !validChipToken(String(item.item_id))) {
       report.errors.push(`Shop in region "${item.region_id}" references unknown chip "${item.item_id}".`);
     }
   }
@@ -95,17 +97,17 @@ function main() {
     const entries = String(dt.entries ?? '').split(',').map((t: string) => t.trim()).filter(Boolean);
     for (const entry of entries) {
       const chipId = entry.split(':')[0].trim();
-      if (chipId && !chipIds.has(chipId)) report.warnings.push(`Drop table "${dt.id}" references unknown chip "${chipId}".`);
+      if (chipId && !validChipToken(chipId)) report.warnings.push(`Drop table "${dt.id}" references unknown chip "${chipId}".`);
     }
   }
 
   for (const pa of programAdvances) {
     const id = String(pa.id || pa.name || '?');
     const result = String(pa.result_chip_id || '').trim();
-    if (result && !chipIds.has(result)) report.errors.push(`Program Advance "${id}" result_chip_id "${result}" is unknown.`);
+    if (result && !validChipToken(result)) report.errors.push(`Program Advance "${id}" result_chip_id "${result}" is unknown.`);
     const parts = String(pa.required_chip_ids || pa.parts || '').split(',').map((t: string) => t.trim()).filter(Boolean);
     if (!parts.length) report.warnings.push(`Program Advance "${id}" has no required_chip_ids.`);
-    for (const part of parts) if (!chipIds.has(part)) report.errors.push(`Program Advance "${id}" references unknown chip "${part}".`);
+    for (const part of parts) if (!validChipToken(part)) report.errors.push(`Program Advance "${id}" references unknown chip "${part}".`);
   }
 
   for (const m of missions) {
@@ -120,7 +122,7 @@ function main() {
     }
 
     for (const chipId of String(m.reward_chip_ids || '').split(',').map((t: string) => t.trim()).filter(Boolean)) {
-      if (!chipIds.has(chipId)) report.warnings.push(`Mission "${id}" rewards unknown chip "${chipId}".`);
+      if (!validChipToken(chipId)) report.warnings.push(`Mission "${id}" rewards unknown chip "${chipId}".`);
     }
   }
 
