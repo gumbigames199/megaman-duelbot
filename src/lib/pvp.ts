@@ -56,6 +56,7 @@ type PvpPlayerState = {
   locked: boolean;
   missedTurns: number;
   status: StatusState;
+  panelInteraction?: any;
 };
 
 type PvpChallenge = {
@@ -84,6 +85,7 @@ type PvpBattle = {
   lastLog: string[];
   message?: any;
   client?: any;
+  cleanupTimer?: NodeJS.Timeout;
 };
 
 const challenges = new Map<string, PvpChallenge>();
@@ -198,6 +200,7 @@ export async function handlePvpSelect(ix: StringSelectMenuInteraction) {
   }
 
   actor.selected = selected;
+  rememberPrivatePanel(bs, side, ix);
   const controls = buildPrivateCombatControls(bs, side);
   await ix.update({ embeds: [controls.embed], components: controls.components });
 }
@@ -252,8 +255,8 @@ async function acceptChallenge(ix: ButtonInteraction, challengeId: string) {
 
   await ix.update({ embeds: [renderPublicDuelStatusEmbed(bs)], components: publicBattleComponents(bs) });
   await ix.followUp({
-    ephemeral: true,
-    content: `Duel accepted. Use **Open Combat** to choose your chips privately. You have ${ROUND_SECONDS} seconds this round.`,
+    ephemeral: false,
+    content: `<@${ch.challengerId}> <@${ch.targetId}> Duel accepted. Use **Open Combat** to choose your chips privately. You have ${ROUND_SECONDS} seconds this round.`,
   });
 }
 
@@ -289,6 +292,7 @@ async function openHand(ix: ButtonInteraction, battleId: string) {
 
   const view = buildPrivateCombatControls(bs, side);
   await ix.reply({ ephemeral: true, embeds: [view.embed], components: view.components });
+  rememberPrivatePanel(bs, side, ix);
 }
 
 async function refreshCombat(ix: ButtonInteraction, battleId: string) {
@@ -303,6 +307,7 @@ async function refreshCombat(ix: ButtonInteraction, battleId: string) {
     return;
   }
 
+  rememberPrivatePanel(bs, side, ix);
   const view = buildPrivateCombatControls(bs, side);
   try {
     await ix.update({ embeds: [view.embed], components: view.components });
@@ -323,6 +328,8 @@ async function lockPlayer(ix: ButtonInteraction, battleId: string) {
     return;
   }
 
+  rememberPrivatePanel(bs, side, ix);
+
   const actor = bs[side];
   actor.locked = true;
 
@@ -330,6 +337,9 @@ async function lockPlayer(ix: ButtonInteraction, battleId: string) {
     clearTimer(bs.timer);
     try {
       resolveRoundAndAdvance(bs);
+      await broadcastPrivateCombatPanels(bs, side, ix);
+      await announcePublicIfComplete(bs).catch(console.error);
+      return;
     } catch (err: any) {
       console.error('resolveRoundAndAdvance error:', err);
       await ix.reply({ ephemeral: true, content: `PvP round failed to resolve: ${err?.message || String(err)}` });
@@ -340,6 +350,7 @@ async function lockPlayer(ix: ButtonInteraction, battleId: string) {
   const view = buildPrivateCombatControls(bs, side);
   await ix.update({ embeds: [view.embed], components: view.components });
 }
+
 
 
 async function manualResolveRound(ix: ButtonInteraction, battleId: string) {
@@ -359,10 +370,11 @@ async function manualResolveRound(ix: ButtonInteraction, battleId: string) {
   }
 
   try {
+    rememberPrivatePanel(bs, side, ix);
     clearTimer(bs.timer);
     resolveRoundAndAdvance(bs);
-    const view = buildPrivateCombatControls(bs, side);
-    await ix.update({ embeds: [view.embed], components: view.components });
+    await broadcastPrivateCombatPanels(bs, side, ix);
+    await announcePublicIfComplete(bs).catch(console.error);
   } catch (err: any) {
     console.error('manualResolveRound error:', err);
     await ix.reply({ ephemeral: true, content: `PvP round failed to resolve: ${err?.message || String(err)}` });
@@ -385,7 +397,8 @@ async function forfeitPlayer(ix: ButtonInteraction, battleId: string) {
   bs.isOver = true;
   clearTimer(bs.timer);
   bs.lastLog = [`${bs[side].username}.EXE forfeited.`, `${winner.username}.EXE wins.`];
-  battles.delete(bs.id);
+  scheduleBattleCleanup(bs);
+  await announcePublicIfComplete(bs).catch(console.error);
 
   if (ix.message?.id === bs.messageId) {
     await ix.update({
@@ -416,6 +429,8 @@ function startRoundTimer(bs: PvpBattle) {
   bs.timer = setTimeout(() => {
     try {
       resolveRoundAndAdvance(bs);
+      broadcastPrivateCombatPanelsFromTimer(bs).catch(console.error);
+      announcePublicIfComplete(bs).catch(console.error);
     } catch (err) {
       console.error('PvP timed round resolution failed:', err);
     }
@@ -443,7 +458,7 @@ function resolveRoundAndAdvance(bs: PvpBattle) {
     bs.isOver = true;
     const winner = bs.p1.hp > 0 ? bs.p1 : bs.p2.hp > 0 ? bs.p2 : null;
     bs.lastLog.push(winner ? `${winner.username}.EXE wins.` : 'Double deletion. The duel is a draw.');
-    battles.delete(bs.id);
+    scheduleBattleCleanup(bs);
     return;
   }
 
@@ -779,6 +794,79 @@ function buildPrivateCombatControls(bs: PvpBattle, side: SideKey): { embed: Embe
   components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons));
 
   return { embed, components };
+}
+
+
+function rememberPrivatePanel(bs: PvpBattle, side: SideKey, ix: any) {
+  bs[side].panelInteraction = ix;
+}
+
+async function broadcastPrivateCombatPanels(bs: PvpBattle, triggerSide: SideKey, triggerIx: ButtonInteraction | StringSelectMenuInteraction) {
+  for (const side of ['p1', 'p2'] as SideKey[]) {
+    const view = buildPrivateCombatControls(bs, side);
+    if (side === triggerSide) {
+      try {
+        await triggerIx.update({ embeds: [view.embed], components: view.components });
+      } catch {
+        try { await triggerIx.editReply({ embeds: [view.embed], components: view.components }); } catch {}
+      }
+      continue;
+    }
+
+    const panel = bs[side].panelInteraction;
+    if (!panel) continue;
+    try {
+      await panel.editReply({ embeds: [view.embed], components: view.components });
+    } catch (err) {
+      console.error(`PvP private panel update failed for ${side}:`, err);
+    }
+  }
+}
+
+
+async function broadcastPrivateCombatPanelsFromTimer(bs: PvpBattle) {
+  for (const side of ['p1', 'p2'] as SideKey[]) {
+    const panel = bs[side].panelInteraction;
+    if (!panel) continue;
+    const view = buildPrivateCombatControls(bs, side);
+    try {
+      await panel.editReply({ embeds: [view.embed], components: view.components });
+    } catch (err) {
+      console.error(`PvP timed private panel update failed for ${side}:`, err);
+    }
+  }
+}
+
+async function announcePublicIfComplete(bs: PvpBattle) {
+  if (!bs.isOver) return;
+  const summary = bs.lastLog.slice(-10).join('\n') || 'PvP duel complete.';
+  const embed = new EmbedBuilder()
+    .setTitle('🏁 PvP Duel Complete')
+    .setDescription(summary)
+    .setFooter({ text: 'PvP alpha: no rewards are granted.' });
+
+  try {
+    if (bs.message?.reply) {
+      await bs.message.reply({ embeds: [embed], components: [] });
+      return;
+    }
+  } catch (err) {
+    console.error('PvP public completion reply failed:', err);
+  }
+
+  try {
+    if (bs.client && bs.channelId) {
+      const channel = await bs.client.channels.fetch(bs.channelId);
+      if (channel?.isTextBased?.()) await channel.send({ embeds: [embed] });
+    }
+  } catch (err) {
+    console.error('PvP public completion send failed:', err);
+  }
+}
+
+function scheduleBattleCleanup(bs: PvpBattle) {
+  if (bs.cleanupTimer) return;
+  bs.cleanupTimer = setTimeout(() => battles.delete(bs.id), 10 * 60 * 1000);
 }
 
 
