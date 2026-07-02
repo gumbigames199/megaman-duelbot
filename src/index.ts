@@ -178,11 +178,19 @@ client.on('interactionCreate', async (ix) => {
       return;
     }
 
+
+    if (ix.isModalSubmit()) {
+      if (ix.customId === 'jackin:chipSearchModal') { await JackIn.onChipSearchModal(ix); return; }
+    }
+
     if (ix.isStringSelectMenu()) {
       if (ix.customId === 'jackin:selectRegion') { await JackIn.onSelectRegion(ix); return; }
       if (ix.customId === 'jackin:selectZone') { await JackIn.onSelectZone(ix); return; }
       if (ix.customId === 'jackin:selectTravelRegion') { await JackIn.onSelectTravelRegion(ix); return; }
       if (ix.customId === 'jackin:shopSelect') { await JackIn.onShopSelect(ix); return; }
+      if (ix.customId === 'jackin:dataVirusSelect') { await JackIn.onDataVirusSelect(ix); return; }
+      if (ix.customId === 'jackin:folderAddSelect') { await JackIn.onConfigFolderAddSelect(ix); return; }
+      if (ix.customId === 'jackin:folderRemoveSelect') { await JackIn.onConfigFolderRemoveSelect(ix); return; }
       if (ix.customId === 'folder:addSelect') { await Folder.onAddSelect(ix); return; }
       if (ix.customId === 'folder:removeSelect') { await Folder.onRemoveSelect(ix); return; }
       if (ix.customId === 'shop:select') { await ShopCmd.handleShopSelect(ix); return; }
@@ -196,6 +204,16 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:travelZone') { await JackIn.onTravelZone(ix); return; }
       if (ix.customId === 'jackin:encounter') { await JackIn.onEncounter(ix); return; }
       if (ix.customId === 'jackin:openShop') { await JackIn.onOpenShop(ix); return; }
+      if (ix.customId === 'jackin:openData') { await JackIn.onOpenData(ix); return; }
+      if (ix.customId === 'jackin:dataChip') { await JackIn.onDataChip(ix); return; }
+      if (ix.customId === 'jackin:dataChipAll') { await JackIn.onDataChipAll(ix); return; }
+      if (ix.customId === 'jackin:dataChipSearch') { await JackIn.onDataChipSearch(ix); return; }
+      if (ix.customId === 'jackin:dataVirus') { await JackIn.onDataVirus(ix); return; }
+      if (ix.customId === 'jackin:openConfig') { await JackIn.onOpenConfig(ix); return; }
+      if (ix.customId === 'jackin:configProfile') { await JackIn.onConfigProfile(ix); return; }
+      if (ix.customId === 'jackin:configFolder') { await JackIn.onConfigFolder(ix); return; }
+      if (ix.customId === 'jackin:configFolderAdd') { await JackIn.onConfigFolderAdd(ix); return; }
+      if (ix.customId === 'jackin:configFolderRemove') { await JackIn.onConfigFolderRemove(ix); return; }
       if (ix.customId === 'jackin:shopExit' || ix.customId === 'jackin:back') { await JackIn.onShopExit(ix); return; }
       if (ix.customId.startsWith('jackin:shopBuy:')) {
         const chipId = ix.customId.split(':')[2];

@@ -9,16 +9,22 @@ import {
   ButtonStyle,
   ButtonInteraction,
   EmbedBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ModalSubmitInteraction,
+  inlineCode,
 } from 'discord.js';
 
 import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
-import { getBundle, resolveShopInventory, listVirusesForRegionZone, formatChipName } from '../lib/data';
+import { getBundle, resolveShopInventory, listVirusesForRegionZone, formatChipName, listChips, chipCode, chipIsUpgrade, getChipById } from '../lib/data';
 import {
-  getPlayer, setRegion, setZone, getZone,
+  getPlayer, setRegion, setZone, getZone, listSeenViruses, getInventory,
   addZenny, spendZenny, grantChip,
   addHPMax, addATK, addDEF, addSPD, addACC, addEvasion, addCRIT,
 } from '../lib/db';
 import { startBattle } from '../lib/battle';
+import { getFolder, setFolder, validateFolder, MAX_FOLDER, maxCopiesForChip } from '../lib/folder';
 
 const JACK_GIF =
   process.env.JACK_IN_GIF_URL ||
@@ -114,15 +120,18 @@ export async function renderJackInHUD(
   const encounterBtn = new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter');
   const travelBtn    = new ButtonBuilder().setCustomId('jackin:openTravel').setStyle(ButtonStyle.Secondary).setLabel('Travel');
   const shopBtn      = new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Secondary).setLabel('Shop');
+  const dataBtn      = new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data');
+  const configBtn    = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config');
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(encounterBtn, travelBtn, shopBtn);
+  const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(encounterBtn, travelBtn, shopBtn);
+  const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(dataBtn, configBtn);
 
   if (ix.isChatInputCommand()) {
-    await ix.reply({ ephemeral: true, embeds: [embed], components: [row] });
+    await ix.reply({ ephemeral: true, embeds: [embed], components: [row1, row2] });
   } else if (ix.isButton()) {
-    await (ix as ButtonInteraction).update({ embeds: [embed], components: [row] });
+    await (ix as ButtonInteraction).update({ embeds: [embed], components: [row1, row2] });
   } else {
-    await (ix as StringSelectMenuInteraction).update({ embeds: [embed], components: [row] });
+    await (ix as StringSelectMenuInteraction).update({ embeds: [embed], components: [row1, row2] });
   }
 }
 
@@ -456,6 +465,656 @@ export async function onEncounter(ix: ButtonInteraction) {
     const back = new ButtonBuilder().setCustomId('jackin:back').setStyle(ButtonStyle.Secondary).setLabel('Back');
     await ix.update({ embeds: [embed], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(back)] });
   }
+}
+
+
+/* ------------------------------ Data / Config hubs ------------------------------ */
+
+type AnyJackInInteraction = ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
+
+type ChipGroup = {
+  key: string;
+  name: string;
+  baseId: string;
+  variants: any[];
+  codes: string[];
+  sample: any;
+};
+
+function navButtons(...buttons: ButtonBuilder[]) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons);
+}
+
+function makeBackButton() {
+  return new ButtonBuilder().setCustomId('jackin:back').setStyle(ButtonStyle.Secondary).setLabel('Back');
+}
+
+async function updatePanel(ix: AnyJackInInteraction, payload: { embeds: EmbedBuilder[]; components?: any[] }) {
+  const anyIx: any = ix as any;
+  if (typeof anyIx.update === 'function') {
+    await anyIx.update({ embeds: payload.embeds, components: payload.components ?? [] });
+    return;
+  }
+  if (typeof anyIx.reply === 'function') {
+    await anyIx.reply({ embeds: payload.embeds, components: payload.components ?? [], ephemeral: true });
+  }
+}
+
+export async function onOpenData(ix: ButtonInteraction) {
+  const embed = new EmbedBuilder()
+    .setTitle('📡 Data')
+    .setDescription([
+      'Access reference data from the same Jack-In screen.',
+      '',
+      '**Chip Index** searches BattleChips and code variants.',
+      '**VirusDex** shows only viruses you have encountered.',
+    ].join('\n'))
+    .setImage(getTravelImage())
+    .setFooter({ text: 'Data screens do not change your current region or zone.' });
+
+  await ix.update({
+    embeds: [embed],
+    components: [navButtons(
+      new ButtonBuilder().setCustomId('jackin:dataChip').setStyle(ButtonStyle.Primary).setLabel('Chip Index'),
+      new ButtonBuilder().setCustomId('jackin:dataVirus').setStyle(ButtonStyle.Secondary).setLabel('VirusDex'),
+      makeBackButton(),
+    )],
+  });
+}
+
+export async function onDataChip(ix: ButtonInteraction) {
+  const embed = new EmbedBuilder()
+    .setTitle('📦 Chip Index')
+    .setDescription([
+      'Browse grouped BattleChips or search by chip name/keyword.',
+      '',
+      'Search opens a Discord text modal. Results stay in this Jack-In panel.',
+    ].join('\n'))
+    .setImage(getTravelImage())
+    .setFooter({ text: 'Grouped by base chip; all available codes are shown together.' });
+
+  await ix.update({
+    embeds: [embed],
+    components: [navButtons(
+      new ButtonBuilder().setCustomId('jackin:dataChipAll').setStyle(ButtonStyle.Secondary).setLabel('Browse All'),
+      new ButtonBuilder().setCustomId('jackin:dataChipSearch').setStyle(ButtonStyle.Primary).setLabel('Search Chip'),
+      new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Back'),
+    )],
+  });
+}
+
+export async function onDataChipAll(ix: ButtonInteraction) {
+  await renderChipIndexPanel(ix, '');
+}
+
+export async function onDataChipSearch(ix: ButtonInteraction) {
+  const modal = new ModalBuilder()
+    .setCustomId('jackin:chipSearchModal')
+    .setTitle('Search Chip Index');
+
+  const input = new TextInputBuilder()
+    .setCustomId('query')
+    .setLabel('Chip name or keyword')
+    .setPlaceholder('Sword, Cannon, Aqua, Atk+10...')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(80);
+
+  modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+  await ix.showModal(modal);
+}
+
+export async function onChipSearchModal(ix: ModalSubmitInteraction) {
+  const q = ix.fields.getTextInputValue('query').trim();
+  await renderChipIndexPanel(ix, q);
+}
+
+async function renderChipIndexPanel(ix: AnyJackInInteraction, search: string) {
+  const q = search.trim().toLowerCase();
+  let groups = groupChips(listChips() as any[]).filter(g => !chipIsUpgrade(g.sample));
+
+  if (q) {
+    const exact = groups.filter((g) =>
+      g.name.toLowerCase() === q ||
+      g.baseId.toLowerCase() === q ||
+      g.key.toLowerCase() === q
+    );
+    groups = exact.length ? exact : groups.filter((g) => chipGroupMatches(g, q));
+  }
+
+  groups.sort((a, b) => a.name.localeCompare(b.name) || a.baseId.localeCompare(b.baseId));
+
+  const components = [navButtons(
+    new ButtonBuilder().setCustomId('jackin:dataChipSearch').setStyle(ButtonStyle.Primary).setLabel('Search Again'),
+    new ButtonBuilder().setCustomId('jackin:dataChip').setStyle(ButtonStyle.Secondary).setLabel('Chip Index'),
+    new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'),
+  )];
+
+  if (groups.length === 1) {
+    await updatePanel(ix, { embeds: [buildChipDetailEmbed(groups[0], search)], components });
+    return;
+  }
+
+  const slice = groups.slice(0, 12);
+  const lines = slice.map(formatChipGroupLine);
+  const embed = new EmbedBuilder()
+    .setTitle(search ? `📦 Chip Index — ${search}` : '📦 Chip Index — Browse')
+    .setDescription([
+      groups.length ? `Showing **${slice.length}** of **${groups.length}** grouped chip(s).` : 'No matching chips found.',
+      '',
+      ...(lines.length ? lines : ['—']),
+      '',
+      groups.length > slice.length ? 'Use **Search Again** to narrow the results.' : 'Search an exact chip name to open a detailed card.',
+    ].join('\n'))
+    .setFooter({ text: 'Grouped by base chip; variants are not duplicated.' });
+
+  await updatePanel(ix, { embeds: [embed], components });
+}
+
+export async function onDataVirus(ix: ButtonInteraction) {
+  const b = getBundle() as any;
+  const seen = listSeenViruses(ix.user.id).map(String).filter(id => b.viruses?.[id]);
+
+  if (!seen.length) {
+    const embed = new EmbedBuilder()
+      .setTitle('🧾 VirusDex')
+      .setDescription('You have not encountered any viruses yet.')
+      .setImage(getTravelImage());
+    await ix.update({ embeds: [embed], components: [navButtons(makeBackButton(), new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'))] });
+    return;
+  }
+
+  seen.sort((a, bId) => String(b.viruses[a]?.name || a).localeCompare(String(b.viruses[bId]?.name || bId)));
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('jackin:dataVirusSelect')
+    .setPlaceholder('Select an encountered virus')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(seen.slice(0, 25).map(id => {
+      const v = b.viruses[id];
+      return {
+        label: String(v?.name || id).slice(0, 100),
+        value: id,
+        description: `${v?.element || 'Neutral'} • HP ${v?.hp ?? '?'}`.slice(0, 100),
+      };
+    }));
+
+  const embed = new EmbedBuilder()
+    .setTitle('🧾 VirusDex')
+    .setDescription('Select a virus you have encountered to view stats, moves, and possible drops.')
+    .setImage(getTravelImage())
+    .setFooter({ text: `${seen.length} seen virus entr${seen.length === 1 ? 'y' : 'ies'}.` });
+
+  await ix.update({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
+      navButtons(new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Back')),
+    ],
+  });
+}
+
+export async function onDataVirusSelect(ix: StringSelectMenuInteraction) {
+  const id = ix.values[0];
+  const embed = buildVirusDexDetailEmbed(ix.user.id, id);
+  await ix.update({
+    embeds: [embed],
+    components: [navButtons(
+      new ButtonBuilder().setCustomId('jackin:dataVirus').setStyle(ButtonStyle.Secondary).setLabel('VirusDex'),
+      new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'),
+      makeBackButton(),
+    )],
+  });
+}
+
+export async function onOpenConfig(ix: ButtonInteraction) {
+  const embed = new EmbedBuilder()
+    .setTitle('⚙️ Config')
+    .setDescription([
+      'Manage your Navi from the same Jack-In screen.',
+      '',
+      '**Profile** shows stats, zenny, and inventory preview.',
+      '**Folder** lets you view, add, and remove BattleChips.',
+    ].join('\n'))
+    .setImage(getTravelImage());
+
+  await ix.update({
+    embeds: [embed],
+    components: [navButtons(
+      new ButtonBuilder().setCustomId('jackin:configProfile').setStyle(ButtonStyle.Primary).setLabel('Profile'),
+      new ButtonBuilder().setCustomId('jackin:configFolder').setStyle(ButtonStyle.Secondary).setLabel('Folder'),
+      makeBackButton(),
+    )],
+  });
+}
+
+export async function onConfigProfile(ix: ButtonInteraction) {
+  await ix.update({
+    embeds: [buildProfileEmbed(ix.user.id, ix.user.username, ix.user.displayAvatarURL())],
+    components: [navButtons(new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config'), makeBackButton())],
+  });
+}
+
+export async function onConfigFolder(ix: ButtonInteraction | StringSelectMenuInteraction, notice?: string) {
+  const folder = getFolder(ix.user.id);
+  const embed = new EmbedBuilder()
+    .setTitle('🗂️ Folder')
+    .setDescription([
+      notice ? `📌 **${notice}**\n` : '',
+      formatFolderPanel(folder),
+    ].filter(Boolean).join('\n'))
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
+    .setImage(getTravelImage());
+
+  const addBtn = new ButtonBuilder().setCustomId('jackin:configFolderAdd').setStyle(ButtonStyle.Primary).setLabel('Add Chips');
+  const remBtn = new ButtonBuilder().setCustomId('jackin:configFolderRemove').setStyle(ButtonStyle.Secondary).setLabel('Remove Chips').setDisabled(!folder.length);
+  const cfgBtn = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config');
+
+  await ix.update({ embeds: [embed], components: [navButtons(addBtn, remBtn, cfgBtn)] });
+}
+
+export async function onConfigFolderAdd(ix: ButtonInteraction) {
+  let inv = getInventory(ix.user.id);
+  const folder = getFolder(ix.user.id);
+  const folderCounts = countValues(folder);
+
+  const options = inv
+    .filter(row => Number(row.qty) > 0)
+    .map(row => {
+      const chipId = String(row.chip_id);
+      const chip: any = getChipById(chipId);
+      return { row, chipId, chip };
+    })
+    .filter(({ chip }) => chip && !chipIsUpgrade(chip))
+    .map(({ row, chipId, chip }) => {
+      const used = folderCounts.get(chipId) || 0;
+      const cap = maxCopiesForChip(chipId);
+      return {
+        label: `${formatChipName(chip)} (own ${row.qty}, in folder ${used}/${cap})`.slice(0, 100),
+        value: chipId,
+        description: String(chip?.element || 'BattleChip').slice(0, 100),
+      };
+    })
+    .slice(0, 25);
+
+  if (!options.length) {
+    await onConfigFolder(ix, 'You have no BattleChips available to add.');
+    return;
+  }
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('jackin:folderAddSelect')
+    .setPlaceholder('Select chips to add')
+    .setMinValues(1)
+    .setMaxValues(Math.min(10, options.length))
+    .addOptions(options);
+
+  const embed = new EmbedBuilder()
+    .setTitle('🗂️ Add Chips')
+    .setDescription('Select one or more owned chips to add to your folder.')
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
+    .setImage(getTravelImage());
+
+  await ix.update({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
+      navButtons(new ButtonBuilder().setCustomId('jackin:configFolder').setStyle(ButtonStyle.Secondary).setLabel('Back')),
+    ],
+  });
+}
+
+export async function onConfigFolderRemove(ix: ButtonInteraction) {
+  const folder = getFolder(ix.user.id);
+  if (!folder.length) {
+    await onConfigFolder(ix, 'Folder is empty.');
+    return;
+  }
+
+  const options = folder.slice(0, 25).map((id, i) => {
+    const c: any = getChipById(id) || {};
+    return {
+      label: `${i + 1}. ${formatChipName(c || id)}`.slice(0, 100),
+      value: `${i}:${id}`,
+    };
+  });
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('jackin:folderRemoveSelect')
+    .setPlaceholder('Select folder slots to remove')
+    .setMinValues(1)
+    .setMaxValues(Math.min(10, options.length))
+    .addOptions(options);
+
+  const embed = new EmbedBuilder()
+    .setTitle('🗂️ Remove Chips')
+    .setDescription('Select one or more folder entries to remove.')
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
+    .setImage(getTravelImage());
+
+  await ix.update({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
+      navButtons(new ButtonBuilder().setCustomId('jackin:configFolder').setStyle(ButtonStyle.Secondary).setLabel('Back')),
+    ],
+  });
+}
+
+export async function onConfigFolderAddSelect(ix: StringSelectMenuInteraction) {
+  let folder = getFolder(ix.user.id);
+  for (const rawId of ix.values) {
+    const id = String(rawId);
+    const chip = getChipById(id);
+    if (!chip || chipIsUpgrade(chip)) continue;
+    folder = [...folder, id];
+  }
+
+  const v = validateFolder(ix.user.id, folder);
+  if (!v.ok) {
+    await onConfigFolder(ix, `Could not add chips: ${v.error}`);
+    return;
+  }
+
+  setFolder(ix.user.id, folder);
+  await onConfigFolder(ix, 'Folder updated.');
+}
+
+export async function onConfigFolderRemoveSelect(ix: StringSelectMenuInteraction) {
+  const folder = getFolder(ix.user.id);
+  const indexes = ix.values
+    .map(v => parseInt(String(v).split(':')[0], 10))
+    .filter(n => Number.isFinite(n))
+    .sort((a, b) => b - a);
+
+  for (const idx of indexes) {
+    if (idx >= 0 && idx < folder.length) folder.splice(idx, 1);
+  }
+
+  const v = validateFolder(ix.user.id, folder);
+  if (!v.ok) {
+    await onConfigFolder(ix, `Could not remove chips: ${v.error}`);
+    return;
+  }
+
+  setFolder(ix.user.id, folder);
+  await onConfigFolder(ix, 'Folder updated.');
+}
+
+function buildProfileEmbed(userId: string, username: string, avatarUrl: string) {
+  const p: any = getPlayer(userId);
+  const invLine = formatInventoryTop(userId, 12);
+
+  return new EmbedBuilder()
+    .setAuthor({ name: `${username}.EXE`, iconURL: avatarUrl })
+    .setTitle('⚙️ Navi Profile')
+    .setThumbnail(avatarUrl)
+    .addFields(
+      { name: '🧬 Element', value: String(p?.element ?? 'Neutral'), inline: true },
+      { name: '⭐ Level', value: String(p?.level ?? 1), inline: true },
+      { name: '❤️ HP', value: String(p?.hp_max ?? 100), inline: true },
+      {
+        name: '📊 Stats',
+        value:
+          `ATK ${p?.atk ?? 0} • DEF ${p?.def ?? 0} • SPD ${p?.spd ?? 0}\n` +
+          `ACC ${p?.acc ?? 100}% • EVA ${p?.evasion ?? 0}% • CRIT ${p?.crit ?? 0}%`,
+        inline: false,
+      },
+      { name: '💰 Zenny', value: String(p?.zenny ?? 0), inline: true },
+      { name: '🎒 Inventory Preview', value: invLine, inline: false },
+    );
+}
+
+function formatInventoryTop(userId: string, limit = 12): string {
+  const rows = getInventory(userId) || [];
+  const pretty = rows
+    .map((r: any) => {
+      const chip: any = getChipById(r.chip_id);
+      return { chip, qty: Number(r.qty ?? 0), rawId: String(r.chip_id) };
+    })
+    .filter(({ chip }) => chip && !chipIsUpgrade(chip))
+    .map(({ chip, qty, rawId }) => `${formatChipName(chip || rawId)} ×${qty}`);
+  return pretty.length ? pretty.slice(0, limit).join(' • ') : '—';
+}
+
+function formatFolderPanel(chips: string[]): string {
+  if (!chips.length) return '— (empty)';
+  const counts = countValues(chips);
+  const lines: string[] = [];
+  for (const [id, qty] of counts) {
+    const c: any = getChipById(id) || {};
+    lines.push(`• ${formatChipName(c || id)} ×${qty}`);
+  }
+  return lines.slice(0, 30).join('\n');
+}
+
+function countValues(values: string[]) {
+  const out = new Map<string, number>();
+  for (const v of values) out.set(String(v), (out.get(String(v)) || 0) + 1);
+  return out;
+}
+
+function groupChips(chips: any[]): ChipGroup[] {
+  const byKey = new Map<string, any[]>();
+  for (const c of chips) {
+    if (!c) continue;
+    const name = clean(c.name ?? c.id);
+    const baseId = clean(c.base_id ?? c.baseId ?? c.base ?? name);
+    const key = (baseId || name || clean(c.id)).toLowerCase();
+    if (!key) continue;
+    const arr = byKey.get(key) ?? [];
+    arr.push(c);
+    byKey.set(key, arr);
+  }
+
+  const groups: ChipGroup[] = [];
+  for (const [key, variants] of byKey) {
+    variants.sort((a, b) => codeSortValue(codeOf(a)) - codeSortValue(codeOf(b)) || clean(a.id).localeCompare(clean(b.id)));
+    const sample = variants.find((c) => chipImage(c)) ?? variants[0] ?? {};
+    const name = clean(sample?.name ?? sample?.base_id ?? sample?.id ?? key);
+    const baseId = clean(sample?.base_id ?? sample?.baseId ?? sample?.base ?? name);
+    groups.push({ key, name, baseId, variants, codes: collectCodes(variants), sample });
+  }
+  return groups;
+}
+
+function chipGroupMatches(g: ChipGroup, q: string): boolean {
+  if (!q) return true;
+  if (g.name.toLowerCase().includes(q)) return true;
+  if (g.baseId.toLowerCase().includes(q)) return true;
+  if (g.key.toLowerCase().includes(q)) return true;
+  if (g.codes.some((c) => c.toLowerCase().includes(q))) return true;
+  return g.variants.some((c) => [c.id, c.name, c.base_id, c.baseId, c.element, c.category, c.effects, c.description, c.rarity]
+    .map(x => clean(x).toLowerCase()).some(x => x.includes(q)));
+}
+
+function buildChipDetailEmbed(group: ChipGroup, rawSearch: string) {
+  const c = group.sample ?? {};
+  const stats = [
+    statLine('Element', c.element),
+    statLine('Category', c.category),
+    statLine('Power', numText(c.power)),
+    statLine('Hits', numText(c.hits)),
+    statLine('Accuracy', pctText(c.acc)),
+    statLine('MB', numText(c.mb_cost ?? c.mb)),
+    statLine('Rarity', numText(c.rarity)),
+    statLine('Price', priceText(c.zenny_cost)),
+    statLine('Max Copies', numText(c.max_copies)),
+  ].filter(Boolean).join('\n') || '—';
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📦 Chip Index — ${group.name}`)
+    .setDescription(clean(c.description) || '—')
+    .addFields(
+      { name: 'Codes', value: group.codes.length ? group.codes.map(x => inlineCode(x)).join(' ') : '—', inline: false },
+      { name: 'Stats', value: stats, inline: false },
+      { name: 'Effects', value: clean(c.effects) || '—', inline: false },
+      { name: 'Variant IDs', value: group.variants.map(v => inlineCode(clean(v.id))).join(' ') || '—', inline: false },
+    )
+    .setFooter({ text: `Base ID: ${group.baseId || group.key}` });
+  const img = chipImage(c);
+  if (img) embed.setImage(img);
+  return embed;
+}
+
+function formatChipGroupLine(group: ChipGroup): string {
+  const c = group.sample ?? {};
+  const codes = group.codes.length ? group.codes.join(', ') : '—';
+  const bits = [
+    clean(c.element) && clean(c.element) !== 'Neutral' ? clean(c.element) : '',
+    numText(c.power) ? `P${numText(c.power)}` : '',
+    Number(c.hits) > 1 ? `x${c.hits}` : '',
+    priceText(c.zenny_cost),
+  ].filter(Boolean);
+  return `**${group.name}** — Codes: ${inlineCode(codes)}\n${bits.join(' • ') || '—'}`;
+}
+
+function buildVirusDexDetailEmbed(userId: string, id: string) {
+  const b = getBundle() as any;
+  const seen = new Set(listSeenViruses(userId).map(String));
+  const v = b.viruses?.[id];
+
+  if (!v || !seen.has(id)) {
+    return new EmbedBuilder()
+      .setTitle('🧾 VirusDex — Unknown Entry')
+      .setDescription(`You have not encountered ${inlineCode(id)} yet.`)
+      .setImage(getTravelImage());
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🦠 VirusDex — ${v.name || id}`)
+    .setDescription(v.description || 'No description recorded.')
+    .addFields(
+      { name: '🧬 Element', value: String(v.element || 'Neutral'), inline: true },
+      { name: '❤️ HP', value: String(v.hp || 0), inline: true },
+      { name: '⭐ CR', value: String(v.cr || 1), inline: true },
+      { name: '📊 Stats', value: [`ATK ${v.atk ?? 0}`, `DEF ${v.def ?? 0}`, `SPD ${v.spd ?? 0}`, `ACC ${formatAcc(v.acc)}`].join(' • '), inline: false },
+      { name: '⚔️ Moveset', value: formatMoves(v), inline: false },
+      { name: '🎁 Possible Drops', value: formatDrops(v, b.dropTables), inline: false },
+    )
+    .setImage(v.anim_url || v.image_url || null)
+    .setFooter({ text: `id: ${id}` });
+  return embed;
+}
+
+function formatMoves(v: any): string {
+  const rawMoves = [v.move_1json, v.move_2json, v.move_3json, v.move_4json]
+    .map((raw, i) => parseMove(raw, i + 1))
+    .filter((m): m is any => !!m);
+  if (!rawMoves.length) return '—';
+  return rawMoves.map((m, i) => {
+    const name = m.name || `Move ${i + 1}`;
+    const kind = m.kind ? titleCase(String(m.kind)) : 'Move';
+    const parts: string[] = [];
+    if (m.element) parts.push(String(m.element));
+    if (m.power !== undefined && String(m.power).trim() !== '') parts.push(`PWR ${m.power}`);
+    if (m.hits !== undefined && Number(m.hits) > 1) parts.push(`${m.hits} hits`);
+    if (m.acc !== undefined && String(m.acc).trim() !== '') parts.push(`${formatAcc(m.acc)} acc`);
+    const fx = m.effects || m.effect || m.status;
+    if (fx) parts.push(String(fx));
+    return `**${i + 1}. ${name}** — ${kind}${parts.length ? ` • ${parts.join(' • ')}` : ''}`;
+  }).join('\n');
+}
+
+function parseMove(raw: any, slot: number): any | null {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {}
+  return { name: `Move ${slot}`, kind: text };
+}
+
+function formatDrops(v: any, dropTables: Record<string, any>): string {
+  const tableId = String(v.drop_table_id || '').trim();
+  if (!tableId) return '—';
+  const table = dropTables?.[tableId];
+  if (!table) return inlineCode(tableId);
+  const entriesRaw = String(table.entries || table.item_ids || table.chip_ids || '').trim();
+  if (!entriesRaw) return inlineCode(tableId);
+  const entries = entriesRaw.split(',').map(x => x.trim()).filter(Boolean).slice(0, 12);
+  return entries.length ? entries.map(e => `• ${displayDropToken(e)}`).join('\n') : inlineCode(tableId);
+}
+
+function displayDropToken(token: string): string {
+  return String(token || '').trim().replace(/_STAR\b/g, ' [*]').replace(/_([A-Z])\b/g, ' [$1]') || '—';
+}
+
+function collectCodes(variants: any[]): string[] {
+  const possible = clean(variants.find((c) => clean(c.possible_codes))?.possible_codes);
+  const ordered = possible ? possible.split(/[,;| ]+/).map(normalizeCode).filter(Boolean) : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of ordered) if (!seen.has(c)) { seen.add(c); out.push(c); }
+  for (const v of variants) {
+    const c = normalizeCode(codeOf(v));
+    if (c && !seen.has(c)) { seen.add(c); out.push(c); }
+  }
+  return out.sort((a, b) => codeSortValue(a) - codeSortValue(b) || a.localeCompare(b));
+}
+
+function codeOf(c: any): string {
+  return normalizeCode(chipCode(c) || c?.code || c?.letter || c?.letters);
+}
+
+function normalizeCode(v: any): string {
+  const s = clean(v);
+  if (!s) return '';
+  if (s === '*' || s.toUpperCase() === 'STAR') return '*';
+  return s.toUpperCase();
+}
+
+function codeSortValue(code: string): number {
+  const c = normalizeCode(code);
+  if (c === '*') return 999;
+  const ch = c.charCodeAt(0);
+  return Number.isFinite(ch) ? ch : 500;
+}
+
+function statLine(label: string, value: any): string {
+  const s = clean(value);
+  return s ? `${label}: ${s}` : '';
+}
+
+function numText(v: any): string {
+  const n = Number(v);
+  return Number.isFinite(n) && n !== 0 ? String(n) : '';
+}
+
+function pctText(v: any): string {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n === 0) return '';
+  return n <= 1 ? `${Math.round(n * 100)}%` : `${Math.round(n)}%`;
+}
+
+function priceText(v: any): string {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n}z` : '';
+}
+
+function chipImage(c: any): string | null {
+  const raw = c?.image_url || c?.image || c?.art_url || c?.icon_url || null;
+  const s = clean(raw);
+  return s || null;
+}
+
+function clean(v: any): string {
+  return String(v ?? '').trim();
+}
+
+function formatAcc(v: any): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v || '—');
+  if (n <= 1) return `${Math.round(n * 100)}%`;
+  return `${Math.round(n)}%`;
+}
+
+function titleCase(v: string): string {
+  const s = v.trim();
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
 
 /* ------------------------------ Shop flow ------------------------------ */
