@@ -210,6 +210,8 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:dataChipSearch') { await JackIn.onDataChipSearch(ix); return; }
       if (ix.customId === 'jackin:dataVirus') { await JackIn.onDataVirus(ix); return; }
       if (ix.customId === 'jackin:openConfig') { await JackIn.onOpenConfig(ix); return; }
+      if (ix.customId === 'jackin:openPvp') { await JackIn.onOpenPvp(ix); return; }
+      if (ix.customId === 'jackin:pvpOpenChallenge') { await JackIn.onPvpOpenChallenge(ix); return; }
       if (ix.customId === 'jackin:configProfile') { await JackIn.onConfigProfile(ix); return; }
       if (ix.customId === 'jackin:configFolder') { await JackIn.onConfigFolder(ix); return; }
       if (ix.customId === 'jackin:configFolderAdd') { await JackIn.onConfigFolderAdd(ix); return; }

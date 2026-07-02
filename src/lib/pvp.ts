@@ -63,8 +63,9 @@ type PvpChallenge = {
   id: string;
   challengerId: string;
   challengerName: string;
-  targetId: string;
-  targetName: string;
+  targetId?: string;
+  targetName?: string;
+  open?: boolean;
   channelId?: string;
   messageId?: string;
   timer?: NodeJS.Timeout;
@@ -134,6 +135,42 @@ export async function createPvpChallenge(ix: ChatInputCommandInteraction) {
   );
 
   await ix.reply({ embeds: [embed], components: [row] });
+  const msg = await ix.fetchReply();
+  ch.messageId = msg.id;
+  ch.message = msg;
+}
+
+
+export async function createOpenPvpChallenge(ix: ButtonInteraction) {
+  ensurePlayer(ix.user.id);
+
+  const id = nextId('pc');
+  const ch: PvpChallenge = {
+    id,
+    challengerId: ix.user.id,
+    challengerName: ix.user.username,
+    open: true,
+    channelId: ix.channelId ?? undefined,
+  };
+  challenges.set(id, ch);
+  ch.timer = setTimeout(() => expireChallenge(id).catch(console.error), ACCEPT_SECONDS * 1000);
+
+  const embed = new EmbedBuilder()
+    .setTitle('⚔️ Open PvP Challenge')
+    .setDescription([
+      `**${ix.user.username}.EXE** is looking for a NetBattle duel.`,
+      '',
+      `Anyone except the challenger can accept within **${ACCEPT_SECONDS} seconds**.`,
+    ].join('\n'))
+    .setThumbnail(ix.user.displayAvatarURL())
+    .setFooter({ text: 'PvP alpha: no rewards are granted.' });
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`pvp:accept:${id}`).setStyle(ButtonStyle.Success).setLabel('Accept Duel'),
+    new ButtonBuilder().setCustomId(`pvp:decline:${id}`).setStyle(ButtonStyle.Secondary).setLabel('Cancel'),
+  );
+
+  await ix.reply({ ephemeral: false, embeds: [embed], components: [row] });
   const msg = await ix.fetchReply();
   ch.messageId = msg.id;
   ch.message = msg;
@@ -211,16 +248,33 @@ async function acceptChallenge(ix: ButtonInteraction, challengeId: string) {
     await ix.reply({ ephemeral: true, content: 'This challenge has expired.' });
     return;
   }
-  if (ix.user.id !== ch.targetId) {
+  if (ch.open) {
+    if (ix.user.id === ch.challengerId) {
+      await ix.reply({ ephemeral: true, content: 'You cannot accept your own open duel.' });
+      return;
+    }
+    if (ix.user.bot) {
+      await ix.reply({ ephemeral: true, content: 'Bots cannot accept PvP duels.' });
+      return;
+    }
+    ch.targetId = ix.user.id;
+    ch.targetName = ix.user.username;
+  } else if (ix.user.id !== ch.targetId) {
     await ix.reply({ ephemeral: true, content: 'Only the challenged player can accept this duel.' });
     return;
   }
 
+  const targetId = ch.targetId!;
+  const targetName = ch.targetName || ix.user.username;
+
   clearTimer(ch.timer);
   challenges.delete(challengeId);
 
+  ensurePlayer(ch.challengerId);
+  ensurePlayer(targetId);
+
   const p1 = buildPvpPlayerState(ix.client.users.cache.get(ch.challengerId), ch.challengerId, ch.challengerName);
-  const p2 = buildPvpPlayerState(ix.user, ch.targetId, ch.targetName);
+  const p2 = buildPvpPlayerState(ix.user, targetId, targetName);
 
   if (p1.deck.length === 0 || p2.deck.length === 0) {
     await ix.update({
@@ -256,7 +310,7 @@ async function acceptChallenge(ix: ButtonInteraction, challengeId: string) {
   await ix.update({ embeds: [renderPublicDuelStatusEmbed(bs)], components: publicBattleComponents(bs) });
   await ix.followUp({
     ephemeral: false,
-    content: `<@${ch.challengerId}> <@${ch.targetId}> Duel accepted. Use **Open Combat** to choose your chips privately. You have ${ROUND_SECONDS} seconds this round.`,
+    content: `<@${ch.challengerId}> <@${targetId}> Duel accepted. Use **Open Combat** to choose your chips privately. You have ${ROUND_SECONDS} seconds this round.`,
   });
 }
 
@@ -266,14 +320,22 @@ async function declineChallenge(ix: ButtonInteraction, challengeId: string) {
     await ix.reply({ ephemeral: true, content: 'This challenge has expired.' });
     return;
   }
-  if (ix.user.id !== ch.targetId && ix.user.id !== ch.challengerId) {
+  if (ch.open) {
+    if (ix.user.id !== ch.challengerId) {
+      await ix.reply({ ephemeral: true, content: 'Only the challenger can cancel this open duel.' });
+      return;
+    }
+  } else if (ix.user.id !== ch.targetId && ix.user.id !== ch.challengerId) {
     await ix.reply({ ephemeral: true, content: 'Only the challenged player or challenger can decline this duel.' });
     return;
   }
   clearTimer(ch.timer);
   challenges.delete(challengeId);
+  const desc = ch.open
+    ? `The open duel challenge from <@${ch.challengerId}> was canceled.`
+    : `The duel between <@${ch.challengerId}> and <@${ch.targetId}> was declined.`;
   await ix.update({
-    embeds: [new EmbedBuilder().setTitle('PvP Challenge Declined').setDescription(`The duel between <@${ch.challengerId}> and <@${ch.targetId}> was declined.`)],
+    embeds: [new EmbedBuilder().setTitle(ch.open ? 'PvP Challenge Canceled' : 'PvP Challenge Declined').setDescription(desc)],
     components: [],
   });
 }
@@ -421,7 +483,7 @@ async function expireChallenge(challengeId: string) {
   clearTimer(ch.timer);
   const embed = new EmbedBuilder()
     .setTitle('PvP Challenge Expired')
-    .setDescription(`The duel challenge from <@${ch.challengerId}> to <@${ch.targetId}> expired.`);
+    .setDescription(ch.open ? `The open duel challenge from <@${ch.challengerId}> expired.` : `The duel challenge from <@${ch.challengerId}> to <@${ch.targetId}> expired.`);
   await ch.message?.edit?.({ embeds: [embed], components: [] }).catch(() => {});
 }
 

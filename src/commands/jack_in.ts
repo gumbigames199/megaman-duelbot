@@ -24,6 +24,7 @@ import {
   addHPMax, addATK, addDEF, addSPD, addACC, addEvasion, addCRIT,
 } from '../lib/db';
 import { startBattle } from '../lib/battle';
+import { createOpenPvpChallenge } from '../lib/pvp';
 import { getFolder, setFolder, validateFolder, MAX_FOLDER, maxCopiesForChip } from '../lib/folder';
 
 const JACK_GIF =
@@ -140,9 +141,10 @@ export async function renderJackInHUD(
   const shopBtn      = new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Success).setLabel('Shop');
   const dataBtn      = new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data');
   const configBtn    = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config');
+  const pvpBtn       = new ButtonBuilder().setCustomId('jackin:openPvp').setStyle(ButtonStyle.Secondary).setLabel('PvP');
 
   const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(encounterBtn, travelBtn, shopBtn);
-  const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(dataBtn, configBtn);
+  const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(dataBtn, configBtn, pvpBtn);
 
   if (ix.isChatInputCommand()) {
     await ix.reply({ ephemeral: true, embeds: [embed], components: [row1, row2] });
@@ -485,6 +487,33 @@ export async function onEncounter(ix: ButtonInteraction) {
   }
 }
 
+
+
+/* ------------------------------ PvP hub ------------------------------ */
+
+export async function onOpenPvp(ix: ButtonInteraction) {
+  const embed = new EmbedBuilder()
+    .setTitle('⚔️ PvP NetBattle')
+    .setDescription([
+      'Create an open duel challenge in this channel.',
+      '',
+      'Any NetBattler in this channel can accept the duel.',
+      'Direct challenges are still available with `/pvp user:@player`.',
+    ].join('\n'))
+    .setImage(getTravelImage())
+    .setFooter({ text: 'Open challenges are posted publicly in the current channel.' });
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('jackin:pvpOpenChallenge').setStyle(ButtonStyle.Primary).setLabel('Create Open Challenge'),
+    new ButtonBuilder().setCustomId('jackin:back').setStyle(ButtonStyle.Secondary).setLabel('Back'),
+  );
+
+  await ix.update({ embeds: [embed], components: [row] });
+}
+
+export async function onPvpOpenChallenge(ix: ButtonInteraction) {
+  await createOpenPvpChallenge(ix);
+}
 
 /* ------------------------------ Data / Config hubs ------------------------------ */
 
