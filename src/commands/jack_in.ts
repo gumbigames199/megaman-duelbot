@@ -31,6 +31,10 @@ const JACK_GIF =
   process.env.JACKIN_GIF_URL ||
   undefined;
 
+const CONFIG_GIF =
+  process.env.CONFIG_GIF_URL ||
+  'https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/Navi+Custom.gif';
+
 const BOSS_ENCOUNTER =
   Number(process.env.BOSS_ENCOUNTER_RATE ?? process.env.BOSS_ENCOUNTER ?? 0.10);
 
@@ -53,6 +57,11 @@ function asArray<T = any>(maybe: any): T[] {
 
 function getTravelImage(): string | null {
   return JACK_GIF || null;
+}
+
+function getConfigImage(): string | null {
+  const text = String(CONFIG_GIF || '').trim();
+  return text || getTravelImage();
 }
 
 function getRegionImage(region: any): string | null {
@@ -677,7 +686,7 @@ export async function onOpenConfig(ix: ButtonInteraction) {
       '**Profile** shows stats, zenny, and inventory preview.',
       '**Folder** lets you view, add, and remove BattleChips.',
     ].join('\n'))
-    .setImage(getTravelImage());
+    .setImage(getConfigImage());
 
   await ix.update({
     embeds: [embed],
@@ -705,7 +714,7 @@ export async function onConfigFolder(ix: ButtonInteraction | StringSelectMenuInt
       formatFolderPanel(folder),
     ].filter(Boolean).join('\n'))
     .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
-    .setImage(getTravelImage());
+    .setImage(getConfigImage());
 
   const addBtn = new ButtonBuilder().setCustomId('jackin:configFolderAdd').setStyle(ButtonStyle.Primary).setLabel('Add Chips');
   const remBtn = new ButtonBuilder().setCustomId('jackin:configFolderRemove').setStyle(ButtonStyle.Secondary).setLabel('Remove Chips').setDisabled(!folder.length);
@@ -754,7 +763,7 @@ export async function onConfigFolderAdd(ix: ButtonInteraction) {
     .setTitle('🗂️ Add Chips')
     .setDescription('Select one or more owned chips to add to your folder.')
     .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
-    .setImage(getTravelImage());
+    .setImage(getConfigImage());
 
   await ix.update({
     embeds: [embed],
@@ -791,7 +800,7 @@ export async function onConfigFolderRemove(ix: ButtonInteraction) {
     .setTitle('🗂️ Remove Chips')
     .setDescription('Select one or more folder entries to remove.')
     .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
-    .setImage(getTravelImage());
+    .setImage(getConfigImage());
 
   await ix.update({
     embeds: [embed],
@@ -850,6 +859,7 @@ function buildProfileEmbed(userId: string, username: string, avatarUrl: string) 
     .setAuthor({ name: `${username}.EXE`, iconURL: avatarUrl })
     .setTitle('⚙️ Navi Profile')
     .setThumbnail(avatarUrl)
+    .setImage(getConfigImage())
     .addFields(
       { name: '🧬 Element', value: String(p?.element ?? 'Neutral'), inline: true },
       { name: '⭐ Level', value: String(p?.level ?? 1), inline: true },
