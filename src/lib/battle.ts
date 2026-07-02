@@ -1,5 +1,12 @@
 // src/lib/battle.ts
-import { ButtonInteraction, StringSelectMenuInteraction } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
+  EmbedBuilder,
+  StringSelectMenuInteraction,
+} from "discord.js";
 
 import { getBundle, getChipById, getVirusById, listChips, chipBaseId, chipCode, formatChipName } from "./data";
 import {
@@ -51,6 +58,8 @@ type BattleHandItem = {
   description?: string;
 };
 
+type BattleReturnMode = "standalone" | "jackin";
+
 type BattleState = {
   id: string;
   user_id: string;
@@ -69,6 +78,7 @@ type BattleState = {
   hand: ChipRef[];
   selected: string[];
   is_over: boolean;
+  return_mode: BattleReturnMode;
 
   player_status: StatusState;
   enemy_status: StatusState;
@@ -96,6 +106,7 @@ export function startBattle(
   user_id: string,
   virus_id: string,
   enemy_kind: EnemyKind = "virus",
+  opts: { returnMode?: BattleReturnMode } = {},
 ) {
   ensurePlayer(user_id);
   markSeenVirus(user_id, virus_id);
@@ -129,6 +140,7 @@ export function startBattle(
     hand: [],
     selected: [],
     is_over: false,
+    return_mode: opts.returnMode ?? "standalone",
     player_status: {},
     enemy_status: {},
   };
@@ -251,26 +263,35 @@ export async function handleLock(ix: ButtonInteraction) {
         enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
         victory: { title: "Victory!", rewardLines },
       });
+      const view = endBattleView(bs, victoryView, {
+        title: `Deleted ${getVirusName(bs.virus_id)}`,
+        lines: rewardLines,
+      });
 
       await ix.update({
-        embeds: [victoryView.embed],
-        components: victoryView.components,
+        embeds: [view.embed],
+        components: view.components,
       });
       battles.delete(battleId);
       return;
     }
 
+    const title = bs.player_hp <= 0 ? "Defeat…" : "Battle End";
     const lossView = renderVictoryToHub({
       enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
       victory: {
-        title: bs.player_hp <= 0 ? "Defeat…" : "Battle End",
+        title,
         rewardLines: [],
       },
     });
+    const view = endBattleView(bs, lossView, {
+      title: `${title} vs ${getVirusName(bs.virus_id)}`,
+      lines: [],
+    });
 
     await ix.update({
-      embeds: [lossView.embed],
-      components: lossView.components,
+      embeds: [view.embed],
+      components: view.components,
     });
     battles.delete(battleId);
     return;
@@ -323,9 +344,13 @@ export async function handleRun(ix: ButtonInteraction) {
   const escaped = randInt(1, 100) <= 50;
   if (escaped) {
     bs.is_over = true;
-    const view = renderVictoryToHub({
+    const escapedView = renderVictoryToHub({
       enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
       victory: { title: "Escaped", rewardLines: [] },
+    });
+    const view = endBattleView(bs, escapedView, {
+      title: `Escaped from ${getVirusName(bs.virus_id)}`,
+      lines: [],
     });
     await ix.update({ embeds: [view.embed], components: view.components });
     battles.delete(battleId);
@@ -334,6 +359,45 @@ export async function handleRun(ix: ButtonInteraction) {
 
   const view = renderBattle(bs);
   await ix.update({ embeds: [view.embed], components: view.components });
+}
+
+
+function renderJackInReturnView(bs: BattleState, result: { title: string; lines?: string[] }) {
+  const player = getPlayer(bs.user_id) as any;
+  const bundle: any = getBundle();
+  const regionsArr = Object.values(bundle.regions || {}) as any[];
+  const region = (bundle.regions || {})[player?.region_id] || regionsArr.find((r: any) => String(r?.id) === String(player?.region_id));
+  const zone = Number((player as any)?.region_zone || 1);
+  const regionName = region?.name || region?.label || player?.region_id || '—';
+  const lastLines = [
+    `**${result.title}**`,
+    ...(result.lines || []),
+  ].filter(Boolean);
+
+  const embed = new EmbedBuilder()
+    .setTitle('✅ Jacked In')
+    .setDescription([
+      `Region: **${regionName}**, Zone: **${zone}**`,
+      '',
+      '📌 **Last Result**',
+      lastLines.length ? lastLines.join('\n') : '—',
+    ].join('\n'))
+    .setFooter({ text: 'Encounter, Travel, or Shop from this same screen.' });
+
+  const bg = process.env.JACK_IN_GIF_URL || process.env.JACKIN_GIF_URL || region?.background_url || null;
+  if (bg) embed.setImage(String(bg));
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter'),
+    new ButtonBuilder().setCustomId('jackin:openTravel').setStyle(ButtonStyle.Secondary).setLabel('Travel'),
+    new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Secondary).setLabel('Shop'),
+  );
+
+  return { embed, components: [row] as any[] };
+}
+
+function endBattleView(bs: BattleState, standalone: { embed: any; components: readonly any[] }, jackin: { title: string; lines?: string[] }) {
+  return bs.return_mode === 'jackin' ? renderJackInReturnView(bs, jackin) : standalone;
 }
 
 // ---------------- Compatibility API ----------------

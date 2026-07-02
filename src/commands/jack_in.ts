@@ -243,13 +243,22 @@ export async function onEncounter(ix: ButtonInteraction) {
       new Set(allViruses.map(v => String(v?.region_id ?? v?.region ?? '').trim()).filter(Boolean))
     ).slice(0, 12);
 
-    await ix.reply({
-      ephemeral: true,
-      content:
-        `⚠️ No eligible encounters configured for **${reg?.name || reg?.label || regionId} / Zone ${zone}**.` +
-        `\nDebug — player.region_id: **${regionId}** • zone: **${zone}** • zone_count: **${reg?.zone_count ?? '?'}**` +
+    const embed = new EmbedBuilder()
+      .setTitle('⚠️ No Encounter Available')
+      .setDescription(
+        `No eligible encounters configured for **${reg?.name || reg?.label || regionId} / Zone ${zone}**.` +
+        `\n\nDebug — player.region_id: **${regionId}** • zone: **${zone}** • zone_count: **${reg?.zone_count ?? '?'}**` +
         `\nDebug — viruses_loaded: **${allViruses.length}** • eligible: **${eligible.length}** (normals:${eligibleNormals.length} bosses:${eligibleBosses.length})` +
-        (regionSamples.length ? `\nDebug — virus region_id samples: ${regionSamples.join(', ')}` : ''),
+        (regionSamples.length ? `\nDebug — virus region_id samples: ${regionSamples.join(', ')}` : '')
+      );
+    const back = new ButtonBuilder()
+      .setCustomId('jackin:back')
+      .setStyle(ButtonStyle.Secondary)
+      .setLabel('Back');
+
+    await ix.update({
+      embeds: [embed],
+      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(back)],
     });
     return;
   }
@@ -257,22 +266,23 @@ export async function onEncounter(ix: ButtonInteraction) {
   try {
     // ✅ go straight into combat UI
     const virusId = String((picked.virus as any).id);
-    const view = startBattle(userId, virusId, picked.enemy_kind);
+    const view = startBattle(userId, virusId, picked.enemy_kind, { returnMode: "jackin" });
 
-    await ix.reply({
-      ephemeral: true,
+    await ix.update({
       embeds: [view.embed],
       components: view.components,
     });
   } catch (err: any) {
     console.error('onEncounter error:', err);
-    await ix.reply({
-      ephemeral: true,
-      content:
-        `⚠️ Encounter error in **${reg?.name || reg?.label || regionId} / Zone ${zone}**.` +
+    const embed = new EmbedBuilder()
+      .setTitle('⚠️ Encounter Error')
+      .setDescription(
+        `Encounter error in **${reg?.name || reg?.label || regionId} / Zone ${zone}**.` +
         `\nDebug — player.region_id: **${regionId}** • viruses_loaded: **${allViruses.length}** • eligible: **${eligible.length}** (normals:${eligibleNormals.length} bosses:${eligibleBosses.length})` +
-        `\nError: ${err?.message || String(err)}`,
-    });
+        `\nError: ${err?.message || String(err)}`
+      );
+    const back = new ButtonBuilder().setCustomId('jackin:back').setStyle(ButtonStyle.Secondary).setLabel('Back');
+    await ix.update({ embeds: [embed], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(back)] });
   }
 }
 
