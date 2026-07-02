@@ -564,7 +564,11 @@ export async function onDataChip(ix: ButtonInteraction) {
 }
 
 export async function onDataChipAll(ix: ButtonInteraction) {
-  await renderChipIndexPanel(ix, '');
+  await renderChipIndexPanel(ix, '', 1);
+}
+
+export async function onDataChipPage(ix: ButtonInteraction, page: number) {
+  await renderChipIndexPanel(ix, '', page);
 }
 
 export async function onDataChipSearch(ix: ButtonInteraction) {
@@ -586,10 +590,10 @@ export async function onDataChipSearch(ix: ButtonInteraction) {
 
 export async function onChipSearchModal(ix: ModalSubmitInteraction) {
   const q = ix.fields.getTextInputValue('query').trim();
-  await renderChipIndexPanel(ix, q);
+  await renderChipIndexPanel(ix, q, 1);
 }
 
-async function renderChipIndexPanel(ix: AnyJackInInteraction, search: string) {
+async function renderChipIndexPanel(ix: AnyJackInInteraction, search: string, page = 1) {
   const q = search.trim().toLowerCase();
   let groups = groupChips(listChips() as any[]).filter(g => !chipIsUpgrade(g.sample));
 
@@ -604,29 +608,51 @@ async function renderChipIndexPanel(ix: AnyJackInInteraction, search: string) {
 
   groups.sort((a, b) => a.name.localeCompare(b.name) || a.baseId.localeCompare(b.baseId));
 
-  const components = [navButtons(
+  const perPage = 12;
+  const pages = Math.max(1, Math.ceil(groups.length / perPage));
+  const pageClamped = Math.min(Math.max(1, Math.trunc(Number(page) || 1)), pages);
+
+  const baseButtons = navButtons(
     new ButtonBuilder().setCustomId('jackin:dataChipSearch').setStyle(ButtonStyle.Secondary).setLabel('Search Again'),
-    new ButtonBuilder().setCustomId('jackin:dataChip').setStyle(ButtonStyle.Secondary).setLabel('Chip Index'),
-    new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'),
-  )];
+    new ButtonBuilder().setCustomId('jackin:dataChip').setStyle(ButtonStyle.Secondary).setLabel('Back'),
+  );
 
   if (groups.length === 1) {
-    await updatePanel(ix, { embeds: [buildChipDetailEmbed(groups[0], search)], components });
+    await updatePanel(ix, { embeds: [buildChipDetailEmbed(groups[0], search)], components: [baseButtons] });
     return;
   }
 
-  const slice = groups.slice(0, 12);
+  const start = (pageClamped - 1) * perPage;
+  const slice = groups.slice(start, start + perPage);
   const lines = slice.map(formatChipGroupLine);
   const embed = new EmbedBuilder()
     .setTitle(search ? `📦 Chip Index — ${search}` : '📦 Chip Index — Browse')
     .setDescription([
-      groups.length ? `Showing **${slice.length}** of **${groups.length}** grouped chip(s).` : 'No matching chips found.',
+      groups.length ? `Page **${pageClamped}/${pages}** • Showing **${slice.length}** of **${groups.length}** grouped chip(s).` : 'No matching chips found.',
       '',
       ...(lines.length ? lines : ['—']),
       '',
-      groups.length > slice.length ? 'Use **Search Again** to narrow the results.' : 'Search an exact chip name to open a detailed card.',
+      q ? 'Use **Search Again** to narrow the results, or **Back** to return to Chip Index.' : 'Use **Previous** and **Next** to browse all chips, or **Search Again** for a specific chip.',
     ].join('\n'))
+    .setImage(getDataImage())
     .setFooter({ text: 'Grouped by base chip; variants are not duplicated.' });
+
+  const components: any[] = [];
+  if (!q && pages > 1) {
+    components.push(navButtons(
+      new ButtonBuilder()
+        .setCustomId(`jackin:dataChipPage:${Math.max(1, pageClamped - 1)}`)
+        .setStyle(ButtonStyle.Secondary)
+        .setLabel('Previous')
+        .setDisabled(pageClamped <= 1),
+      new ButtonBuilder()
+        .setCustomId(`jackin:dataChipPage:${Math.min(pages, pageClamped + 1)}`)
+        .setStyle(ButtonStyle.Secondary)
+        .setLabel('Next')
+        .setDisabled(pageClamped >= pages),
+    ));
+  }
+  components.push(baseButtons);
 
   await updatePanel(ix, { embeds: [embed], components });
 }
