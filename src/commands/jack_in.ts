@@ -44,6 +44,24 @@ function asArray<T = any>(maybe: any): T[] {
   return [];
 }
 
+
+function getTravelImage(): string | null {
+  return JACK_GIF || null;
+}
+
+function getRegionImage(region: any): string | null {
+  const raw =
+    region?.gif_url ||
+    region?.anim_url ||
+    region?.animation_url ||
+    region?.background_url ||
+    region?.image_url ||
+    region?.art_url ||
+    null;
+  const text = String(raw ?? '').trim();
+  return text || null;
+}
+
 function pickEncounterFromEligible(eligible: any[]) {
   const bosses = eligible.filter(isBossFlag);
   const normals = eligible.filter(v => !isBossFlag(v));
@@ -90,7 +108,7 @@ export async function renderJackInHUD(
   const embed = new EmbedBuilder()
     .setTitle('✅ Jacked In')
     .setDescription(desc.join('\n'))
-    .setImage(JACK_GIF || (region?.background_url || null))
+    .setImage(getRegionImage(region) || getTravelImage())
     .setFooter({ text: 'Encounter, Travel, or Shop from this same screen.' });
 
   const encounterBtn = new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter');
@@ -154,7 +172,7 @@ export async function execute(ix: ChatInputCommandInteraction) {
   const embed = new EmbedBuilder()
     .setTitle('🔌 Jack In')
     .setDescription('Pick a region to enter. You will start at **Zone 1**.')
-    .setImage(JACK_GIF || (regionsUnlocked[0]?.background_url || null))
+    .setImage(getTravelImage())
     .setFooter({ text: 'Step 1 — Region' });
 
   await ix.reply({
@@ -197,7 +215,7 @@ async function renderTravelHome(ix: ButtonInteraction | StringSelectMenuInteract
   const embed = new EmbedBuilder()
     .setTitle('🧭 Travel')
     .setDescription(desc.join('\n'))
-    .setImage(JACK_GIF || (region?.background_url || null))
+    .setImage(getTravelImage())
     .setFooter({ text: 'Travel stays inside your active Jack-In panel.' });
 
   const regionBtn = new ButtonBuilder()
@@ -256,7 +274,7 @@ export async function onTravelRegion(ix: ButtonInteraction) {
   const embed = new EmbedBuilder()
     .setTitle('🧭 Change Region')
     .setDescription('Select an unlocked region. Changing region resets your zone to **Zone 1**.')
-    .setImage(JACK_GIF || (regionsUnlocked[0]?.background_url || null));
+    .setImage(getTravelImage());
 
   await ix.update({
     embeds: [embed],
@@ -324,7 +342,7 @@ export async function onTravelZone(ix: ButtonInteraction) {
       '',
       'Select a zone below. This will update the same Jack-In screen.',
     ].join('\n'))
-    .setImage(region.background_url || JACK_GIF || null)
+    .setImage(getTravelImage())
     .setFooter({ text: 'Zone travel stays inside your active Jack-In panel.' });
 
   await ix.update({
@@ -550,7 +568,7 @@ async function renderJackInShop(
     const embed = new EmbedBuilder()
       .setTitle(`🛒 ${region?.name || 'Region'} Shop`)
       .setDescription(`No shop inventory is available in **${region?.name || 'this region'}**.`)
-      .setImage(region.background_url || JACK_GIF || null);
+      .setImage(getRegionImage(region) || getTravelImage());
     await ix.update({ embeds: [embed], components: [backRow()] });
     return;
   }
@@ -592,7 +610,7 @@ async function renderJackInShop(
   const embed = new EmbedBuilder()
     .setTitle(`🛒 ${region.name || region.label || region.id} Shop`)
     .setDescription(desc.join('\n'))
-    .setImage(region.background_url || JACK_GIF || null);
+    .setImage(getRegionImage(region) || getTravelImage());
 
   if (selected) {
     const c: any = selected.chip || {};
