@@ -362,6 +362,25 @@ export async function handleRun(ix: ButtonInteraction) {
 }
 
 
+function jackInTravelImage(): string | null {
+  const raw = process.env.JACK_IN_GIF_URL || process.env.JACKIN_GIF_URL || null;
+  const text = String(raw ?? '').trim();
+  return text || null;
+}
+
+function jackInRegionImage(region: any): string | null {
+  const raw =
+    region?.gif_url ||
+    region?.anim_url ||
+    region?.animation_url ||
+    region?.background_url ||
+    region?.image_url ||
+    region?.art_url ||
+    null;
+  const text = String(raw ?? '').trim();
+  return text || null;
+}
+
 function renderJackInReturnView(bs: BattleState, result: { title: string; lines?: string[] }) {
   const player = getPlayer(bs.user_id) as any;
   const bundle: any = getBundle();
@@ -382,18 +401,23 @@ function renderJackInReturnView(bs: BattleState, result: { title: string; lines?
       '📌 **Last Result**',
       lastLines.length ? lastLines.join('\n') : '—',
     ].join('\n'))
-    .setFooter({ text: 'Encounter, Travel, or Shop from this same screen.' });
+    .setFooter({ text: 'Encounter, Travel, Shop, Data, or Config from this same screen.' });
 
-  const bg = process.env.JACK_IN_GIF_URL || process.env.JACKIN_GIF_URL || region?.background_url || null;
+  const bg = jackInRegionImage(region) || jackInTravelImage();
   if (bg) embed.setImage(String(bg));
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+  const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter'),
     new ButtonBuilder().setCustomId('jackin:openTravel').setStyle(ButtonStyle.Secondary).setLabel('Travel'),
     new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Secondary).setLabel('Shop'),
   );
 
-  return { embed, components: [row] as any[] };
+  const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'),
+    new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config'),
+  );
+
+  return { embed, components: [row1, row2] as any[] };
 }
 
 function endBattleView(bs: BattleState, standalone: { embed: any; components: readonly any[] }, jackin: { title: string; lines?: string[] }) {

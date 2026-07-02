@@ -35,6 +35,10 @@ const CONFIG_GIF =
   process.env.CONFIG_GIF_URL ||
   'https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/Navi+Custom.gif';
 
+const DATA_GIF =
+  process.env.DATA_GIF_URL ||
+  'https://mmntwtcgcustomcards.s3.us-west-1.amazonaws.com/netbattlers/Data.gif';
+
 const BOSS_ENCOUNTER =
   Number(process.env.BOSS_ENCOUNTER_RATE ?? process.env.BOSS_ENCOUNTER ?? 0.10);
 
@@ -61,6 +65,11 @@ function getTravelImage(): string | null {
 
 function getConfigImage(): string | null {
   const text = String(CONFIG_GIF || '').trim();
+  return text || getTravelImage();
+}
+
+function getDataImage(): string | null {
+  const text = String(DATA_GIF || '').trim();
   return text || getTravelImage();
 }
 
@@ -518,7 +527,7 @@ export async function onOpenData(ix: ButtonInteraction) {
       '**Chip Index** searches BattleChips and code variants.',
       '**VirusDex** shows only viruses you have encountered.',
     ].join('\n'))
-    .setImage(getTravelImage())
+    .setImage(getDataImage())
     .setFooter({ text: 'Data screens do not change your current region or zone.' });
 
   await ix.update({
@@ -539,7 +548,7 @@ export async function onDataChip(ix: ButtonInteraction) {
       '',
       'Search opens a Discord text modal. Results stay in this Jack-In panel.',
     ].join('\n'))
-    .setImage(getTravelImage())
+    .setImage(getDataImage())
     .setFooter({ text: 'Grouped by base chip; all available codes are shown together.' });
 
   await ix.update({
@@ -628,7 +637,7 @@ export async function onDataVirus(ix: ButtonInteraction) {
     const embed = new EmbedBuilder()
       .setTitle('🧾 VirusDex')
       .setDescription('You have not encountered any viruses yet.')
-      .setImage(getTravelImage());
+      .setImage(getDataImage());
     await ix.update({ embeds: [embed], components: [navButtons(makeBackButton(), new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'))] });
     return;
   }
@@ -652,7 +661,7 @@ export async function onDataVirus(ix: ButtonInteraction) {
   const embed = new EmbedBuilder()
     .setTitle('🧾 VirusDex')
     .setDescription('Select a virus you have encountered to view stats, moves, and possible drops.')
-    .setImage(getTravelImage())
+    .setImage(getDataImage())
     .setFooter({ text: `${seen.length} seen virus entr${seen.length === 1 ? 'y' : 'ies'}.` });
 
   await ix.update({
@@ -718,7 +727,7 @@ export async function onConfigFolder(ix: ButtonInteraction | StringSelectMenuInt
 
   const addBtn = new ButtonBuilder().setCustomId('jackin:configFolderAdd').setStyle(ButtonStyle.Primary).setLabel('Add Chips');
   const remBtn = new ButtonBuilder().setCustomId('jackin:configFolderRemove').setStyle(ButtonStyle.Secondary).setLabel('Remove Chips').setDisabled(!folder.length);
-  const cfgBtn = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config');
+  const cfgBtn = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Back');
 
   await ix.update({ embeds: [embed], components: [navButtons(addBtn, remBtn, cfgBtn)] });
 }
@@ -964,7 +973,7 @@ function buildChipDetailEmbed(group: ChipGroup, rawSearch: string) {
     )
     .setFooter({ text: `Base ID: ${group.baseId || group.key}` });
   const img = chipImage(c);
-  if (img) embed.setImage(img);
+  embed.setImage(img || getDataImage());
   return embed;
 }
 
@@ -989,7 +998,7 @@ function buildVirusDexDetailEmbed(userId: string, id: string) {
     return new EmbedBuilder()
       .setTitle('🧾 VirusDex — Unknown Entry')
       .setDescription(`You have not encountered ${inlineCode(id)} yet.`)
-      .setImage(getTravelImage());
+      .setImage(getDataImage());
   }
 
   const embed = new EmbedBuilder()
@@ -1003,7 +1012,7 @@ function buildVirusDexDetailEmbed(userId: string, id: string) {
       { name: '⚔️ Moveset', value: formatMoves(v), inline: false },
       { name: '🎁 Possible Drops', value: formatDrops(v, b.dropTables), inline: false },
     )
-    .setImage(v.anim_url || v.image_url || null)
+    .setImage(v.anim_url || v.image_url || getDataImage())
     .setFooter({ text: `id: ${id}` });
   return embed;
 }
