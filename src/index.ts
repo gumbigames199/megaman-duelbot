@@ -207,6 +207,11 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:openData') { await JackIn.onOpenData(ix); return; }
       if (ix.customId === 'jackin:dataChip') { await JackIn.onDataChip(ix); return; }
       if (ix.customId === 'jackin:dataChipAll') { await JackIn.onDataChipAll(ix); return; }
+      if (ix.customId.startsWith('jackin:dataChipPage:')) {
+        const page = Number(ix.customId.split(':')[2] || '1');
+        await JackIn.onDataChipPage(ix, page);
+        return;
+      }
       if (ix.customId === 'jackin:dataChipSearch') { await JackIn.onDataChipSearch(ix); return; }
       if (ix.customId === 'jackin:dataVirus') { await JackIn.onDataVirus(ix); return; }
       if (ix.customId === 'jackin:openConfig') { await JackIn.onOpenConfig(ix); return; }
