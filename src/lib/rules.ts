@@ -41,29 +41,43 @@ function chipCodes(c: ChipRuleRef): Set<string> {
 }
 
 /**
- * Battle Network style chip-selection rule for up to 3 chips:
- *  - all selected chips share the same base chip name, OR
- *  - all selected chips share one chip code, OR
- *  - wildcard * can stand in for any shared code.
+ * Battle Network style chip-selection rule for up to 3 chips.
+ *
+ * Wildcard `*` chips are neutral helpers. They can join any otherwise-valid
+ * selection and do not need to match chip name or chip code.
+ *
+ * The non-wildcard chips must satisfy one of these rules:
+ *  - all share the same base chip name, OR
+ *  - all share the same exact chip code.
+ *
+ * Examples:
+ *  - Cannon A + Cannon B + Atk+10 * => valid, because non-* chips share Cannon.
+ *  - Cannon A + Sword A + Atk+10 * => valid, because non-* chips share A.
+ *  - Cannon A + Sword B + Atk+10 * => invalid, because non-* chips share neither.
  */
 export function validateLetterRule(chips: ChipRuleRef[]): boolean {
   if (!chips || chips.length === 0) return true;
   if (chips.length > 3) return false;
 
-  const bases = chips.map(chipBase).filter(Boolean);
-  if (bases.length === chips.length && bases.every(b => b === bases[0])) return true;
+  const normalChips = chips.filter(c => !chipCodes(c).has('*'));
 
-  const codeSets = chips.map(chipCodes);
+  // All-* selections and one real chip plus any number of * chips are legal.
+  if (normalChips.length <= 1) return true;
+
+  const bases = normalChips.map(chipBase).filter(Boolean);
+  if (bases.length === normalChips.length && bases.every(b => b === bases[0])) return true;
+
+  const codeSets = normalChips.map(chipCodes);
   if (codeSets.some(s => s.size === 0)) return false;
 
-  const concreteCandidates = new Set<string>();
+  const candidates = new Set<string>();
   for (const set of codeSets) {
-    for (const c of set) if (c !== '*') concreteCandidates.add(c);
+    for (const c of set) if (c !== '*') candidates.add(c);
   }
 
-  for (const code of concreteCandidates) {
-    if (codeSets.every(set => set.has(code) || set.has('*'))) return true;
+  for (const code of candidates) {
+    if (codeSets.every(set => set.has(code))) return true;
   }
 
-  return codeSets.every(set => set.has('*'));
+  return false;
 }
