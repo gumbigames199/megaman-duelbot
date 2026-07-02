@@ -141,7 +141,7 @@ export async function renderJackInHUD(
   const shopBtn      = new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Success).setLabel('Shop');
   const dataBtn      = new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data');
   const configBtn    = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config');
-  const pvpBtn       = new ButtonBuilder().setCustomId('jackin:openPvp').setStyle(ButtonStyle.Secondary).setLabel('PvP');
+  const pvpBtn       = new ButtonBuilder().setCustomId('jackin:openPvp').setStyle(ButtonStyle.Danger).setLabel('PvP');
 
   const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(encounterBtn, travelBtn, shopBtn);
   const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(dataBtn, configBtn, pvpBtn);
@@ -487,33 +487,6 @@ export async function onEncounter(ix: ButtonInteraction) {
   }
 }
 
-
-
-/* ------------------------------ PvP hub ------------------------------ */
-
-export async function onOpenPvp(ix: ButtonInteraction) {
-  const embed = new EmbedBuilder()
-    .setTitle('⚔️ PvP NetBattle')
-    .setDescription([
-      'Create an open duel challenge in this channel.',
-      '',
-      'Any NetBattler in this channel can accept the duel.',
-      'Direct challenges are still available with `/pvp user:@player`.',
-    ].join('\n'))
-    .setImage(getTravelImage())
-    .setFooter({ text: 'Open challenges are posted publicly in the current channel.' });
-
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId('jackin:pvpOpenChallenge').setStyle(ButtonStyle.Primary).setLabel('Create Open Challenge'),
-    new ButtonBuilder().setCustomId('jackin:back').setStyle(ButtonStyle.Secondary).setLabel('Back'),
-  );
-
-  await ix.update({ embeds: [embed], components: [row] });
-}
-
-export async function onPvpOpenChallenge(ix: ButtonInteraction) {
-  await createOpenPvpChallenge(ix);
-}
 
 /* ------------------------------ Data / Config hubs ------------------------------ */
 
@@ -1403,6 +1376,39 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
       await ix.update({ embeds: [embed], components: [backRow()] });
     } catch {}
   }
+}
+
+
+/* ------------------------------ PvP Hub ------------------------------ */
+
+export async function onOpenPvp(ix: ButtonInteraction) {
+  const embed = new EmbedBuilder()
+    .setTitle('⚔️ PvP')
+    .setDescription([
+      'Create an open NetBattle challenge in this channel.',
+      '',
+      'Any other player can accept the duel.',
+    ].join('\n'))
+    .setImage(getTravelImage())
+    .setFooter({ text: 'PvP alpha: no rewards are granted.' });
+
+  const createBtn = new ButtonBuilder()
+    .setCustomId('jackin:pvpOpenChallenge')
+    .setStyle(ButtonStyle.Primary)
+    .setLabel('Create Open Challenge');
+  const backBtn = new ButtonBuilder()
+    .setCustomId('jackin:back')
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel('Back');
+
+  await ix.update({
+    embeds: [embed],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(createBtn, backBtn)],
+  });
+}
+
+export async function onPvpOpenChallenge(ix: ButtonInteraction) {
+  await createOpenPvpChallenge(ix);
 }
 
 export async function onShopExit(ix: ButtonInteraction) {
