@@ -67,25 +67,31 @@ function pickEncounterFromEligible(eligible: any[]) {
 }
 
 /** Jack-In HUD (Encounter / Travel / Shop). */
-export async function renderJackInHUD(ix: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction) {
+export async function renderJackInHUD(
+  ix: ButtonInteraction | StringSelectMenuInteraction | ChatInputCommandInteraction,
+  lastResult?: { title: string; lines?: string[] }
+) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
   const b: any = getBundle();
 
-  const regionsArr = asArray<any>(b.regions);
-  const regionsMap = b.regions && !Array.isArray(b.regions) ? b.regions : null;
-
-  const region =
-    (regionsMap ? regionsMap[p?.region_id] : null) ||
-    regionsArr.find(r => String(r?.id) === String(p?.region_id));
-
+  const { region } = getCurrentRegionForPlayer(p, b);
   const zone = getZone(userId) || 1;
+
+  const desc = [
+    `Region: **${region?.name || region?.label || p?.region_id || '—'}**, Zone: **${zone}**`,
+  ];
+
+  if (lastResult) {
+    desc.push('', '📌 **Last Result**', `**${lastResult.title}**`);
+    if (lastResult.lines?.length) desc.push(...lastResult.lines);
+  }
 
   const embed = new EmbedBuilder()
     .setTitle('✅ Jacked In')
-    .setDescription(`Region: **${region?.name || region?.label || p?.region_id || '—'}**, Zone: **${zone}**`)
+    .setDescription(desc.join('\n'))
     .setImage(JACK_GIF || (region?.background_url || null))
-    .setFooter({ text: 'You can Encounter, Travel, or Shop.' });
+    .setFooter({ text: 'Encounter, Travel, or Shop from this same screen.' });
 
   const encounterBtn = new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter');
   const travelBtn    = new ButtonBuilder().setCustomId('jackin:openTravel').setStyle(ButtonStyle.Secondary).setLabel('Travel');
@@ -100,6 +106,21 @@ export async function renderJackInHUD(ix: ButtonInteraction | StringSelectMenuIn
   } else {
     await (ix as StringSelectMenuInteraction).update({ embeds: [embed], components: [row] });
   }
+}
+
+function getCurrentRegionForPlayer(p: any, b: any) {
+  const regionsArr = asArray<any>(b.regions);
+  const regionsMap = b.regions && !Array.isArray(b.regions) ? b.regions : null;
+  const region =
+    (regionsMap ? regionsMap[p?.region_id] : null) ||
+    regionsArr.find(r => String(r?.id) === String(p?.region_id));
+  return { region, regionsArr, regionsMap };
+}
+
+function backRow() {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('jackin:back').setStyle(ButtonStyle.Secondary).setLabel('Back')
+  );
 }
 
 /* ------------------------------ slash ------------------------------ */
@@ -159,34 +180,49 @@ export async function onOpenTravel(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
   const b: any = getBundle();
-
-  const regionsArr = asArray<any>(b.regions);
-  const regionsMap = b.regions && !Array.isArray(b.regions) ? b.regions : null;
-
-  const region =
-    (regionsMap ? regionsMap[p?.region_id] : null) ||
-    regionsArr.find(r => String(r?.id) === String(p?.region_id));
+  const { region } = getCurrentRegionForPlayer(p, b);
 
   if (!region) {
-    await ix.reply({ ephemeral: true, content: 'No region set. Use **/jack_in** first.' });
+    const embed = new EmbedBuilder()
+      .setTitle('🧭 Travel')
+      .setDescription('No region set. Use **/jack_in** first.');
+    await ix.update({ embeds: [embed], components: [backRow()] });
     return;
   }
 
   const zoneCount = Math.max(1, Number(region.zone_count ?? 1));
+  const currentZone = getZone(userId) || 1;
   const zoneSelect = new StringSelectMenuBuilder()
     .setCustomId('jackin:selectZone')
-    .setPlaceholder(`Select a zone in ${region.name || region.label || region.id}`)
+    .setPlaceholder(`Current Zone ${currentZone} — choose a destination`)
     .addOptions(
       Array.from({ length: zoneCount }, (_, i) => {
         const z = i + 1;
-        return { label: `Zone ${z}`, value: String(z) };
+        return {
+          label: `Zone ${z}`,
+          value: String(z),
+          description: z === currentZone ? 'Current location' : `Travel to Zone ${z}`,
+          default: z === currentZone,
+        };
       }),
     );
 
-  await ix.reply({
-    ephemeral: true,
-    content: `Travel within **${region.name || region.label || region.id}**: choose a zone.`,
-    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(zoneSelect)],
+  const embed = new EmbedBuilder()
+    .setTitle(`🧭 Travel — ${region.name || region.label || region.id}`)
+    .setDescription([
+      `Current zone: **${currentZone}**`,
+      '',
+      'Select a zone below. This will update the same Jack-In screen.',
+    ].join('\n'))
+    .setImage(region.background_url || JACK_GIF || null)
+    .setFooter({ text: 'Travel is now part of your active Jack-In panel.' });
+
+  await ix.update({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(zoneSelect),
+      backRow(),
+    ],
   });
 }
 
@@ -194,7 +230,7 @@ export async function onSelectZone(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
   const zone = parseInt(ix.values[0], 10);
   await setZone(userId, zone);
-  await renderJackInHUD(ix);
+  await renderJackInHUD(ix, { title: 'Travel Complete', lines: [`Moved to **Zone ${zone}**.`] });
 }
 
 /**
@@ -320,52 +356,94 @@ function applyUpgradeImmediate(userId: string, chip: any): string {
 }
 
 export async function onOpenShop(ix: ButtonInteraction) {
+  await renderJackInShop(ix, null);
+}
+
+async function renderJackInShop(
+  ix: ButtonInteraction | StringSelectMenuInteraction,
+  selectedId: string | null,
+  notice?: string
+) {
   const userId = ix.user.id;
   const b: any = getBundle();
   const p: any = await getPlayer(userId);
-
-  const regionsArr = asArray<any>(b.regions);
-  const regionsMap = b.regions && !Array.isArray(b.regions) ? b.regions : null;
-
-  const region =
-    (regionsMap ? regionsMap[p?.region_id] : null) ||
-    regionsArr.find(r => String(r?.id) === String(p?.region_id));
+  const { region } = getCurrentRegionForPlayer(p, b);
 
   if (!region) {
-    await ix.reply({ ephemeral: true, content: '🛒 No region selected. Use **/jack_in** first.' });
+    const embed = new EmbedBuilder()
+      .setTitle('🛒 Net Shop')
+      .setDescription('No region selected. Use **/jack_in** first.');
+    await ix.update({ embeds: [embed], components: [backRow()] });
     return;
   }
 
   const items = resolveShopInventory((region as any).id ?? (region as any).name);
   if (!items.length) {
-    await ix.reply({ ephemeral: true, content: `🛒 No shop available in **${region?.name || 'this region'}**.` });
+    const embed = new EmbedBuilder()
+      .setTitle(`🛒 ${region?.name || 'Region'} Shop`)
+      .setDescription(`No shop inventory is available in **${region?.name || 'this region'}**.`)
+      .setImage(region.background_url || JACK_GIF || null);
+    await ix.update({ embeds: [embed], components: [backRow()] });
     return;
   }
 
+  const selected = selectedId
+    ? items.find(i => i.item_id === selectedId) || null
+    : null;
+
   const options = items
-    .map((it) => {
-      const lbl = `${it.name} — ${it.zenny_price}z`;
-      return { label: lbl.slice(0, 100), value: it.item_id };
-    })
+    .map((it) => ({
+      label: `${it.name} — ${it.zenny_price}z`.slice(0, 100),
+      value: it.item_id,
+      description: `${it.is_upgrade ? 'Upgrade' : 'BattleChip'}${it.chip?.element ? ` • ${it.chip.element}` : ''}`.slice(0, 100),
+      default: selected?.item_id === it.item_id,
+    }))
     .slice(0, 25);
 
   const sel = new StringSelectMenuBuilder()
     .setCustomId('jackin:shopSelect')
-    .setPlaceholder('Select an item to inspect/buy')
-    .setMinValues(0)
-    .setMaxValues(1);
-  if (options.length) sel.addOptions(options);
+    .setPlaceholder(selected ? `Selected: ${selected.name}` : 'Select an item to inspect/buy')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(options);
 
-  const buy  = new ButtonBuilder().setCustomId('jackin:shopBuy:_none').setStyle(ButtonStyle.Success).setLabel('Buy').setDisabled(true);
-  const exit = new ButtonBuilder().setCustomId('jackin:shopExit').setStyle(ButtonStyle.Secondary).setLabel('Exit');
+  const buy = new ButtonBuilder()
+    .setCustomId(`jackin:shopBuy:${selected?.item_id || '_none'}`)
+    .setStyle(ButtonStyle.Success)
+    .setLabel(selected ? `Buy for ${selected.zenny_price}z` : 'Buy')
+    .setDisabled(!selected);
+  const exit = new ButtonBuilder().setCustomId('jackin:shopExit').setStyle(ButtonStyle.Secondary).setLabel('Back');
+
+  const desc = [
+    `Region: **${region.name || region.label || region.id}**`,
+    `Your Zenny: **${p?.zenny ?? 0}z**`,
+    '',
+    notice ? `📌 **${notice}**` : 'Pick an item, then press **Buy**.',
+  ];
 
   const embed = new EmbedBuilder()
-    .setTitle(`🛒 ${region.name} Shop`)
-    .setDescription('Pick an item, then **Buy**.')
+    .setTitle(`🛒 ${region.name || region.label || region.id} Shop`)
+    .setDescription(desc.join('\n'))
     .setImage(region.background_url || JACK_GIF || null);
 
-  await ix.reply({
-    ephemeral: true,
+  if (selected) {
+    const c: any = selected.chip || {};
+    const details = [
+      `Price: **${selected.zenny_price}z**`,
+      `Type: **${selected.is_upgrade ? 'Upgrade' : 'BattleChip'}**`,
+      c.element ? `Element: **${c.element}**` : '',
+      Number.isFinite(Number(c.power)) && Number(c.power) > 0 ? `Power: **${c.power}**` : '',
+      Number.isFinite(Number(c.hits)) && Number(c.hits) > 1 ? `Hits: **${c.hits}**` : '',
+      c.effects ? `Effects: ${String(c.effects)}` : '',
+      c.description ? `\n${String(c.description)}` : '',
+    ].filter(Boolean).join('\n');
+
+    embed.addFields({ name: selected.name || formatChipName(c || selected.item_id), value: details || '—' });
+    const img = c.image_url || c.image || null;
+    if (img) embed.setThumbnail(String(img));
+  }
+
+  await ix.update({
     embeds: [embed],
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(sel),
@@ -375,106 +453,57 @@ export async function onOpenShop(ix: ButtonInteraction) {
 }
 
 export async function onShopSelect(ix: StringSelectMenuInteraction) {
-  const userId = ix.user.id;
-  const b: any = getBundle();
-  const p: any = await getPlayer(userId);
-
-  const regionsArr = asArray<any>(b.regions);
-  const regionsMap = b.regions && !Array.isArray(b.regions) ? b.regions : null;
-
-  const region =
-    (regionsMap ? regionsMap[p?.region_id] : null) ||
-    regionsArr.find(r => String(r?.id) === String(p?.region_id));
-
-  const items = region ? resolveShopInventory((region as any).id ?? (region as any).name) : [];
-  const id = ix.values?.[0];
-  const item = items.find(i => i.item_id === id);
-
-  if (!item) {
-    await ix.update({ content: '⚠️ That item is not available here.', components: [] });
-    return;
-  }
-
-  const c: any = item.chip || {};
-  const price = item.zenny_price;
-
-  const embed = new EmbedBuilder()
-    .setTitle(item.name || formatChipName(c || id))
-    .setDescription(`${c.description || '—'}\n\nPrice: **${price}z**`)
-    .setThumbnail(c.image_url || (c as any).image || null);
-
-  const buy  = new ButtonBuilder().setCustomId(`jackin:shopBuy:${id}`).setStyle(ButtonStyle.Success).setLabel(`Buy for ${price}z`);
-  const exit = new ButtonBuilder().setCustomId('jackin:shopExit').setStyle(ButtonStyle.Secondary).setLabel('Exit');
-
-  await ix.update({
-    embeds: [embed],
-    components: [
-      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId('jackin:shopSelect')
-          .setPlaceholder(`Selected: ${item.name || formatChipName(c || id)}`)
-          .setMinValues(0).setMaxValues(1)
-          .addOptions([{ label: `${item.name || formatChipName(c || id)} — ${price}z`.slice(0, 100), value: id }]),
-      ),
-      new ActionRowBuilder<ButtonBuilder>().addComponents(buy, exit),
-    ],
-  });
+  const id = ix.values?.[0] || null;
+  await renderJackInShop(ix, id);
 }
 
 export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
   try {
     if (!chipId || chipId === '_none') {
-      await ix.reply({ ephemeral: true, content: 'Please select an item first.' });
+      await renderJackInShop(ix, null, 'Please select an item first.');
       return;
     }
 
     const userId = ix.user.id;
     const b: any = getBundle();
     const p: any = await getPlayer(userId);
-
-    const regionsArr = asArray<any>(b.regions);
-    const regionsMap = b.regions && !Array.isArray(b.regions) ? b.regions : null;
-
-    const region =
-      (regionsMap ? regionsMap[p?.region_id] : null) ||
-      regionsArr.find(r => String(r?.id) === String(p?.region_id));
+    const { region } = getCurrentRegionForPlayer(p, b);
 
     if (!region) {
-      await ix.reply({ ephemeral: true, content: '⚠️ Pick a region first (use /jack_in).' });
+      const embed = new EmbedBuilder()
+        .setTitle('🛒 Net Shop')
+        .setDescription('Pick a region first from **/jack_in**.');
+      await ix.update({ embeds: [embed], components: [backRow()] });
       return;
     }
 
     const items = resolveShopInventory((region as any).id ?? (region as any).name);
     const item = items.find(s => s.item_id === chipId);
     if (!item) {
-      await ix.reply({ ephemeral: true, content: '❌ That chip is not for sale in this region.' });
+      await renderJackInShop(ix, null, 'That chip is not for sale in this region.');
       return;
     }
 
     const pay = spendZenny(userId, item.zenny_price);
     if (!pay.ok) {
-      await ix.reply({ ephemeral: true, content: `❌ Not enough Zenny. You need ${item.zenny_price}z.` });
+      await renderJackInShop(ix, chipId, `Not enough Zenny. You need ${item.zenny_price}z.`);
       return;
     }
 
     if (item.is_upgrade) {
       const summary = applyUpgradeImmediate(userId, item.chip);
-      await ix.reply({
-        ephemeral: true,
-        content: `✅ Purchased **${item.name}** for **${item.zenny_price}z**.\nUpgrade applied: ${summary}`,
-      });
+      await renderJackInShop(ix, chipId, `Purchased ${item.name} for ${item.zenny_price}z. Upgrade applied: ${summary}.`);
       return;
     }
 
     grantChip(userId, chipId, 1);
-
-    await ix.reply({
-      ephemeral: true,
-      content: `✅ Bought **${item.name}** for **${item.zenny_price}z**.\nAdded to your inventory. Use **/folder** to add it to your active folder.`,
-    });
+    await renderJackInShop(ix, chipId, `Bought ${item.name} for ${item.zenny_price}z. Added to inventory.`);
   } catch (err: any) {
     console.error('onShopBuy error:', err);
-    try { await ix.reply({ ephemeral: true, content: `⚠️ Error: ${err?.message || err}` }); } catch {}
+    try {
+      const embed = new EmbedBuilder().setTitle('⚠️ Shop Error').setDescription(String(err?.message || err));
+      await ix.update({ embeds: [embed], components: [backRow()] });
+    } catch {}
   }
 }
 
