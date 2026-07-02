@@ -137,7 +137,7 @@ export async function renderJackInHUD(
 
   const encounterBtn = new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter');
   const travelBtn    = new ButtonBuilder().setCustomId('jackin:openTravel').setStyle(ButtonStyle.Secondary).setLabel('Travel');
-  const shopBtn      = new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Secondary).setLabel('Shop');
+  const shopBtn      = new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Success).setLabel('Shop');
   const dataBtn      = new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data');
   const configBtn    = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config');
 
@@ -247,7 +247,7 @@ async function renderTravelHome(ix: ButtonInteraction | StringSelectMenuInteract
 
   const regionBtn = new ButtonBuilder()
     .setCustomId('jackin:travelRegion')
-    .setStyle(ButtonStyle.Primary)
+    .setStyle(ButtonStyle.Secondary)
     .setLabel('Change Region');
 
   const zoneBtn = new ButtonBuilder()
@@ -533,7 +533,7 @@ export async function onOpenData(ix: ButtonInteraction) {
   await ix.update({
     embeds: [embed],
     components: [navButtons(
-      new ButtonBuilder().setCustomId('jackin:dataChip').setStyle(ButtonStyle.Primary).setLabel('Chip Index'),
+      new ButtonBuilder().setCustomId('jackin:dataChip').setStyle(ButtonStyle.Secondary).setLabel('Chip Index'),
       new ButtonBuilder().setCustomId('jackin:dataVirus').setStyle(ButtonStyle.Secondary).setLabel('VirusDex'),
       makeBackButton(),
     )],
@@ -555,7 +555,7 @@ export async function onDataChip(ix: ButtonInteraction) {
     embeds: [embed],
     components: [navButtons(
       new ButtonBuilder().setCustomId('jackin:dataChipAll').setStyle(ButtonStyle.Secondary).setLabel('Browse All'),
-      new ButtonBuilder().setCustomId('jackin:dataChipSearch').setStyle(ButtonStyle.Primary).setLabel('Search Chip'),
+      new ButtonBuilder().setCustomId('jackin:dataChipSearch').setStyle(ButtonStyle.Secondary).setLabel('Search Chip'),
       new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Back'),
     )],
   });
@@ -603,7 +603,7 @@ async function renderChipIndexPanel(ix: AnyJackInInteraction, search: string) {
   groups.sort((a, b) => a.name.localeCompare(b.name) || a.baseId.localeCompare(b.baseId));
 
   const components = [navButtons(
-    new ButtonBuilder().setCustomId('jackin:dataChipSearch').setStyle(ButtonStyle.Primary).setLabel('Search Again'),
+    new ButtonBuilder().setCustomId('jackin:dataChipSearch').setStyle(ButtonStyle.Secondary).setLabel('Search Again'),
     new ButtonBuilder().setCustomId('jackin:dataChip').setStyle(ButtonStyle.Secondary).setLabel('Chip Index'),
     new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'),
   )];
@@ -700,7 +700,7 @@ export async function onOpenConfig(ix: ButtonInteraction) {
   await ix.update({
     embeds: [embed],
     components: [navButtons(
-      new ButtonBuilder().setCustomId('jackin:configProfile').setStyle(ButtonStyle.Primary).setLabel('Profile'),
+      new ButtonBuilder().setCustomId('jackin:configProfile').setStyle(ButtonStyle.Secondary).setLabel('Profile'),
       new ButtonBuilder().setCustomId('jackin:configFolder').setStyle(ButtonStyle.Secondary).setLabel('Folder'),
       makeBackButton(),
     )],
@@ -725,7 +725,7 @@ export async function onConfigFolder(ix: ButtonInteraction | StringSelectMenuInt
     .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
     .setImage(getConfigImage());
 
-  const addBtn = new ButtonBuilder().setCustomId('jackin:configFolderAdd').setStyle(ButtonStyle.Primary).setLabel('Add Chips');
+  const addBtn = new ButtonBuilder().setCustomId('jackin:configFolderAdd').setStyle(ButtonStyle.Secondary).setLabel('Add Chips');
   const remBtn = new ButtonBuilder().setCustomId('jackin:configFolderRemove').setStyle(ButtonStyle.Secondary).setLabel('Remove Chips').setDisabled(!folder.length);
   const cfgBtn = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Back');
 
