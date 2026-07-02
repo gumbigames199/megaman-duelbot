@@ -278,73 +278,72 @@ async function handleBuy(ix: ButtonInteraction, regionId: string, chipId: string
 function applyUpgradeChip(userId: string, chipId: string): { ok: boolean } {
   const chip = getChipById(chipId);
   if (!chip) return { ok: false };
-  const eff = String((chip as any).effects ?? '').trim();
-  if (!eff) {
-    // No explicit effects still OK (some upgrades could be passive unlocks later)
-    return { ok: true };
-  }
 
-  const tokens = eff.split(/[,\|]/).map(s => s.trim()).filter(Boolean);
-  if (tokens.length === 0) return { ok: true };
+  const text = [
+    (chip as any).effects,
+    (chip as any).description,
+    (chip as any).name,
+    (chip as any).id,
+    (chip as any).base_id,
+  ].map(v => String(v ?? '').trim()).filter(Boolean).join(' | ');
+
+  if (!text) return { ok: false };
 
   // We need the current player values to compute multipliers
   const p = getPlayer(userId)!;
-
   let delta = { hp_max: 0, atk: 0, def: 0, spd: 0, acc: 0, evasion: 0, crit: 0 };
 
-  for (const t of tokens) {
-    // +N patterns
-    const plus = t.match(/^([A-Za-z]+)\s*\+\s*(-?\d+)$/i);
-    if (plus) {
-      const stat = normalizeStatKey(plus[1]);
-      const amount = parseInt(plus[2], 10) || 0;
-      if (!stat) continue;
+  // +N patterns. Supports: HP+50, HP +50, HP 50, MaxHP+50, Attack+1, Eva+1.
+  const seenPlus = new Set<string>();
+  const plusRx = /\b(max\s*hp|hp\s*max|hpmax|hp|attack|atk|defense|def|speed|spd|accuracy|acc|evasion|eva|crit|critical)\s*(?:by|:)?\s*(?:\+|plus\s*)?\s*([+-]?\d+)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = plusRx.exec(text)) !== null) {
+    const stat = normalizeStatKey(m[1]);
+    const amount = parseInt(m[2], 10) || 0;
+    if (!stat || amount === 0) continue;
+    const seenKey = `${stat}:${amount}`;
+    if (seenPlus.has(seenKey)) continue;
+    seenPlus.add(seenKey);
 
-      if (stat === 'hp' || stat === 'hp_max') delta.hp_max += amount;
-      else if (stat === 'atk') delta.atk += amount;
-      else if (stat === 'def') delta.def += amount;
-      else if (stat === 'spd') delta.spd += amount;
-      else if (stat === 'acc') delta.acc += amount;
-      else if (stat === 'eva' || stat === 'evasion') delta.evasion += amount;
-      else if (stat === 'crit') delta.crit += amount;
-      continue;
-    }
-
-    // xN patterns (multipliers)
-    const mult = t.match(/^([A-Za-z]+)\s*x\s*(\d+(?:\.\d+)?)$/i);
-    if (mult) {
-      const stat = normalizeStatKey(mult[1]);
-      const factor = Number(mult[2]);
-      if (!stat || !Number.isFinite(factor) || factor <= 0) continue;
-
-      if (stat === 'atk') {
-        delta.atk += Math.round(p.atk * (factor - 1));
-      } else if (stat === 'def') {
-        delta.def += Math.round(p.def * (factor - 1));
-      } else if (stat === 'spd') {
-        delta.spd += Math.round(p.spd * (factor - 1));
-      } else if (stat === 'acc') {
-        delta.acc += Math.round(p.acc * (factor - 1));
-      } else if (stat === 'eva' || stat === 'evasion') {
-        delta.evasion += Math.round(p.evasion * (factor - 1));
-      } else if (stat === 'crit') {
-        delta.crit += Math.round(p.crit * (factor - 1));
-      } else if (stat === 'hp' || stat === 'hp_max') {
-        delta.hp_max += Math.round(p.hp_max * (factor - 1));
-      }
-      continue;
-    }
-
-    // Unknown token → ignore
+    if (stat === 'hp_max') delta.hp_max += amount;
+    else if (stat === 'atk') delta.atk += amount;
+    else if (stat === 'def') delta.def += amount;
+    else if (stat === 'spd') delta.spd += amount;
+    else if (stat === 'acc') delta.acc += amount;
+    else if (stat === 'evasion') delta.evasion += amount;
+    else if (stat === 'crit') delta.crit += amount;
   }
+
+  // xN patterns (multipliers). Supports: Atkx2, HPx1.5, etc.
+  const seenMult = new Set<string>();
+  const multRx = /\b(max\s*hp|hp\s*max|hpmax|hp|attack|atk|defense|def|speed|spd|accuracy|acc|evasion|eva|crit|critical)\s*x\s*(\d+(?:\.\d+)?)\b/gi;
+  while ((m = multRx.exec(text)) !== null) {
+    const stat = normalizeStatKey(m[1]);
+    const factor = Number(m[2]);
+    if (!stat || !Number.isFinite(factor) || factor <= 0) continue;
+    const seenKey = `${stat}:x${factor}`;
+    if (seenMult.has(seenKey)) continue;
+    seenMult.add(seenKey);
+
+    if (stat === 'atk') delta.atk += Math.round(p.atk * (factor - 1));
+    else if (stat === 'def') delta.def += Math.round(p.def * (factor - 1));
+    else if (stat === 'spd') delta.spd += Math.round(p.spd * (factor - 1));
+    else if (stat === 'acc') delta.acc += Math.round(p.acc * (factor - 1));
+    else if (stat === 'evasion') delta.evasion += Math.round(p.evasion * (factor - 1));
+    else if (stat === 'crit') delta.crit += Math.round(p.crit * (factor - 1));
+    else if (stat === 'hp_max') delta.hp_max += Math.round(p.hp_max * (factor - 1));
+  }
+
+  const anyDelta = Object.values(delta).some(v => v !== 0);
+  if (!anyDelta) return { ok: false };
 
   applyStatDeltas(userId, delta);
   return { ok: true };
 }
 
 function normalizeStatKey(k: string): string | null {
-  const s = k.trim().toLowerCase();
-  if (s === 'hp' || s === 'hpmax' || s === 'hp_max' || s === 'health') return 'hp_max';
+  const s = String(k || '').replace(/\s+/g, '').toLowerCase();
+  if (s === 'hp' || s === 'maxhp' || s === 'hpmax' || s === 'hp_max' || s === 'health') return 'hp_max';
   if (s === 'atk' || s === 'attack') return 'atk';
   if (s === 'def' || s === 'defense') return 'def';
   if (s === 'spd' || s === 'speed') return 'spd';
