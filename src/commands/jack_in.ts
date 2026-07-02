@@ -16,7 +16,7 @@ import { getBundle, resolveShopInventory, listVirusesForRegionZone, formatChipNa
 import {
   getPlayer, setRegion, setZone, getZone,
   addZenny, spendZenny, grantChip,
-  addHPMax, addATK, addDEF, addSPD, addACC, addEvasion,
+  addHPMax, addATK, addDEF, addSPD, addACC, addEvasion, addCRIT,
 } from '../lib/db';
 import { startBattle } from '../lib/battle';
 
@@ -177,16 +177,126 @@ export async function onSelectRegion(ix: StringSelectMenuInteraction) {
 }
 
 export async function onOpenTravel(ix: ButtonInteraction) {
+  await renderTravelHome(ix);
+}
+
+async function renderTravelHome(ix: ButtonInteraction | StringSelectMenuInteraction, notice?: string) {
+  const userId = ix.user.id;
+  const p: any = await getPlayer(userId);
+  const b: any = getBundle();
+  const { region } = getCurrentRegionForPlayer(p, b);
+  const currentZone = getZone(userId) || 1;
+
+  const desc = [
+    `Current Region: **${region?.name || region?.label || p?.region_id || '—'}**`,
+    `Current Zone: **${currentZone}**`,
+    '',
+    notice ? `📌 **${notice}**` : 'Choose whether to travel to another region or move to a different zone.',
+  ];
+
+  const embed = new EmbedBuilder()
+    .setTitle('🧭 Travel')
+    .setDescription(desc.join('\n'))
+    .setImage(JACK_GIF || (region?.background_url || null))
+    .setFooter({ text: 'Travel stays inside your active Jack-In panel.' });
+
+  const regionBtn = new ButtonBuilder()
+    .setCustomId('jackin:travelRegion')
+    .setStyle(ButtonStyle.Primary)
+    .setLabel('Change Region');
+
+  const zoneBtn = new ButtonBuilder()
+    .setCustomId('jackin:travelZone')
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel('Change Zone')
+    .setDisabled(!region);
+
+  const backBtn = new ButtonBuilder()
+    .setCustomId('jackin:back')
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel('Back');
+
+  await ix.update({
+    embeds: [embed],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(regionBtn, zoneBtn, backBtn)],
+  });
+}
+
+export async function onTravelRegion(ix: ButtonInteraction) {
+  const userId = ix.user.id;
+  await ensureStartUnlocked(userId);
+  const regionsUnlocked = await listUnlocked(userId);
+
+  if (!regionsUnlocked.length) {
+    const embed = new EmbedBuilder()
+      .setTitle('🧭 Change Region')
+      .setDescription('❌ No regions unlocked yet.');
+    await ix.update({ embeds: [embed], components: [backRow()] });
+    return;
+  }
+
+  const p: any = await getPlayer(userId);
+  const currentRegionId = String(p?.region_id || '');
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('jackin:selectTravelRegion')
+    .setPlaceholder('Select an unlocked region')
+    .addOptions(
+      regionsUnlocked
+        .sort((a: any, b: any) => (a.min_level || 1) - (b.min_level || 1) || String(a.name).localeCompare(String(b.name)))
+        .slice(0, 25)
+        .map((r: any) => ({
+          label: String(r.name || r.label || r.id).slice(0, 100),
+          value: String(r.id),
+          description: `${String(r.id) === currentRegionId ? 'Current region • ' : ''}Min Lv ${r.min_level ?? 1} • ${r.zone_count ?? 1} zones`.slice(0, 100),
+          default: String(r.id) === currentRegionId,
+        })),
+    );
+
+  const embed = new EmbedBuilder()
+    .setTitle('🧭 Change Region')
+    .setDescription('Select an unlocked region. Changing region resets your zone to **Zone 1**.')
+    .setImage(JACK_GIF || (regionsUnlocked[0]?.background_url || null));
+
+  await ix.update({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
+      backRow(),
+    ],
+  });
+}
+
+export async function onSelectTravelRegion(ix: StringSelectMenuInteraction) {
+  const userId = ix.user.id;
+  const regionId = ix.values[0];
+  const regionsUnlocked = await listUnlocked(userId);
+  const target = regionsUnlocked.find((r: any) => String(r.id) === String(regionId));
+
+  if (!target) {
+    const embed = new EmbedBuilder()
+      .setTitle('🧭 Change Region')
+      .setDescription('❌ That region is not unlocked.');
+    await ix.update({ embeds: [embed], components: [backRow()] });
+    return;
+  }
+
+  await setRegion(userId, regionId);
+  await setZone(userId, 1);
+  await renderJackInHUD(ix, {
+    title: 'Travel Complete',
+    lines: [`Moved to **${(target as any).name || (target as any).label || (target as any).id} — Zone 1**.`],
+  });
+}
+
+export async function onTravelZone(ix: ButtonInteraction) {
   const userId = ix.user.id;
   const p: any = await getPlayer(userId);
   const b: any = getBundle();
   const { region } = getCurrentRegionForPlayer(p, b);
 
   if (!region) {
-    const embed = new EmbedBuilder()
-      .setTitle('🧭 Travel')
-      .setDescription('No region set. Use **/jack_in** first.');
-    await ix.update({ embeds: [embed], components: [backRow()] });
+    await renderTravelHome(ix, 'No region set. Choose a region first.');
     return;
   }
 
@@ -208,14 +318,14 @@ export async function onOpenTravel(ix: ButtonInteraction) {
     );
 
   const embed = new EmbedBuilder()
-    .setTitle(`🧭 Travel — ${region.name || region.label || region.id}`)
+    .setTitle(`🧭 Change Zone — ${region.name || region.label || region.id}`)
     .setDescription([
       `Current zone: **${currentZone}**`,
       '',
       'Select a zone below. This will update the same Jack-In screen.',
     ].join('\n'))
     .setImage(region.background_url || JACK_GIF || null)
-    .setFooter({ text: 'Travel is now part of your active Jack-In panel.' });
+    .setFooter({ text: 'Zone travel stays inside your active Jack-In panel.' });
 
   await ix.update({
     embeds: [embed],
@@ -230,7 +340,15 @@ export async function onSelectZone(ix: StringSelectMenuInteraction) {
   const userId = ix.user.id;
   const zone = parseInt(ix.values[0], 10);
   await setZone(userId, zone);
-  await renderJackInHUD(ix, { title: 'Travel Complete', lines: [`Moved to **Zone ${zone}**.`] });
+
+  const p: any = await getPlayer(userId);
+  const b: any = getBundle();
+  const { region } = getCurrentRegionForPlayer(p, b);
+
+  await renderJackInHUD(ix, {
+    title: 'Travel Complete',
+    lines: [`Moved to **${region?.name || region?.label || p?.region_id || 'Current Region'} — Zone ${zone}**.`],
+  });
 }
 
 /**
@@ -325,34 +443,84 @@ export async function onEncounter(ix: ButtonInteraction) {
 /* ------------------------------ Shop flow ------------------------------ */
 
 // Upgrade effect parser -> immediate stat application
-function applyUpgradeImmediate(userId: string, chip: any): string {
-  const text = String(chip.effects || chip.description || '');
-  const apply = (rx: RegExp) => {
-    const m = text.match(rx);
-    return m ? parseInt(m[1], 10) : 0;
-  };
-  const dHP  = apply(/(?:hp_max|max\s*hp|hp)\s*([+-]?\d+)/i);
-  const dATK = apply(/atk\s*([+-]?\d+)/i);
-  const dDEF = apply(/def\s*([+-]?\d+)/i);
-  const dSPD = apply(/spd\s*([+-]?\d+)/i);
-  const dACC = apply(/acc\s*([+-]?\d+)/i);
-  const dEVA = apply(/(?:eva|evasion)\s*([+-]?\d+)/i);
+function applyUpgradeImmediate(userId: string, chip: any): { ok: boolean; summary: string } {
+  const delta = parseUpgradeStatDeltas(chip);
 
-  if (dHP)  addHPMax(userId, dHP);
-  if (dATK) addATK(userId, dATK);
-  if (dDEF) addDEF(userId, dDEF);
-  if (dSPD) addSPD(userId, dSPD);
-  if (dACC) addACC(userId, dACC);
-  if (dEVA) addEvasion(userId, dEVA);
+  if (delta.hp_max) addHPMax(userId, delta.hp_max);
+  if (delta.atk) addATK(userId, delta.atk);
+  if (delta.def) addDEF(userId, delta.def);
+  if (delta.spd) addSPD(userId, delta.spd);
+  if (delta.acc) addACC(userId, delta.acc);
+  if (delta.evasion) addEvasion(userId, delta.evasion);
+  if (delta.crit) addCRIT(userId, delta.crit);
 
   const parts: string[] = [];
-  if (dHP)  parts.push(`HP+${dHP}`);
-  if (dATK) parts.push(`ATK+${dATK}`);
-  if (dDEF) parts.push(`DEF+${dDEF}`);
-  if (dSPD) parts.push(`SPD+${dSPD}`);
-  if (dACC) parts.push(`ACC+${dACC}`);
-  if (dEVA) parts.push(`EVA+${dEVA}`);
-  return parts.join(' • ') || 'applied';
+  if (delta.hp_max) parts.push(`HP+${delta.hp_max}`);
+  if (delta.atk) parts.push(`ATK+${delta.atk}`);
+  if (delta.def) parts.push(`DEF+${delta.def}`);
+  if (delta.spd) parts.push(`SPD+${delta.spd}`);
+  if (delta.acc) parts.push(`ACC+${delta.acc}`);
+  if (delta.evasion) parts.push(`EVA+${delta.evasion}`);
+  if (delta.crit) parts.push(`CRIT+${delta.crit}`);
+
+  return parts.length
+    ? { ok: true, summary: parts.join(' • ') }
+    : { ok: false, summary: 'no stat delta found' };
+}
+
+type UpgradeDelta = {
+  hp_max: number;
+  atk: number;
+  def: number;
+  spd: number;
+  acc: number;
+  evasion: number;
+  crit: number;
+};
+
+function parseUpgradeStatDeltas(chip: any): UpgradeDelta {
+  const delta: UpgradeDelta = { hp_max: 0, atk: 0, def: 0, spd: 0, acc: 0, evasion: 0, crit: 0 };
+  const text = [
+    chip?.effects,
+    chip?.description,
+    chip?.name,
+    chip?.id,
+    chip?.base_id,
+  ].map(v => String(v ?? '').trim()).filter(Boolean).join(' | ');
+
+  const seen = new Set<string>();
+  const rx = /\b(max\s*hp|hp\s*max|hpmax|hp|attack|atk|defense|def|speed|spd|accuracy|acc|evasion|eva|crit|critical)\s*(?:by|:)?\s*(?:\+|plus\s*)?\s*([+-]?\d+)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(text)) !== null) {
+    const stat = normalizeUpgradeStatKey(m[1]);
+    const amount = parseInt(m[2], 10) || 0;
+    if (!stat || amount === 0) continue;
+    const key = `${stat}:${amount}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    if (stat === 'hp_max') delta.hp_max += amount;
+    else if (stat === 'atk') delta.atk += amount;
+    else if (stat === 'def') delta.def += amount;
+    else if (stat === 'spd') delta.spd += amount;
+    else if (stat === 'acc') delta.acc += amount;
+    else if (stat === 'evasion') delta.evasion += amount;
+    else if (stat === 'crit') delta.crit += amount;
+  }
+
+  return delta;
+}
+
+function normalizeUpgradeStatKey(k: string): keyof UpgradeDelta | null {
+  const s = String(k || '').replace(/\s+/g, '').toLowerCase();
+  if (s === 'hp' || s === 'maxhp' || s === 'hpmax') return 'hp_max';
+  if (s === 'atk' || s === 'attack') return 'atk';
+  if (s === 'def' || s === 'defense') return 'def';
+  if (s === 'spd' || s === 'speed') return 'spd';
+  if (s === 'acc' || s === 'accuracy') return 'acc';
+  if (s === 'eva' || s === 'evasion') return 'evasion';
+  if (s === 'crit' || s === 'critical') return 'crit';
+  return null;
 }
 
 export async function onOpenShop(ix: ButtonInteraction) {
@@ -491,8 +659,13 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
     }
 
     if (item.is_upgrade) {
-      const summary = applyUpgradeImmediate(userId, item.chip);
-      await renderJackInShop(ix, chipId, `Purchased ${item.name} for ${item.zenny_price}z. Upgrade applied: ${summary}.`);
+      const applied = applyUpgradeImmediate(userId, item.chip);
+      if (!applied.ok) {
+        addZenny(userId, item.zenny_price);
+        await renderJackInShop(ix, chipId, `Could not apply ${item.name}; purchase refunded. Reason: ${applied.summary}.`);
+        return;
+      }
+      await renderJackInShop(ix, chipId, `Purchased ${item.name} for ${item.zenny_price}z. Upgrade applied: ${applied.summary}.`);
       return;
     }
 
