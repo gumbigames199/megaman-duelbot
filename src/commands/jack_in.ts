@@ -20,7 +20,7 @@ import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
 import { getBundle, resolveShopInventory, listVirusesForRegionZone, formatChipName, listChips, chipCode, chipIsUpgrade, getChipById } from '../lib/data';
 import {
   getPlayer, setRegion, setZone, getZone, listSeenViruses, getInventory,
-  addZenny, spendZenny, grantChip,
+  addZenny, spendZenny, grantChip, removeChip,
   addHPMax, addATK, addDEF, addSPD, addACC, addEvasion, addCRIT,
 } from '../lib/db';
 import { startBattle } from '../lib/battle';
@@ -772,12 +772,11 @@ export async function onConfigFolderAdd(ix: ButtonInteraction) {
       const chip: any = getChipById(chipId);
       return { row, chipId, chip };
     })
-    .filter(({ chip }) => chip && !chipIsUpgrade(chip))
+    .filter(({ chipId, chip }) => chip && !chipIsUpgrade(chip) && !folderCounts.has(chipId))
     .map(({ row, chipId, chip }) => {
-      const used = folderCounts.get(chipId) || 0;
       const cap = maxCopiesForChip(chipId);
       return {
-        label: `${formatChipName(chip)} (own ${row.qty}, in folder ${used}/${cap})`.slice(0, 100),
+        label: `${formatChipName(chip)} (own ${row.qty}, cap ${cap})`.slice(0, 100),
         value: chipId,
         description: String(chip?.element || 'BattleChip').slice(0, 100),
       };
@@ -785,7 +784,7 @@ export async function onConfigFolderAdd(ix: ButtonInteraction) {
     .slice(0, 25);
 
   if (!options.length) {
-    await onConfigFolder(ix, 'You have no BattleChips available to add.');
+    await onConfigFolder(ix, 'You have no BattleChips outside your folder available to add.');
     return;
   }
 
@@ -798,7 +797,7 @@ export async function onConfigFolderAdd(ix: ButtonInteraction) {
 
   const embed = new EmbedBuilder()
     .setTitle('🗂️ Add Chips')
-    .setDescription('Select one or more owned chips to add to your folder.')
+    .setDescription('Select one or more owned chips that are not already in your folder.')
     .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
     .setImage(getConfigImage());
 
@@ -1275,7 +1274,10 @@ async function renderJackInShop(
       .setTitle(`🛒 ${region?.name || 'Region'} Shop`)
       .setDescription(`No shop inventory is available in **${region?.name || 'this region'}**.`)
       .setImage(getRegionImage(region) || getTravelImage());
-    await ix.update({ embeds: [embed], components: [backRow()] });
+    await ix.update({
+      embeds: [embed],
+      components: [navButtons(new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Secondary).setLabel('Back'))],
+    });
     return;
   }
 
@@ -1304,6 +1306,10 @@ async function renderJackInShop(
     .setStyle(ButtonStyle.Success)
     .setLabel(selected ? `Buy for ${selected.zenny_price}z` : 'Buy')
     .setDisabled(!selected);
+  const sell = new ButtonBuilder()
+    .setCustomId('jackin:shopSellOpen')
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel('Sell Chips');
   const exit = new ButtonBuilder().setCustomId('jackin:shopExit').setStyle(ButtonStyle.Secondary).setLabel('Back');
 
   const desc = [
@@ -1339,7 +1345,7 @@ async function renderJackInShop(
     embeds: [embed],
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(sel),
-      new ActionRowBuilder<ButtonBuilder>().addComponents(buy, exit),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(buy, sell, exit),
     ],
   });
 }
@@ -1402,6 +1408,151 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
       await ix.update({ embeds: [embed], components: [backRow()] });
     } catch {}
   }
+}
+
+
+function salePriceForChip(chip: any): number {
+  const n = Number(chip?.zenny_cost ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(0, Math.floor(n / 2));
+}
+
+function sellableInventoryRows(userId: string) {
+  const folderSet = new Set(getFolder(userId).map(id => String(id)));
+  return getInventory(userId)
+    .filter(row => Number(row.qty) > 0)
+    .map(row => {
+      const chipId = String(row.chip_id);
+      const chip: any = getChipById(chipId);
+      return { row, chipId, chip, salePrice: salePriceForChip(chip) };
+    })
+    .filter(({ chipId, chip, salePrice }) => chip && !chipIsUpgrade(chip) && salePrice > 0 && !folderSet.has(chipId));
+}
+
+async function renderJackInSellShop(
+  ix: ButtonInteraction | StringSelectMenuInteraction,
+  selectedId: string | null,
+  notice?: string,
+) {
+  const userId = ix.user.id;
+  const b: any = getBundle();
+  const p: any = await getPlayer(userId);
+  const { region } = getCurrentRegionForPlayer(p, b);
+  const sellable = sellableInventoryRows(userId);
+
+  if (!sellable.length) {
+    const embed = new EmbedBuilder()
+      .setTitle('💰 Sell BattleChips')
+      .setDescription([
+        notice ? `📌 **${notice}**` : '',
+        'You have no sellable BattleChips outside your folder.',
+        '',
+        'Chips currently in your folder cannot be sold.',
+      ].filter(Boolean).join('\n'))
+      .setImage(region ? (getRegionImage(region) || getTravelImage()) : getTravelImage());
+    await ix.update({
+      embeds: [embed],
+      components: [navButtons(new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Secondary).setLabel('Back'))],
+    });
+    return;
+  }
+
+  const selected = selectedId
+    ? sellable.find(x => x.chipId === selectedId) || null
+    : null;
+
+  const options = sellable
+    .map(({ row, chipId, chip, salePrice }) => ({
+      label: `${formatChipName(chip)} — sell ${salePrice}z`.slice(0, 100),
+      value: chipId,
+      description: `Own ${row.qty} • Not in folder`.slice(0, 100),
+      default: selected?.chipId === chipId,
+    }))
+    .slice(0, 25);
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('jackin:shopSellSelect')
+    .setPlaceholder(selected ? `Selected: ${formatChipName(selected.chip)}` : 'Select a chip to sell')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(options);
+
+  const sellBtn = new ButtonBuilder()
+    .setCustomId(`jackin:shopSell:${selected?.chipId || '_none'}`)
+    .setStyle(ButtonStyle.Success)
+    .setLabel(selected ? `Sell for ${selected.salePrice}z` : 'Sell')
+    .setDisabled(!selected);
+
+  const backBtn = new ButtonBuilder()
+    .setCustomId('jackin:openShop')
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel('Back');
+
+  const embed = new EmbedBuilder()
+    .setTitle('💰 Sell BattleChips')
+    .setDescription([
+      `Your Zenny: **${p?.zenny ?? 0}z**`,
+      '',
+      notice ? `📌 **${notice}**` : 'Select a BattleChip outside your folder. Sale value is half listed price.',
+    ].join('\n'))
+    .setImage(region ? (getRegionImage(region) || getTravelImage()) : getTravelImage());
+
+  if (selected) {
+    const chip: any = selected.chip || {};
+    embed.addFields({
+      name: formatChipName(chip),
+      value: [
+        `Listed Price: **${priceText(chip.zenny_cost) || '0z'}**`,
+        `Sell Value: **${selected.salePrice}z**`,
+        `Owned: **${selected.row.qty}**`,
+        chip.element ? `Element: **${chip.element}**` : '',
+        Number.isFinite(Number(chip.power)) && Number(chip.power) > 0 ? `Power: **${chip.power}**` : '',
+        chip.effects ? `Effects: ${String(chip.effects)}` : '',
+      ].filter(Boolean).join('\n'),
+    });
+    const img = chipImage(chip);
+    if (img) embed.setThumbnail(img);
+  }
+
+  await ix.update({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(sellBtn, backBtn),
+    ],
+  });
+}
+
+export async function onShopSellOpen(ix: ButtonInteraction) {
+  await renderJackInSellShop(ix, null);
+}
+
+export async function onShopSellSelect(ix: StringSelectMenuInteraction) {
+  await renderJackInSellShop(ix, ix.values?.[0] || null);
+}
+
+export async function onShopSell(ix: ButtonInteraction, chipId: string) {
+  if (!chipId || chipId === '_none') {
+    await renderJackInSellShop(ix, null, 'Please select a BattleChip first.');
+    return;
+  }
+
+  const userId = ix.user.id;
+  const sellable = sellableInventoryRows(userId);
+  const item = sellable.find(x => x.chipId === chipId);
+  if (!item) {
+    await renderJackInSellShop(ix, null, 'That chip cannot be sold. It may be in your folder or no longer in your inventory.');
+    return;
+  }
+
+  const removed = removeChip(userId, chipId, 1);
+  if (!removed) {
+    await renderJackInSellShop(ix, chipId, 'Could not remove that chip from inventory.');
+    return;
+  }
+
+  addZenny(userId, item.salePrice);
+  await renderJackInSellShop(ix, null, `Sold ${formatChipName(item.chip)} for ${item.salePrice}z.`);
 }
 
 

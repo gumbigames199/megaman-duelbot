@@ -75,6 +75,8 @@ export async function onOpenAdd(ix: ButtonInteraction) {
     if (granted > 0) inv = getInventory(userId);
   }
 
+  const folderSet = new Set(getFolder(userId).map(id => String(id)));
+
   const options = inv
     .filter(row => row.qty > 0)
     .map(row => {
@@ -82,7 +84,7 @@ export async function onOpenAdd(ix: ButtonInteraction) {
       const chip: any = getChipById(chipId) || {};
       return { row, chipId, chip };
     })
-    .filter(({ chip }) => chip && !chipIsUpgrade(chip))
+    .filter(({ chipId, chip }) => chip && !chipIsUpgrade(chip) && !folderSet.has(chipId))
     .map(({ row, chipId, chip }) => {
       const name = formatChipName(chip || chipId);
       const cap = maxCopiesForChip(chipId);
@@ -91,7 +93,7 @@ export async function onOpenAdd(ix: ButtonInteraction) {
     .slice(0, 25);
 
   if (!options.length) {
-    await ix.reply({ ephemeral: true, content: 'You have no chips to add.' });
+    await ix.reply({ ephemeral: true, content: 'You have no chips outside your folder to add.' });
     return;
   }
 

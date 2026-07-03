@@ -55,8 +55,8 @@ Boomer	Boomer	Wood	J,K,L	30	100	2	0.95	Shot		2-hit Wood attack	https://static.wi
 HIBoomer	HIBoomer	Wood	M,N,O	38	140	2	0.95	Shot		2-hit Wood attack	https://static.wikia.nocookie.net/megaman/images/9/99/BN6Chip120.png/revision/latest?cb=20111231224306	2	0	0	0	4
 M-Boomer	M-Boomer	Wood	P,Q,R	46	170	2	0.95	Shot		2-hit Wood attack	https://static.wikia.nocookie.net/megaman/images/6/67/BN6Chip121.png/revision/latest?cb=20111231224314	2	0	0	0	4
 Sword	Sword	Neutral	E,L,S,*	10	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/7/70/BN6Chip070.png/revision/latest?cb=20111231223046	1	1500	1	0	4
-WideSwrd	WideSwrd	Neutral	E,L,s,*	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4
-LongSwrd	LongSwrd	Neutral	E,L,s,*	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	0	0	0	4
+WideSwrd	WideSwrd	Neutral	E,L,S,*	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4
+LongSwrd	LongSwrd	Neutral	E,L,S,*	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	0	0	0	4
 StepSwrd	StepSwrd	Neutral	B,L,P	28	160	1	1	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/b/b5/BN6Chip080.png/revision/latest?cb=20111231223306	5	0	0	0	4
 WideBlde	WideBlde	Neutral	B,R	38	150	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/1/13/BN6Chip073.png/revision/latest?cb=20111231223121	2	3000	1	0	4
 LongBlde	LongBlde	Neutral	B,M	38	150	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/3/37/BN6Chip074.png/revision/latest?cb=20111231223130	3	3000	1	0	4

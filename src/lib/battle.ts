@@ -276,7 +276,7 @@ export async function handleLock(ix: ButtonInteraction) {
       return;
     }
 
-    const title = bs.player_hp <= 0 ? "Defeat…" : "Battle End";
+    const title = bs.player_hp <= 0 ? "Navi Deleted" : "Battle End";
     const lossView = renderVictoryToHub({
       enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
       victory: {

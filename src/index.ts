@@ -188,6 +188,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:selectZone') { await JackIn.onSelectZone(ix); return; }
       if (ix.customId === 'jackin:selectTravelRegion') { await JackIn.onSelectTravelRegion(ix); return; }
       if (ix.customId === 'jackin:shopSelect') { await JackIn.onShopSelect(ix); return; }
+      if (ix.customId === 'jackin:shopSellSelect') { await JackIn.onShopSellSelect(ix); return; }
       if (ix.customId === 'jackin:dataVirusSelect') { await JackIn.onDataVirusSelect(ix); return; }
       if (ix.customId === 'jackin:folderAddSelect') { await JackIn.onConfigFolderAddSelect(ix); return; }
       if (ix.customId === 'jackin:folderRemoveSelect') { await JackIn.onConfigFolderRemoveSelect(ix); return; }
@@ -204,6 +205,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:travelZone') { await JackIn.onTravelZone(ix); return; }
       if (ix.customId === 'jackin:encounter') { await JackIn.onEncounter(ix); return; }
       if (ix.customId === 'jackin:openShop') { await JackIn.onOpenShop(ix); return; }
+      if (ix.customId === 'jackin:shopSellOpen') { await JackIn.onShopSellOpen(ix); return; }
       if (ix.customId === 'jackin:openData') { await JackIn.onOpenData(ix); return; }
       if (ix.customId === 'jackin:dataChip') { await JackIn.onDataChip(ix); return; }
       if (ix.customId === 'jackin:dataChipAll') { await JackIn.onDataChipAll(ix); return; }
@@ -225,6 +227,11 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId.startsWith('jackin:shopBuy:')) {
         const chipId = ix.customId.split(':')[2];
         await JackIn.onShopBuy(ix, chipId);
+        return;
+      }
+      if (ix.customId.startsWith('jackin:shopSell:')) {
+        const chipId = ix.customId.split(':')[2];
+        await JackIn.onShopSell(ix, chipId);
         return;
       }
 
