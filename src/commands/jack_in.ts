@@ -140,7 +140,7 @@ export async function renderJackInHUD(
   const travelBtn    = new ButtonBuilder().setCustomId('jackin:openTravel').setStyle(ButtonStyle.Secondary).setLabel('Travel');
   const shopBtn      = new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Success).setLabel('Shop');
   const dataBtn      = new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data');
-  const configBtn    = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config');
+  const configBtn    = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('PET');
   const pvpBtn       = new ButtonBuilder().setCustomId('jackin:openPvp').setStyle(ButtonStyle.Danger).setLabel('PvP');
 
   const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(encounterBtn, travelBtn, shopBtn);
@@ -488,7 +488,7 @@ export async function onEncounter(ix: ButtonInteraction) {
 }
 
 
-/* ------------------------------ Data / Config hubs ------------------------------ */
+/* ------------------------------ Data / PET hubs ------------------------------ */
 
 type AnyJackInInteraction = ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
 
@@ -716,9 +716,9 @@ export async function onDataVirusSelect(ix: StringSelectMenuInteraction) {
 
 export async function onOpenConfig(ix: ButtonInteraction) {
   const embed = new EmbedBuilder()
-    .setTitle('⚙️ Config')
+    .setTitle('📟 PET')
     .setDescription([
-      'Manage your Navi from the same Jack-In screen.',
+      'Manage your Navi and folder from the same Jack-In screen.',
       '',
       '**Profile** shows stats, zenny, and inventory preview.',
       '**Folder** lets you view, add, and remove BattleChips.',
@@ -738,7 +738,7 @@ export async function onOpenConfig(ix: ButtonInteraction) {
 export async function onConfigProfile(ix: ButtonInteraction) {
   await ix.update({
     embeds: [buildProfileEmbed(ix.user.id, ix.user.username, ix.user.displayAvatarURL())],
-    components: [navButtons(new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config'), makeBackButton())],
+    components: [navButtons(new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('PET'), makeBackButton())],
   });
 }
 
