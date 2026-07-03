@@ -27,7 +27,7 @@ import {
 } from '../lib/db';
 import { startBattle } from '../lib/battle';
 import { createOpenPvpChallenge } from '../lib/pvp';
-import { getFolder, setFolder, validateFolder, validateFolderMinimum, MAX_FOLDER, MIN_FOLDER, maxCopiesForChip, getMaxRemovableFolderSlots } from '../lib/folder';
+import { getFolder, setFolder, validateFolder, validateFolderMinimum, MAX_FOLDER, MIN_FOLDER, maxCopiesForChip, getMaxRemovableFolderSlots, getAvailableChipQty } from '../lib/folder';
 
 const JACK_GIF =
   process.env.JACK_IN_GIF_URL ||
@@ -1066,10 +1066,12 @@ function formatInventoryTop(userId: string, limit = 12): string {
   const rows = getInventory(userId) || [];
   const pretty = rows
     .map((r: any) => {
-      const chip: any = getChipById(r.chip_id);
-      return { chip, qty: Number(r.qty ?? 0), rawId: String(r.chip_id) };
+      const rawId = String(r.chip_id);
+      const chip: any = getChipById(rawId);
+      const available = getAvailableChipQty(userId, rawId);
+      return { chip, qty: available, rawId };
     })
-    .filter(({ chip }) => chip && !chipIsUpgrade(chip))
+    .filter(({ chip, qty }) => qty > 0 && chip && !chipIsUpgrade(chip))
     .map(({ chip, qty, rawId }) => `${formatChipName(chip || rawId)} ×${qty}`);
   return pretty.length ? pretty.slice(0, limit).join(' • ') : '—';
 }

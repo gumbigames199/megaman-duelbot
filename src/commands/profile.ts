@@ -11,7 +11,6 @@ import {
 import {
   getPlayer,
   listInventory,
-  listFolder,
   getStyleProgress,
   getPendingStyleElement,
   normalizeStyleElement,
@@ -19,6 +18,7 @@ import {
   STYLE_CHANGE_THRESHOLD,
 } from '../lib/db';
 import { getChipById, chipIsUpgrade, formatChipName } from '../lib/data';
+import { getAvailableChipQty } from '../lib/folder';
 
 export const data = new SlashCommandBuilder()
   .setName('profile')
@@ -31,20 +31,11 @@ export const data = new SlashCommandBuilder()
 
 function formatInventoryTop(userId: string, limit = 12) {
   const rows = listInventory(userId) || [];
-  const folderRows = listFolder(userId) || [];
-  const folderQty = new Map<string, number>();
-
-  for (const r of folderRows as any[]) {
-    const chipId = String(r.chip_id);
-    folderQty.set(chipId, (folderQty.get(chipId) || 0) + Number(r.qty ?? 0));
-  }
 
   const pretty = rows
     .map((r: any) => {
       const rawId = String(r.chip_id);
-      const owned = Number(r.qty ?? 0);
-      const inFolder = Number(folderQty.get(rawId) || 0);
-      const available = Math.max(0, owned - inFolder);
+      const available = getAvailableChipQty(userId, rawId);
       const chip: any = getChipById(rawId);
       return { chip, qty: available, rawId };
     })
