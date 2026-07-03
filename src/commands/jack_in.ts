@@ -1426,7 +1426,7 @@ function sellableInventoryRows(userId: string) {
       const chip: any = getChipById(chipId);
       return { row, chipId, chip, salePrice: salePriceForChip(chip) };
     })
-    .filter(({ chipId, chip, salePrice }) => chip && !chipIsUpgrade(chip) && salePrice > 0 && !folderSet.has(chipId));
+    .filter(({ chipId, chip }) => chip && !chipIsUpgrade(chip) && !folderSet.has(chipId));
 }
 
 async function renderJackInSellShop(
@@ -1445,7 +1445,7 @@ async function renderJackInSellShop(
       .setTitle('💰 Sell BattleChips')
       .setDescription([
         notice ? `📌 **${notice}**` : '',
-        'You have no sellable BattleChips outside your folder.',
+        'You have no BattleChips outside your folder that can be sold.',
         '',
         'Chips currently in your folder cannot be sold.',
       ].filter(Boolean).join('\n'))
