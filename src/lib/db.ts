@@ -56,7 +56,7 @@ const MAX_EVA_CAP = toInt(process.env.MAX_EVA_CAP, 50);
 const MAX_CRIT_CAP = toInt(process.env.MAX_CRIT_CAP, 25);
 
 const STARTER_ZENNY = toInt(process.env.STARTER_ZENNY, 0);
-export const STYLE_CHANGE_THRESHOLD = toInt(process.env.STYLE_CHANGE_THRESHOLD, 500);
+export const STYLE_CHANGE_THRESHOLD = toInt(process.env.STYLE_CHANGE_THRESHOLD, 250);
 
 // Folder limit (total slots = sum of qty in folder)
 const FOLDER_CAP = toInt(process.env.MAX_FOLDER ?? process.env.FOLDER_CAP, 30);

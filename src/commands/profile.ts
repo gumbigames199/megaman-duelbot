@@ -11,6 +11,7 @@ import {
 import {
   getPlayer,
   listInventory,
+  listFolder,
   getStyleProgress,
   getPendingStyleElement,
   normalizeStyleElement,
@@ -30,13 +31,24 @@ export const data = new SlashCommandBuilder()
 
 function formatInventoryTop(userId: string, limit = 12) {
   const rows = listInventory(userId) || [];
+  const folderRows = listFolder(userId) || [];
+  const folderQty = new Map<string, number>();
+
+  for (const r of folderRows as any[]) {
+    const chipId = String(r.chip_id);
+    folderQty.set(chipId, (folderQty.get(chipId) || 0) + Number(r.qty ?? 0));
+  }
 
   const pretty = rows
     .map((r: any) => {
-      const chip: any = getChipById(r.chip_id);
-      return { chip, qty: Number(r.qty ?? 0), rawId: String(r.chip_id) };
+      const rawId = String(r.chip_id);
+      const owned = Number(r.qty ?? 0);
+      const inFolder = Number(folderQty.get(rawId) || 0);
+      const available = Math.max(0, owned - inFolder);
+      const chip: any = getChipById(rawId);
+      return { chip, qty: available, rawId };
     })
-    .filter(({ chip }) => chip && !chipIsUpgrade(chip))
+    .filter(({ chip, qty }) => qty > 0 && chip && !chipIsUpgrade(chip))
     .map(({ chip, qty, rawId }) => `${formatChipName(chip || rawId)} ×${qty}`);
 
   if (!pretty.length) return '—';
@@ -44,7 +56,7 @@ function formatInventoryTop(userId: string, limit = 12) {
 }
 
 function formatStyleProgress(progress: any): string {
-  const threshold = Number(progress?.threshold || STYLE_CHANGE_THRESHOLD || 500);
+  const threshold = Number(progress?.threshold || STYLE_CHANGE_THRESHOLD || 250);
   return [
     `🔥 Fire: ${Number(progress?.fire_points || 0)}/${threshold}`,
     `💧 Aqua: ${Number(progress?.aqua_points || 0)}/${threshold}`,
@@ -91,7 +103,7 @@ function buildProfileEmbed(user: { id: string; username: string; displayAvatarUR
       },
       { name: 'Style Progress', value: formatStyleProgress(progress), inline: false },
       { name: 'Zenny', value: String(p?.zenny ?? 0), inline: true },
-      { name: 'Inventory (top)', value: invLine, inline: false },
+      { name: 'Inventory Available', value: invLine, inline: false },
     );
 
   if (desc) embed.setDescription(desc);
