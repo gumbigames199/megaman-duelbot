@@ -1147,15 +1147,28 @@ function buildChipDetailEmbed(group: ChipGroup, rawSearch: string) {
     statLine('Max Copies', numText(c.max_copies)),
   ].filter(Boolean).join('\n') || '—';
 
+  const pa = findProgramAdvanceForChip(group);
+  const idFieldName = pa ? 'Program Advance ID' : 'Variant IDs';
+  const idFieldValue = pa
+    ? inlineCode(clean(pa.id ?? c.id ?? group.baseId ?? group.key))
+    : group.variants.map(v => inlineCode(clean(v.id))).join(' ') || '—';
+
+  const fields: Array<{ name: string; value: string; inline: boolean }> = [];
+  if (pa) {
+    fields.push({ name: 'Program Advance Combo', value: formatProgramAdvanceCombo(pa), inline: false });
+  } else {
+    fields.push({ name: 'Codes', value: group.codes.length ? group.codes.map(x => inlineCode(x)).join(' ') : '—', inline: false });
+  }
+  fields.push(
+    { name: 'Stats', value: stats, inline: false },
+    { name: 'Effects', value: clean(c.effects) || '—', inline: false },
+    { name: idFieldName, value: idFieldValue, inline: false },
+  );
+
   const embed = new EmbedBuilder()
     .setTitle(`📦 Chip Index — ${group.name}`)
     .setDescription(clean(c.description) || '—')
-    .addFields(
-      { name: 'Codes', value: group.codes.length ? group.codes.map(x => inlineCode(x)).join(' ') : '—', inline: false },
-      { name: 'Stats', value: stats, inline: false },
-      { name: 'Effects', value: clean(c.effects) || '—', inline: false },
-      { name: 'Variant IDs', value: group.variants.map(v => inlineCode(clean(v.id))).join(' ') || '—', inline: false },
-    )
+    .addFields(...fields)
     .setFooter({ text: `Base ID: ${group.baseId || group.key}` });
   const img = chipImage(c);
   embed.setImage(img || getDataImage());
@@ -1164,14 +1177,67 @@ function buildChipDetailEmbed(group: ChipGroup, rawSearch: string) {
 
 function formatChipGroupLine(group: ChipGroup): string {
   const c = group.sample ?? {};
-  const codes = group.codes.length ? group.codes.join(', ') : '—';
+  const pa = findProgramAdvanceForChip(group);
+  const heading = pa
+    ? `PA Combo: ${formatProgramAdvanceCombo(pa)}`
+    : `Codes: ${inlineCode(group.codes.length ? group.codes.join(', ') : '—')}`;
   const bits = [
     clean(c.element) && clean(c.element) !== 'Neutral' ? clean(c.element) : '',
     numText(c.power) ? `P${numText(c.power)}` : '',
     Number(c.hits) > 1 ? `x${c.hits}` : '',
     priceText(c.zenny_cost),
   ].filter(Boolean);
-  return `**${group.name}** — Codes: ${inlineCode(codes)}\n${bits.join(' • ') || '—'}`;
+  return `**${group.name}** — ${heading}\n${bits.join(' • ') || '—'}`;
+}
+
+function findProgramAdvanceForChip(group: ChipGroup): any | null {
+  const b = getBundle() as any;
+  const rows = Object.values(b.programAdvances ?? {}) as any[];
+  if (!rows.length) return null;
+
+  const ids = new Set<string>();
+  for (const v of group.variants ?? []) {
+    addLookupId(ids, v?.id);
+    addLookupId(ids, v?.base_id);
+    addLookupId(ids, v?.baseId);
+    addLookupId(ids, v?.base);
+  }
+  addLookupId(ids, group.baseId);
+  addLookupId(ids, group.key);
+  addLookupId(ids, group.name);
+
+  return rows.find((pa) => {
+    const result = clean(pa?.result_chip_id ?? pa?.resultChipId ?? pa?.result ?? '');
+    const paId = clean(pa?.id ?? '');
+    return ids.has(result.toLowerCase()) || ids.has(paId.toLowerCase());
+  }) ?? null;
+}
+
+function addLookupId(ids: Set<string>, value: any) {
+  const text = clean(value).toLowerCase();
+  if (text) ids.add(text);
+}
+
+function formatProgramAdvanceCombo(pa: any): string {
+  const chipIds = splitPaList(pa?.required_chip_ids ?? pa?.requiredChipIds ?? pa?.chip_ids ?? pa?.chips);
+  const letters = splitPaList(pa?.required_letters ?? pa?.requiredLetters ?? pa?.letters ?? pa?.codes);
+
+  if (chipIds.length) {
+    return chipIds.map((chipId, i) => {
+      const code = normalizeCode(letters[i] ?? '');
+      return code ? `${clean(chipId)} [${code}]` : clean(chipId);
+    }).join(' + ');
+  }
+
+  return clean(pa?.description) || '—';
+}
+
+function splitPaList(raw: any): string[] {
+  if (Array.isArray(raw)) return raw.map(clean).filter(Boolean);
+  return String(raw ?? '')
+    .split(/[,;|]/)
+    .map(clean)
+    .filter(Boolean);
 }
 
 function buildVirusDexDetailEmbed(userId: string, id: string) {
