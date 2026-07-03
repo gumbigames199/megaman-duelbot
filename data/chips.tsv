@@ -116,24 +116,32 @@ DolThdr2_P	DolThdr2	Elec	P	34	150	1	0.95	Shot	Paralyze(12)	Paralyze enemy 2 turn
 DolThdr3_B	DolThdr3	Elec	B	42	180	1	0.95	Shot	Paralyze(12)	Paralyze enemy 2 turns	https://static.wikia.nocookie.net/megaman/images/5/5f/BN6Chip032.png/revision/latest?cb=20111231222325	3	2500	0	0	4	DolThdr3	B	B,R,V
 DolThdr3_R	DolThdr3	Elec	R	42	180	1	0.95	Shot	Paralyze(12)	Paralyze enemy 2 turns	https://static.wikia.nocookie.net/megaman/images/5/5f/BN6Chip032.png/revision/latest?cb=20111231222325	3	2500	0	0	4	DolThdr3	R	B,R,V
 DolThdr3_V	DolThdr3	Elec	V	42	180	1	0.95	Shot	Paralyze(12)	Paralyze enemy 2 turns	https://static.wikia.nocookie.net/megaman/images/5/5f/BN6Chip032.png/revision/latest?cb=20111231222325	3	2500	0	0	4	DolThdr3	V	B,R,V
-ElcPuls1_J	ElcPuls1	Elec	J	22	100	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/6/6d/BN6Chip033.png/revision/latest?cb=20111231222333	1	1500	0	0	4	ElcPuls1	J	J,K,M
-ElcPuls1_K	ElcPuls1	Elec	K	22	100	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/6/6d/BN6Chip033.png/revision/latest?cb=20111231222333	1	1500	0	0	4	ElcPuls1	K	J,K,M
-ElcPuls1_M	ElcPuls1	Elec	M	22	100	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/6/6d/BN6Chip033.png/revision/latest?cb=20111231222333	1	1500	0	0	4	ElcPuls1	M	J,K,M
+ElcPuls1_J	ElcPuls1	Elec	J	22	100	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/6/6d/BN6Chip033.png/revision/latest?cb=20111231222333	1	1500	0	0	4	ElcPuls1	J	J,K,L,M
+ElcPuls1_K	ElcPuls1	Elec	K	22	100	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/6/6d/BN6Chip033.png/revision/latest?cb=20111231222333	1	1500	0	0	4	ElcPuls1	K	J,K,L,M
+ElcPuls1_L	ElcPuls1	Elec	L	22	100	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/6/6d/BN6Chip033.png/revision/latest?cb=20111231222333	1	1500	0	0	4	ElcPuls1	L	J,K,L,M
+ElcPuls1_M	ElcPuls1	Elec	M	22	100	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/6/6d/BN6Chip033.png/revision/latest?cb=20111231222333	1	1500	0	0	4	ElcPuls1	M	J,K,L,M
 ElcPuls2_M	ElcPuls2	Elec	M	28	120	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/b/bc/BN6Chip034.png/revision/latest?cb=20111231222343	2	1750	0	0	4	ElcPuls2	M	M,N,O
 ElcPuls2_N	ElcPuls2	Elec	N	28	120	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/b/bc/BN6Chip034.png/revision/latest?cb=20111231222343	2	1750	0	0	4	ElcPuls2	N	M,N,O
 ElcPuls2_O	ElcPuls2	Elec	O	28	120	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/b/bc/BN6Chip034.png/revision/latest?cb=20111231222343	2	1750	0	0	4	ElcPuls2	O	M,N,O
 ElcPuls3_P	ElcPuls3	Elec	P	34	140	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/1/13/BN6Chip035.png/revision/latest?cb=20111231222353	3	2000	0	0	4	ElcPuls3	P	P,Q,R
 ElcPuls3_Q	ElcPuls3	Elec	Q	34	140	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/1/13/BN6Chip035.png/revision/latest?cb=20111231222353	3	2000	0	0	4	ElcPuls3	Q	P,Q,R
 ElcPuls3_R	ElcPuls3	Elec	R	34	140	3	0.95	Shot		Elec attack	https://static.wikia.nocookie.net/megaman/images/1/13/BN6Chip035.png/revision/latest?cb=20111231222353	3	2000	0	0	4	ElcPuls3	R	P,Q,R
-CornSht1_H	CornSht1	Wood	H	24	50	1	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/a/a9/BN6Chip036.png/revision/latest?cb=20111231222403	1	1500	0	0	4	CornSht1	H	H,N,T
-CornSht1_N	CornSht1	Wood	N	24	50	1	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/a/a9/BN6Chip036.png/revision/latest?cb=20111231222403	1	1500	0	0	4	CornSht1	N	H,N,T
-CornSht1_T	CornSht1	Wood	T	24	50	1	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/a/a9/BN6Chip036.png/revision/latest?cb=20111231222403	1	1500	0	0	4	CornSht1	T	H,N,T
-CornSht2_C	CornSht2	Wood	C	32	60	2	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6Chip037.png/revision/latest?cb=20111231222415	2	1750	0	0	4	CornSht2	C	C,G,M
-CornSht2_G	CornSht2	Wood	G	32	60	2	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6Chip037.png/revision/latest?cb=20111231222415	2	1750	0	0	4	CornSht2	G	C,G,M
-CornSht2_M	CornSht2	Wood	M	32	60	2	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6Chip037.png/revision/latest?cb=20111231222415	2	1750	0	0	4	CornSht2	M	C,G,M
-CornSht3_D	CornSht3	Wood	D	40	70	3	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/5/53/BN6Chip038.png/revision/latest?cb=20111231222425	3	2000	0	0	4	CornSht3	D	D,J,Q
-CornSht3_J	CornSht3	Wood	J	40	70	3	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/5/53/BN6Chip038.png/revision/latest?cb=20111231222425	3	2000	0	0	4	CornSht3	J	D,J,Q
-CornSht3_Q	CornSht3	Wood	Q	40	70	3	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/5/53/BN6Chip038.png/revision/latest?cb=20111231222425	3	2000	0	0	4	CornSht3	Q	D,J,Q
+CornSht1_H	CornSht1	Wood	H	24	50	1	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/a/a9/BN6Chip036.png/revision/latest?cb=20111231222403	1	1500	0	0	4	CornSht1	H	H,J,K,L,N,T
+CornSht1_J	CornSht1	Wood	J	24	50	1	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/a/a9/BN6Chip036.png/revision/latest?cb=20111231222403	1	1500	0	0	4	CornSht1	J	H,J,K,L,N,T
+CornSht1_K	CornSht1	Wood	K	24	50	1	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/a/a9/BN6Chip036.png/revision/latest?cb=20111231222403	1	1500	0	0	4	CornSht1	K	H,J,K,L,N,T
+CornSht1_L	CornSht1	Wood	L	24	50	1	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/a/a9/BN6Chip036.png/revision/latest?cb=20111231222403	1	1500	0	0	4	CornSht1	L	H,J,K,L,N,T
+CornSht1_N	CornSht1	Wood	N	24	50	1	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/a/a9/BN6Chip036.png/revision/latest?cb=20111231222403	1	1500	0	0	4	CornSht1	N	H,J,K,L,N,T
+CornSht1_T	CornSht1	Wood	T	24	50	1	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/a/a9/BN6Chip036.png/revision/latest?cb=20111231222403	1	1500	0	0	4	CornSht1	T	H,J,K,L,N,T
+CornSht2_C	CornSht2	Wood	C	32	60	2	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6Chip037.png/revision/latest?cb=20111231222415	2	1750	0	0	4	CornSht2	C	C,D,E,G,M
+CornSht2_D	CornSht2	Wood	D	32	60	2	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6Chip037.png/revision/latest?cb=20111231222415	2	1750	0	0	4	CornSht2	D	C,D,E,G,M
+CornSht2_E	CornSht2	Wood	E	32	60	2	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6Chip037.png/revision/latest?cb=20111231222415	2	1750	0	0	4	CornSht2	E	C,D,E,G,M
+CornSht2_G	CornSht2	Wood	G	32	60	2	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6Chip037.png/revision/latest?cb=20111231222415	2	1750	0	0	4	CornSht2	G	C,D,E,G,M
+CornSht2_M	CornSht2	Wood	M	32	60	2	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6Chip037.png/revision/latest?cb=20111231222415	2	1750	0	0	4	CornSht2	M	C,D,E,G,M
+CornSht3_D	CornSht3	Wood	D	40	70	3	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/5/53/BN6Chip038.png/revision/latest?cb=20111231222425	3	2000	0	0	4	CornSht3	D	D,J,P,Q,R
+CornSht3_J	CornSht3	Wood	J	40	70	3	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/5/53/BN6Chip038.png/revision/latest?cb=20111231222425	3	2000	0	0	4	CornSht3	J	D,J,P,Q,R
+CornSht3_P	CornSht3	Wood	P	40	70	3	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/5/53/BN6Chip038.png/revision/latest?cb=20111231222425	3	2000	0	0	4	CornSht3	P	D,J,P,Q,R
+CornSht3_Q	CornSht3	Wood	Q	40	70	3	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/5/53/BN6Chip038.png/revision/latest?cb=20111231222425	3	2000	0	0	4	CornSht3	Q	D,J,P,Q,R
+CornSht3_R	CornSht3	Wood	R	40	70	3	0.95	Shot		Wood attack	https://static.wikia.nocookie.net/megaman/images/5/53/BN6Chip038.png/revision/latest?cb=20111231222425	3	2000	0	0	4	CornSht3	R	D,J,P,Q,R
 FireHit1_D	FireHit1	Fire	D	12	60	2	0.95	Sword	Burn(5%,2t)	Burns enemy 5% for 2 turns	https://static.wikia.nocookie.net/megaman/images/9/95/BN6Chip105.png/revision/latest?cb=20111231223915	1	1500	0	0	4	FireHit1	D	D,E,F
 FireHit1_E	FireHit1	Fire	E	12	60	2	0.95	Sword	Burn(5%,2t)	Burns enemy 5% for 2 turns	https://static.wikia.nocookie.net/megaman/images/9/95/BN6Chip105.png/revision/latest?cb=20111231223915	1	1500	0	0	4	FireHit1	E	D,E,F
 FireHit1_F	FireHit1	Fire	F	12	60	2	0.95	Sword	Burn(5%,2t)	Burns enemy 5% for 2 turns	https://static.wikia.nocookie.net/megaman/images/9/95/BN6Chip105.png/revision/latest?cb=20111231223915	1	1500	0	0	4	FireHit1	F	D,E,F
@@ -174,14 +182,14 @@ Sword_E	Sword	Neutral	E	10	80	1	0.98	Sword		Sword attack	https://static.wikia.no
 Sword_L	Sword	Neutral	L	10	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/7/70/BN6Chip070.png/revision/latest?cb=20111231223046	1	1500	1	0	4	Sword	L	E,L,S,*
 Sword_S	Sword	Neutral	S	10	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/7/70/BN6Chip070.png/revision/latest?cb=20111231223046	1	1500	1	0	4	Sword	S	E,L,S,*
 Sword_STAR	Sword	Neutral	*	10	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/7/70/BN6Chip070.png/revision/latest?cb=20111231223046	1	1500	1	0	4	Sword	*	E,L,S,*
-WideSwrd_E	WideSwrd	Neutral	E	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	E	E,L,s,*
-WideSwrd_L	WideSwrd	Neutral	L	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	L	E,L,s,*
-WideSwrd_S	WideSwrd	Neutral	s	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	s	E,L,s,*
-WideSwrd_STAR	WideSwrd	Neutral	*	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	*	E,L,s,*
-LongSwrd_E	LongSwrd	Neutral	E	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	1500	0	0	4	LongSwrd	E	E,L,s,*
-LongSwrd_L	LongSwrd	Neutral	L	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	1500	0	0	4	LongSwrd	L	E,L,s,*
-LongSwrd_S	LongSwrd	Neutral	s	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	1500	0	0	4	LongSwrd	s	E,L,s,*
-LongSwrd_STAR	LongSwrd	Neutral	*	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	1500	0	0	4	LongSwrd	*	E,L,s,*
+WideSwrd_E	WideSwrd	Neutral	E	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	E	E,L,S,*
+WideSwrd_L	WideSwrd	Neutral	L	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	L	E,L,S,*
+WideSwrd_S	WideSwrd	Neutral	S	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	S	E,L,S,*
+WideSwrd_STAR	WideSwrd	Neutral	*	16	80	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/a/a6/BN6Chip071.png/revision/latest?cb=20111231223059	2	1500	1	0	4	WideSwrd	*	E,L,S,*
+LongSwrd_E	LongSwrd	Neutral	E	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	1500	0	0	4	LongSwrd	E	E,L,S,*
+LongSwrd_L	LongSwrd	Neutral	L	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	1500	0	0	4	LongSwrd	L	E,L,S,*
+LongSwrd_S	LongSwrd	Neutral	S	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	1500	0	0	4	LongSwrd	S	E,L,S,*
+LongSwrd_STAR	LongSwrd	Neutral	*	24	100	1	0.98	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/6/60/BN6Chip072.png/revision/latest?cb=20111231223110	2	1500	0	0	4	LongSwrd	*	E,L,S,*
 StepSwrd_B	StepSwrd	Neutral	B	28	160	1	1	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/b/b5/BN6Chip080.png/revision/latest?cb=20111231223306	5	2000	0	0	4	StepSwrd	B	B,L,P
 StepSwrd_L	StepSwrd	Neutral	L	28	160	1	1	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/b/b5/BN6Chip080.png/revision/latest?cb=20111231223306	5	2000	0	0	4	StepSwrd	L	B,L,P
 StepSwrd_P	StepSwrd	Neutral	P	28	160	1	1	Sword		Sword attack	https://static.wikia.nocookie.net/megaman/images/b/b5/BN6Chip080.png/revision/latest?cb=20111231223306	5	2000	0	0	4	StepSwrd	P	B,L,P
@@ -393,3 +401,31 @@ Bass_F	Bass	Neutral	F	95	60	6	0.9	Mega		6-hit attack	https://static.wikia.nocook
 Bass_STAR	Bass	Neutral	*	95	60	6	0.9	Mega		6-hit attack	https://static.wikia.nocookie.net/megaman/images/0/0d/BN6GGChip001.png/revision/latest?cb=20120101125738	4	5000	0	0	1	Bass	*	F,*
 Count_H	Count	Neutral	H	60	20	9	0.9	Mega	Blind(3t)	9-hit attack Blinds enemy	https://static.wikia.nocookie.net/megaman/images/b/b8/BN6MJChip040.png/revision/latest?cb=20120106101550	4	5000	0	0	1	Count	H	H,*
 Count_STAR	Count	Neutral	*	60	20	9	0.9	Mega	Blind(3t)	9-hit attack Blinds enemy	https://static.wikia.nocookie.net/megaman/images/b/b8/BN6MJChip040.png/revision/latest?cb=20120106101550	4	5000	0	0	1	Count	*	H,*
+GigaCan1	Giga Cannon 1	Neutral		0	400	1	1.0	Shot		PA Cannon attack		5	0	0	0	0	GigaCan1		
+GigaCan2	Giga Cannon 2	Neutral		0	500	1	1.0	Shot		PA Cannon attack		5	0	0	0	0	GigaCan2		
+GigaCan3	Giga Cannon 3	Neutral		0	600	1	1.0	Shot		PA Cannon attack		5	0	0	0	0	GigaCan3		
+WideBrn1	Wide Burner 1	Fire		0	300	1	1.0	Shot	Burn(10%,2t)	PA Burns enemy 10% for 2 turns		5	0	0	0	0	WideBrn1		
+WideBrn2	Wide Burner 2	Fire		0	350	1	1.0	Shot	Burn(10%,2t)	PA Burns enemy 10% for 2 turns		5	0	0	0	0	WideBrn2		
+WideBrn3	Wide Burner 3	Fire		0	350	1	1.0	Shot	Burn(10%,2t)	PA Burns enemy 10% for 2 turns		5	0	0	0	0	WideBrn3		
+FlmHook1	Flame Hook 1	Fire		0	300	1	1.0	Shot	Burn(10%,2t)	PA Burns enemy 10% for 2 turns		5	0	0	0	0	FlmHook1		
+FlmHook2	Flame Hook 2	Fire		0	350	1	1.0	Shot	Burn(10%,2t)	PA Burns enemy 10% for 2 turns		5	0	0	0	0	FlmHook2		
+FlmHook3	Flame Hook 3	Fire		0	400	1	1.0	Shot	Burn(10%,2t)	PA Burns enemy 10% for 2 turns		5	0	0	0	0	FlmHook3		
+CornFsta1	Corn Fiesta	Wood		0	600	1	1.0	Shot		PA Wood attack		5	0	0	0	0	CornFsta1		
+CornFsta2	Corn Fiesta	Wood		0	600	1	1.0	Shot		PA Wood attack		5	0	0	0	0	CornFsta2		
+CornFsta3	Corn Fiesta	Wood		0	600	1	1.0	Shot		PA Wood attack		5	0	0	0	0	CornFsta3		
+Parashl1	Parallel Shell	Neutral		0	350	1	1.0	Shot		PA Cannon attack		5	0	0	0	0	Parashl1		
+Parashl2	Parallel Shell	Neutral		0	350	1	1.0	Shot		PA Cannon attack		5	0	0	0	0	Parashl2		
+Parashl3	Parallel Shell	Neutral		0	350	1	1.0	Shot		PA Cannon attack		5	0	0	0	0	Parashl3		
+DestPuls1	Destroy Pulse	Elec		0	400	1	1.0	Shot	Paralyze(12)	PA Elec attack		5	0	0	0	0	DestPuls1		
+DestPuls2	Destroy Pulse	Elec		0	400	1	1.0	Shot	Paralyze(12)	PA Elec attack		5	0	0	0	0	DestPuls2		
+DestPuls3	Destroy Pulse	Elec		0	400	1	1.0	Shot	Paralyze(12)	PA Elec attack		5	0	0	0	0	DestPuls3		
+Timebom1	Time Bomb +	Neutral		0	700	1	1.0	Bomb		PA Bomb attack		5	0	0	0	0	Timebom1		
+Timebom2	Time Bomb +	Neutral		0	700	1	1.0	Bomb		PA Bomb attack		5	0	0	0	0	Timebom2		
+Timebom3	Time Bomb +	Neutral		0	700	1	1.0	Bomb		PA Bomb attack		5	0	0	0	0	Timebom3		
+H-Burst1	Hyper Burst	Neutral		0	150	3	1.0	Shot		PA 3-shot attack		5	0	0	0	0	H-Burst1		
+H-Burst2	Hyper Burst	Neutral		0	150	3	1.0	Shot		PA 3-shot attack		5	0	0	0	0	H-Burst2		
+H-Burst3	Hyper Burst	Neutral		0	150	3	1.0	Shot		PA 3-shot attack		5	0	0	0	0	H-Burst3		
+Lifesrd1	Life Sword	Neutral		0	400	1	1.0	Sword		PA Sword attack		5	0	0	0	0	Lifesrd1		
+Lifesrd2	Life Sword	Neutral		0	400	1	1.0	Sword		PA Sword attack		5	0	0	0	0	Lifesrd2		
+Lifesrd3	Life Sword	Neutral		0	400	1	1.0	Sword		PA Sword attack		5	0	0	0	0	Lifesrd3		
+Lifesrd4	Life Sword	Neutral		0	400	1	1.0	Sword		PA Sword attack		5	0	0	0	0	Lifesrd4		

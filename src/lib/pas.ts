@@ -23,8 +23,9 @@ export function detectPA(chosenIds: string[]): string | null {
 }
 
 /**
- * Collapse selected exact chip variants into a Program Advance when their base chip
- * names and codes satisfy a row in program_advances.tsv.
+ * Collapse selected exact chip variants into a Program Advance.
+ * Program Advances are order-sensitive: chip 1, chip 2, and chip 3 must match
+ * the TSV sequence in required_chip_ids and required_letters.
  */
 export function detectPAResult(chosenIds: string[]): ProgramAdvanceMatch | null {
   const normalizedChosen = chosenIds.map(id => String(id ?? '').trim()).filter(Boolean);
@@ -34,13 +35,8 @@ export function detectPAResult(chosenIds: string[]): ProgramAdvanceMatch | null 
   const list = Object.values((b as any).programAdvances || {}) as ProgramAdvanceRow[];
   if (!list.length) return null;
 
-  const chosenBaseBag = makeBag(normalizedChosen.map(baseForToken));
-
   for (const pa of list) {
-    const required = String((pa as any).required_chip_ids ?? (pa as any).parts ?? '')
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean);
+    const required = parseList((pa as any).required_chip_ids ?? (pa as any).parts ?? '');
     if (!required.length) continue;
     if (required.length !== normalizedChosen.length) continue;
 
@@ -48,9 +44,8 @@ export function detectPAResult(chosenIds: string[]): ProgramAdvanceMatch | null 
     const resultId = getChipById(resultRaw) ? resultRaw : resolveChipIdLoose(resultRaw);
     if (!resultId || !getChipById(resultId)) continue;
 
-    const requiredBaseBag = makeBag(required.map(baseForToken));
-    if (!bagEquals(chosenBaseBag, requiredBaseBag)) continue;
-    if (!lettersSatisfied(normalizedChosen, String((pa as any).required_letters ?? '').trim())) continue;
+    if (!sequenceBasesSatisfied(normalizedChosen, required)) continue;
+    if (!sequenceLettersSatisfied(normalizedChosen, String((pa as any).required_letters ?? '').trim(), required.length)) continue;
 
     return {
       id: String((pa as any).id || resultId),
@@ -65,37 +60,69 @@ export function detectPAResult(chosenIds: string[]): ProgramAdvanceMatch | null 
   return null;
 }
 
+function parseList(raw: any): string[] {
+  return String(raw ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
 function baseForToken(token: string): string {
   const chip = getChipById(token) as any;
   if (chip) return chipBaseId(chip) || String(chip.name ?? chip.id ?? token);
+
+  const resolved = resolveChipIdLoose(token);
+  const resolvedChip = resolved ? getChipById(resolved) as any : null;
+  if (resolvedChip) return chipBaseId(resolvedChip) || String(resolvedChip.name ?? resolvedChip.id ?? token);
+
   return String(token ?? '').trim();
 }
 
-function makeBag(ids: string[]): Map<string, number> {
-  const bag = new Map<string, number>();
-  for (const id of ids) bag.set(id, (bag.get(id) || 0) + 1);
-  return bag;
+function normBase(s: string): string {
+  return String(s ?? '').trim().toLowerCase();
 }
 
-function bagEquals(a: Map<string, number>, b: Map<string, number>): boolean {
-  if (a.size !== b.size) return false;
-  for (const [id, qty] of a) if ((b.get(id) || 0) !== qty) return false;
+function sequenceBasesSatisfied(chosenIds: string[], requiredTokens: string[]): boolean {
+  for (let i = 0; i < requiredTokens.length; i++) {
+    const chosenBase = normBase(baseForToken(chosenIds[i]));
+    const requiredBase = normBase(baseForToken(requiredTokens[i]));
+    if (!chosenBase || chosenBase !== requiredBase) return false;
+  }
   return true;
 }
 
-function lettersSatisfied(chosenIds: string[], requiredLettersRaw: string): boolean {
-  const requiredLetters = requiredLettersRaw
+function sequenceLettersSatisfied(chosenIds: string[], requiredLettersRaw: string, requiredCount: number): boolean {
+  const tokens = String(requiredLettersRaw ?? '')
     .split(/[,+| ]+/)
     .map(s => s.trim().toUpperCase())
     .filter(Boolean);
 
-  if (!requiredLetters.length) return true;
-  if (requiredLetters.includes('*')) return true;
+  if (!tokens.length) return true;
 
-  for (const chipId of chosenIds) {
-    const chip = getChipById(chipId) as any;
+  // Legacy row support: a single * means no code restriction.
+  if (tokens.length === 1 && tokens[0] === '*') return true;
+
+  // Legacy row support: one non-star code applies to all required chips.
+  const perSlot = tokens.length === 1 && requiredCount > 1
+    ? Array.from({ length: requiredCount }, () => tokens[0])
+    : tokens;
+
+  if (perSlot.length !== requiredCount) return false;
+
+  for (let i = 0; i < chosenIds.length; i++) {
+    const required = perSlot[i];
+    const chip = getChipById(chosenIds[i]) as any;
     const code = chipCode(chip).toUpperCase();
-    if (code !== '*' && !requiredLetters.includes(code)) return false;
+
+    // In a per-slot sequence, required * means the selected chip must be *.
+    if (required === '*') {
+      if (code !== '*') return false;
+      continue;
+    }
+
+    // A selected * can substitute for a normal required code.
+    if (code !== '*' && code !== required) return false;
   }
+
   return true;
 }

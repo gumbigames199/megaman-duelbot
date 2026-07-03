@@ -33,6 +33,22 @@ type BattleHandRenderItem = {
   description?: string;
 };
 
+type ProgramAdvanceRenderInfo = {
+  name: string;
+  resultChipId?: string;
+};
+
+function petEmoji(): string {
+  const full = String(process.env.PET_EMOJI || '').trim();
+  if (full) return full;
+
+  const id = String(process.env.PET_EMOJI_ID || '').trim();
+  const name = String(process.env.PET_EMOJI_NAME || 'PET').trim() || 'PET';
+  if (id) return `<:${name}:${id}>`;
+
+  return ':PET:';
+}
+
 function hpBar(cur: number, max: number): string {
   const safeMax = Math.max(1, Number(max) || 1);
   const ratio = Math.max(0, Math.min(1, Number(cur) / safeMax));
@@ -78,6 +94,15 @@ function chipQueueBlock(hand: BattleHandRenderItem[], selectedIds: string[]): st
   return [`⚡ **Chip Queue (${lines.length}/3)**`, ...lines, '', '✅ Valid queue.'].join('\n');
 }
 
+function programAdvanceBlock(pa?: ProgramAdvanceRenderInfo): string | undefined {
+  if (!pa) return undefined;
+  return [
+    `${petEmoji()} **PA ACTIVATE!**`,
+    `⚡ Program Advance armed: **${pa.name}**`,
+    'Lock Turn to unleash the sequence.',
+  ].join('\n');
+}
+
 function optionText(c: BattleHandRenderItem): { label: string; description?: string } {
   const bits: string[] = [];
   if (c.element) bits.push(c.element);
@@ -113,8 +138,9 @@ export function renderBattleScreen(args: {
   hand: BattleHandRenderItem[];
   selectedIds: string[];
   status?: { player?: string; enemy?: string };
+  programAdvance?: ProgramAdvanceRenderInfo;
 }) {
-  const { battleId, enemy, hp, hand, selectedIds, status } = args;
+  const { battleId, enemy, hp, hand, selectedIds, status, programAdvance } = args;
 
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
@@ -122,6 +148,7 @@ export function renderBattleScreen(args: {
       combatStatusBlock({ hp, status }),
       '',
       chipQueueBlock(hand, selectedIds),
+      programAdvanceBlock(programAdvance),
       hand.length ? '🎛️ **Choose up to 3 chips, then lock your turn.**' : '📁 Your hand is empty.',
     ].filter((line) => line !== undefined).join('\n')
   );
@@ -156,8 +183,9 @@ export function renderRoundResultWithNextHand(args: {
   nextHand: BattleHandRenderItem[];
   selectedIds: string[];
   status?: { player?: string; enemy?: string };
+  programAdvance?: ProgramAdvanceRenderInfo;
 }) {
-  const { battleId, enemy, hp, round, nextHand, selectedIds, status } = args;
+  const { battleId, enemy, hp, round, nextHand, selectedIds, status, programAdvance } = args;
 
   const combinedLog = [
     ...round.playerLogLines.map(line => `🟦 ${line}`),
@@ -172,6 +200,7 @@ export function renderRoundResultWithNextHand(args: {
       combinedLog.length ? `📜 **Combat Log**\n${combinedLog.join('\n')}` : '📜 **Combat Log**\n—',
       '',
       chipQueueBlock(nextHand, selectedIds),
+      programAdvanceBlock(programAdvance),
       '🎛️ **Next hand:** pick up to 3 chips.',
     ].filter(Boolean).join('\n')
   );

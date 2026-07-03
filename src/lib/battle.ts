@@ -565,6 +565,8 @@ export function resolveTurn(s: any, chosenIds: string[]) {
 function renderBattle(bs: BattleState) {
   const playerStatus = statusSummary(bs.player_status);
   const enemyStatus = statusSummary(bs.enemy_status);
+  const activePA = activeProgramAdvance(bs);
+
   return renderBattleScreen({
     battleId: bs.id,
     enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
@@ -579,7 +581,17 @@ function renderBattle(bs: BattleState) {
     ...(playerStatus || enemyStatus
       ? { status: { player: playerStatus, enemy: enemyStatus } }
       : {}),
+    ...(activePA
+      ? { programAdvance: { name: activePA.name, resultChipId: activePA.result_chip_id } }
+      : {}),
   });
+}
+
+function activeProgramAdvance(bs: BattleState) {
+  const ids = selectedIndices(bs)
+    .map((i) => bs.hand[i]?.id)
+    .filter(Boolean) as string[];
+  return detectPAResult(ids);
 }
 
 function toHandItems(hand: ChipRef[]): BattleHandItem[] {
