@@ -19,6 +19,10 @@ import {
   getPlayer,
   listFolder as listFolderQty,
   markSeenVirus,
+  addStyleProgress,
+  getPendingStyleElement,
+  getStyleProgress,
+  STYLE_CHANGE_THRESHOLD,
 } from "./db";
 import { grantVirusRewards } from "./rewards";
 import { validateLetterRule } from "./rules";
@@ -113,6 +117,7 @@ export function startBattle(
 
   const player = getPlayer(user_id)!;
   const virus = getVirusById(virus_id);
+  addStyleProgress(user_id, (virus as any)?.element, 1);
   const enemyHP = Math.max(1, toInt((virus as any)?.hp, 100));
 
   const deck = buildDeckFromFolder(user_id);
@@ -401,7 +406,7 @@ function renderJackInReturnView(bs: BattleState, result: { title: string; lines?
       '📌 **Last Result**',
       lastLines.length ? lastLines.join('\n') : '—',
     ].join('\n'))
-    .setFooter({ text: 'Encounter, Travel, Shop, Data, or Config from this same screen.' });
+    .setFooter({ text: 'Encounter, Travel, Shop, Data, PET, or PvP from this same screen.' });
 
   const bg = jackInRegionImage(region) || jackInTravelImage();
   if (bg) embed.setImage(String(bg));
@@ -409,19 +414,77 @@ function renderJackInReturnView(bs: BattleState, result: { title: string; lines?
   const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId('jackin:encounter').setStyle(ButtonStyle.Primary).setLabel('Encounter'),
     new ButtonBuilder().setCustomId('jackin:openTravel').setStyle(ButtonStyle.Secondary).setLabel('Travel'),
-    new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Secondary).setLabel('Shop'),
+    new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Success).setLabel('Shop'),
   );
 
   const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'),
-    new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Config'),
+    new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('PET'),
+    new ButtonBuilder().setCustomId('jackin:openPvp').setStyle(ButtonStyle.Danger).setLabel('PvP'),
   );
 
   return { embed, components: [row1, row2] as any[] };
 }
 
 function endBattleView(bs: BattleState, standalone: { embed: any; components: readonly any[] }, jackin: { title: string; lines?: string[] }) {
-  return bs.return_mode === 'jackin' ? renderJackInReturnView(bs, jackin) : standalone;
+  if (bs.return_mode !== 'jackin') return standalone;
+
+  const pending = getPendingStyleElement(bs.user_id);
+  if (pending) return renderStyleChangePromptView(bs, pending, jackin);
+
+  return renderJackInReturnView(bs, jackin);
+}
+
+function renderStyleChangePromptView(
+  bs: BattleState,
+  element: "Fire" | "Aqua" | "Elec" | "Wood",
+  result: { title: string; lines?: string[] },
+) {
+  const player = getPlayer(bs.user_id) as any;
+  const progress = getStyleProgress(bs.user_id) as any;
+  const points = Number(progress[`${String(element).toLowerCase()}_points`] ?? 0);
+
+  const lines = [
+    `${styleEmoji(element)} **${element} Style Change Available**`,
+    '',
+    `Your Navi has absorbed enough **${element}** battle data to change styles.`,
+    `Current Style: **${String(player?.element || 'Neutral')}**`,
+    `Progress: **${points}/${STYLE_CHANGE_THRESHOLD}**`,
+    '',
+    '**Last Result**',
+    `**${result.title}**`,
+    ...(result.lines || []),
+    '',
+    'Accepting changes your Navi element and resets Style Change progress.',
+    'Keeping your current style clears this prompt and preserves your progress record.',
+  ];
+
+  const embed = new EmbedBuilder()
+    .setTitle('🧬 Style Change')
+    .setDescription(lines.filter(Boolean).join('\n'));
+
+  const bundle: any = getBundle();
+  const regionsArr = Object.values(bundle.regions || {}) as any[];
+  const region = (bundle.regions || {})[player?.region_id] || regionsArr.find((r: any) => String(r?.id) === String(player?.region_id));
+  const bg = jackInRegionImage(region) || jackInTravelImage();
+  if (bg) embed.setImage(String(bg));
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`jackin:styleAccept:${element}`).setStyle(ButtonStyle.Success).setLabel(`Accept ${element} Style`),
+    new ButtonBuilder().setCustomId(`jackin:styleDecline:${element}`).setStyle(ButtonStyle.Secondary).setLabel('Keep Current Style'),
+  );
+
+  return { embed, components: [row] as any[] };
+}
+
+function styleEmoji(element: string): string {
+  switch (String(element)) {
+    case 'Fire': return '🔥';
+    case 'Aqua': return '💧';
+    case 'Elec': return '⚡';
+    case 'Wood': return '🌿';
+    default: return '🧬';
+  }
 }
 
 // ---------------- Compatibility API ----------------
@@ -731,6 +794,8 @@ function executeChip(
     playerLog.push(`Used ${chipId} (unknown) — no effect.`);
     return opts.pendingAttackPlus ?? 0;
   }
+
+  addStyleProgress(bs.user_id, chip.element, 1);
 
   const chipName = String(opts.displayName || formatChipName(chip) || chip.name || chipId);
   const effects = parseEffects(String(chip.effects ?? ""));

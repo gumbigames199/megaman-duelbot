@@ -56,6 +56,7 @@ const MAX_EVA_CAP = toInt(process.env.MAX_EVA_CAP, 50);
 const MAX_CRIT_CAP = toInt(process.env.MAX_CRIT_CAP, 25);
 
 const STARTER_ZENNY = toInt(process.env.STARTER_ZENNY, 0);
+export const STYLE_CHANGE_THRESHOLD = toInt(process.env.STYLE_CHANGE_THRESHOLD, 500);
 
 // Folder limit (total slots = sum of qty in folder)
 const FOLDER_CAP = toInt(process.env.MAX_FOLDER ?? process.env.FOLDER_CAP, 30);
@@ -126,6 +127,19 @@ CREATE TABLE IF NOT EXISTS missions_state (
   counter INTEGER NOT NULL DEFAULT 0, -- compat
   UNIQUE(user_id, mission_id)
 );
+
+CREATE TABLE IF NOT EXISTS style_progress (
+  user_id TEXT PRIMARY KEY NOT NULL,
+  fire_points INTEGER NOT NULL DEFAULT 0,
+  aqua_points INTEGER NOT NULL DEFAULT 0,
+  elec_points INTEGER NOT NULL DEFAULT 0,
+  wood_points INTEGER NOT NULL DEFAULT 0,
+  fire_prompted INTEGER NOT NULL DEFAULT 0,
+  aqua_prompted INTEGER NOT NULL DEFAULT 0,
+  elec_prompted INTEGER NOT NULL DEFAULT 0,
+  wood_prompted INTEGER NOT NULL DEFAULT 0,
+  pending_element TEXT DEFAULT NULL
+);
 `);
 
 // Safe migrations
@@ -137,6 +151,15 @@ safeAddColumn("players", "element", "TEXT DEFAULT NULL");
 safeAddColumn("players", "region_zone", "INTEGER NOT NULL DEFAULT 1");
 safeAddColumn("missions_state", "progress", "INTEGER NOT NULL DEFAULT 0");
 safeAddColumn("missions_state", "counter", "INTEGER NOT NULL DEFAULT 0"); // <-- compat column
+safeAddColumn("style_progress", "fire_points", "INTEGER NOT NULL DEFAULT 0");
+safeAddColumn("style_progress", "aqua_points", "INTEGER NOT NULL DEFAULT 0");
+safeAddColumn("style_progress", "elec_points", "INTEGER NOT NULL DEFAULT 0");
+safeAddColumn("style_progress", "wood_points", "INTEGER NOT NULL DEFAULT 0");
+safeAddColumn("style_progress", "fire_prompted", "INTEGER NOT NULL DEFAULT 0");
+safeAddColumn("style_progress", "aqua_prompted", "INTEGER NOT NULL DEFAULT 0");
+safeAddColumn("style_progress", "elec_prompted", "INTEGER NOT NULL DEFAULT 0");
+safeAddColumn("style_progress", "wood_prompted", "INTEGER NOT NULL DEFAULT 0");
+safeAddColumn("style_progress", "pending_element", "TEXT DEFAULT NULL");
 
 // Indexes
 db.exec(`
@@ -239,6 +262,137 @@ export function setNameAndElement(user_id: string, name: string | null, element:
   ensurePlayer(user_id);
   db.prepare(`UPDATE players SET name = ?, element = ? WHERE user_id = ?`)
     .run(name, element, user_id);
+}
+
+export type StyleElement = "Fire" | "Aqua" | "Elec" | "Wood";
+export const STYLE_ELEMENTS: StyleElement[] = ["Fire", "Aqua", "Elec", "Wood"];
+
+export type StyleProgress = {
+  user_id: string;
+  fire_points: number;
+  aqua_points: number;
+  elec_points: number;
+  wood_points: number;
+  fire_prompted: number;
+  aqua_prompted: number;
+  elec_prompted: number;
+  wood_prompted: number;
+  pending_element: StyleElement | null;
+  threshold: number;
+};
+
+export function normalizeStyleElement(value: any): StyleElement | null {
+  const s = String(value ?? "").trim().toLowerCase();
+  if (s === "fire") return "Fire";
+  if (s === "aqua" || s === "water") return "Aqua";
+  if (s === "elec" || s === "electric" || s === "electricity") return "Elec";
+  if (s === "wood" || s === "grass") return "Wood";
+  return null;
+}
+
+function stylePointColumn(element: StyleElement): "fire_points" | "aqua_points" | "elec_points" | "wood_points" {
+  return `${element.toLowerCase()}_points` as any;
+}
+
+function stylePromptColumn(element: StyleElement): "fire_prompted" | "aqua_prompted" | "elec_prompted" | "wood_prompted" {
+  return `${element.toLowerCase()}_prompted` as any;
+}
+
+export function ensureStyleProgress(user_id: string): StyleProgress {
+  ensurePlayer(user_id);
+  db.prepare(`
+    INSERT OR IGNORE INTO style_progress (user_id)
+    VALUES (?)
+  `).run(user_id);
+  return getStyleProgress(user_id);
+}
+
+export function getStyleProgress(user_id: string): StyleProgress {
+  ensurePlayer(user_id);
+  db.prepare(`INSERT OR IGNORE INTO style_progress (user_id) VALUES (?)`).run(user_id);
+  const row = db.prepare(`
+    SELECT user_id, fire_points, aqua_points, elec_points, wood_points,
+           fire_prompted, aqua_prompted, elec_prompted, wood_prompted, pending_element
+    FROM style_progress
+    WHERE user_id = ?
+  `).get(user_id) as any;
+
+  return {
+    user_id,
+    fire_points: toInt(row?.fire_points, 0),
+    aqua_points: toInt(row?.aqua_points, 0),
+    elec_points: toInt(row?.elec_points, 0),
+    wood_points: toInt(row?.wood_points, 0),
+    fire_prompted: toInt(row?.fire_prompted, 0),
+    aqua_prompted: toInt(row?.aqua_prompted, 0),
+    elec_prompted: toInt(row?.elec_prompted, 0),
+    wood_prompted: toInt(row?.wood_prompted, 0),
+    pending_element: normalizeStyleElement(row?.pending_element),
+    threshold: STYLE_CHANGE_THRESHOLD,
+  };
+}
+
+export function addStyleProgress(user_id: string, elementRaw: any, amount = 1): StyleProgress {
+  const element = normalizeStyleElement(elementRaw);
+  if (!element || amount <= 0) return getStyleProgress(user_id);
+
+  ensureStyleProgress(user_id);
+  const pointCol = stylePointColumn(element);
+  db.prepare(`UPDATE style_progress SET ${pointCol} = ${pointCol} + ? WHERE user_id = ?`)
+    .run(Math.max(0, toInt(amount, 0)), user_id);
+
+  const after = getStyleProgress(user_id);
+  const currentStyle = normalizeStyleElement(getPlayer(user_id)?.element) || null;
+  const promptCol = stylePromptColumn(element);
+  const points = toInt((after as any)[pointCol], 0);
+  const hasPrompted = toInt((after as any)[promptCol], 0) > 0;
+
+  if (!after.pending_element && currentStyle !== element && !hasPrompted && points >= STYLE_CHANGE_THRESHOLD) {
+    db.prepare(`UPDATE style_progress SET pending_element = ?, ${promptCol} = 1 WHERE user_id = ?`)
+      .run(element, user_id);
+    return getStyleProgress(user_id);
+  }
+
+  return after;
+}
+
+export function getPendingStyleElement(user_id: string): StyleElement | null {
+  return getStyleProgress(user_id).pending_element;
+}
+
+export function acceptStyleChange(user_id: string, elementRaw: any): { ok: boolean; element?: StyleElement } {
+  const element = normalizeStyleElement(elementRaw);
+  if (!element) return { ok: false };
+  ensureStyleProgress(user_id);
+  db.prepare(`UPDATE players SET element = ? WHERE user_id = ?`).run(element, user_id);
+  resetStyleProgressOnly(user_id);
+  return { ok: true, element };
+}
+
+export function declineStyleChange(user_id: string, elementRaw?: any): { ok: boolean; element?: StyleElement | null } {
+  ensureStyleProgress(user_id);
+  const element = normalizeStyleElement(elementRaw) || getPendingStyleElement(user_id);
+  db.prepare(`UPDATE style_progress SET pending_element = NULL WHERE user_id = ?`).run(user_id);
+  return { ok: true, element };
+}
+
+export function resetStyleToNeutral(user_id: string): { previous: string } {
+  ensurePlayer(user_id);
+  const previous = String(getPlayer(user_id)?.element || "Neutral");
+  db.prepare(`UPDATE players SET element = ? WHERE user_id = ?`).run("Neutral", user_id);
+  resetStyleProgressOnly(user_id);
+  return { previous };
+}
+
+function resetStyleProgressOnly(user_id: string) {
+  ensureStyleProgress(user_id);
+  db.prepare(`
+    UPDATE style_progress
+    SET fire_points = 0, aqua_points = 0, elec_points = 0, wood_points = 0,
+        fire_prompted = 0, aqua_prompted = 0, elec_prompted = 0, wood_prompted = 0,
+        pending_element = NULL
+    WHERE user_id = ?
+  `).run(user_id);
 }
 
 // Zenny

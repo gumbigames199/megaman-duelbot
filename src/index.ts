@@ -220,6 +220,18 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:openPvp') { await JackIn.onOpenPvp(ix); return; }
       if (ix.customId === 'jackin:pvpOpenChallenge') { await JackIn.onPvpOpenChallenge(ix); return; }
       if (ix.customId === 'jackin:configProfile') { await JackIn.onConfigProfile(ix); return; }
+      if (ix.customId.startsWith('jackin:styleAccept:')) {
+        const element = ix.customId.split(':')[2] || '';
+        await JackIn.onStyleAccept(ix, element);
+        return;
+      }
+      if (ix.customId.startsWith('jackin:styleDecline:')) {
+        const element = ix.customId.split(':')[2] || '';
+        await JackIn.onStyleDecline(ix, element);
+        return;
+      }
+      if (ix.customId === 'jackin:styleNeutralPrompt') { await JackIn.onStyleNeutralPrompt(ix); return; }
+      if (ix.customId === 'jackin:styleNeutralConfirm') { await JackIn.onStyleNeutralConfirm(ix); return; }
       if (ix.customId === 'jackin:configFolder') { await JackIn.onConfigFolder(ix); return; }
       if (ix.customId === 'jackin:configFolderAdd') { await JackIn.onConfigFolderAdd(ix); return; }
       if (ix.customId === 'jackin:configFolderRemove') { await JackIn.onConfigFolderRemove(ix); return; }
@@ -234,6 +246,10 @@ client.on('interactionCreate', async (ix) => {
         await JackIn.onShopSell(ix, chipId);
         return;
       }
+
+      if (ix.customId === 'profile:styleNeutralPrompt') { await Profile.onStyleNeutralPrompt(ix); return; }
+      if (ix.customId === 'profile:styleNeutralConfirm') { await Profile.onStyleNeutralConfirm(ix); return; }
+      if (ix.customId === 'profile:styleNeutralCancel') { await Profile.onStyleNeutralCancel(ix); return; }
 
       if (ix.customId === 'folder:edit') { await Folder.onEdit(ix); return; }
       if (ix.customId === 'folder:addOpen') { await Folder.onOpenAdd(ix); return; }

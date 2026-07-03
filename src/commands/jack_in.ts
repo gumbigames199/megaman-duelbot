@@ -22,6 +22,8 @@ import {
   getPlayer, setRegion, setZone, getZone, listSeenViruses, getInventory,
   addZenny, spendZenny, grantChip, removeChip,
   addHPMax, addATK, addDEF, addSPD, addACC, addEvasion, addCRIT,
+  getStyleProgress, getPendingStyleElement, acceptStyleChange, declineStyleChange,
+  resetStyleToNeutral, normalizeStyleElement, STYLE_CHANGE_THRESHOLD,
 } from '../lib/db';
 import { startBattle } from '../lib/battle';
 import { createOpenPvpChallenge } from '../lib/pvp';
@@ -735,11 +737,100 @@ export async function onOpenConfig(ix: ButtonInteraction) {
   });
 }
 
-export async function onConfigProfile(ix: ButtonInteraction) {
+export async function onConfigProfile(ix: ButtonInteraction, notice?: string) {
   await ix.update({
-    embeds: [buildProfileEmbed(ix.user.id, ix.user.username, ix.user.displayAvatarURL())],
-    components: [navButtons(new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('PET'), makeBackButton())],
+    embeds: [buildProfileEmbed(ix.user.id, ix.user.username, ix.user.displayAvatarURL(), notice)],
+    components: buildProfileComponents(ix.user.id),
   });
+}
+
+function buildProfileComponents(userId: string) {
+  const p: any = getPlayer(userId);
+  const currentStyle = normalizeStyleElement(p?.element);
+  const pending = getPendingStyleElement(userId);
+
+  const buttons: ButtonBuilder[] = [
+    new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('PET'),
+  ];
+
+  if (pending) {
+    buttons.push(
+      new ButtonBuilder().setCustomId(`jackin:styleAccept:${pending}`).setStyle(ButtonStyle.Success).setLabel(`Accept ${pending} Style`),
+      new ButtonBuilder().setCustomId(`jackin:styleDecline:${pending}`).setStyle(ButtonStyle.Secondary).setLabel('Keep Current Style'),
+    );
+  } else if (currentStyle) {
+    buttons.push(
+      new ButtonBuilder().setCustomId('jackin:styleNeutralPrompt').setStyle(ButtonStyle.Danger).setLabel('Return to Neutral'),
+    );
+  }
+
+  buttons.push(makeBackButton());
+  return [navButtons(...buttons.slice(0, 5))];
+}
+
+
+export async function onStyleAccept(ix: ButtonInteraction, elementRaw: string) {
+  const element = normalizeStyleElement(elementRaw);
+  if (!element) {
+    await ix.reply({ ephemeral: true, content: 'Invalid Style Change element.' });
+    return;
+  }
+
+  acceptStyleChange(ix.user.id, element);
+  await renderJackInHUD(ix, {
+    title: `${styleEmoji(element)} ${element} Style Equipped`,
+    lines: [
+      `Your Navi changed to **${element} Style**.`,
+      'Style Change progress has been reset.',
+    ],
+  });
+}
+
+export async function onStyleDecline(ix: ButtonInteraction, elementRaw: string) {
+  const element = normalizeStyleElement(elementRaw) || getPendingStyleElement(ix.user.id);
+  declineStyleChange(ix.user.id, elementRaw);
+  await renderJackInHUD(ix, {
+    title: 'Style Change Declined',
+    lines: [
+      `Kept current style. ${element ? `${styleEmoji(element)} ${element} Style was not applied.` : ''}`.trim(),
+      'Your Style Change record remains visible in PET → Profile.',
+    ],
+  });
+}
+
+export async function onStyleNeutralPrompt(ix: ButtonInteraction) {
+  const p: any = getPlayer(ix.user.id);
+  const currentStyle = normalizeStyleElement(p?.element);
+
+  if (!currentStyle) {
+    await onConfigProfile(ix, 'Your Navi is already Neutral Style.');
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('⚠️ Return to Neutral Style?')
+    .setDescription([
+      `Your Navi will discard **${currentStyle} Style** and return to **Neutral Style**.`,
+      '',
+      'This will reset all Style Change progress:',
+      '🔥 Fire / 💧 Aqua / ⚡ Elec / 🌿 Wood will all return to 0.',
+      '',
+      'This cannot be undone.',
+    ].join('\n'))
+    .setImage(getConfigImage());
+
+  await ix.update({
+    embeds: [embed],
+    components: [navButtons(
+      new ButtonBuilder().setCustomId('jackin:styleNeutralConfirm').setStyle(ButtonStyle.Danger).setLabel('Confirm Return to Neutral'),
+      new ButtonBuilder().setCustomId('jackin:configProfile').setStyle(ButtonStyle.Secondary).setLabel('Cancel'),
+    )],
+  });
+}
+
+export async function onStyleNeutralConfirm(ix: ButtonInteraction) {
+  const res = resetStyleToNeutral(ix.user.id);
+  await onConfigProfile(ix, `Style discarded. ${res.previous || 'Current'} Style was removed and all Style Change progress was reset.`);
 }
 
 export async function onConfigFolder(ix: ButtonInteraction | StringSelectMenuInteraction, notice?: string) {
@@ -887,17 +978,25 @@ export async function onConfigFolderRemoveSelect(ix: StringSelectMenuInteraction
   await onConfigFolder(ix, 'Folder updated.');
 }
 
-function buildProfileEmbed(userId: string, username: string, avatarUrl: string) {
+function buildProfileEmbed(userId: string, username: string, avatarUrl: string, notice?: string) {
   const p: any = getPlayer(userId);
   const invLine = formatInventoryTop(userId, 12);
+  const progress = getStyleProgress(userId);
+  const currentStyle = String(p?.element || 'Neutral');
+  const pending = getPendingStyleElement(userId);
 
-  return new EmbedBuilder()
+  const desc = [
+    notice ? `📌 **${notice}**` : '',
+    pending ? `${styleEmoji(pending)} **${pending} Style Change Available**` : '',
+  ].filter(Boolean).join('\n');
+
+  const embed = new EmbedBuilder()
     .setAuthor({ name: `${username}.EXE`, iconURL: avatarUrl })
     .setTitle('⚙️ Navi Profile')
     .setThumbnail(avatarUrl)
     .setImage(getConfigImage())
     .addFields(
-      { name: '🧬 Element', value: String(p?.element ?? 'Neutral'), inline: true },
+      { name: '🧬 Current Style', value: currentStyle, inline: true },
       { name: '⭐ Level', value: String(p?.level ?? 1), inline: true },
       { name: '❤️ HP', value: String(p?.hp_max ?? 100), inline: true },
       {
@@ -907,10 +1006,35 @@ function buildProfileEmbed(userId: string, username: string, avatarUrl: string) 
           `ACC ${p?.acc ?? 100}% • EVA ${p?.evasion ?? 0}% • CRIT ${p?.crit ?? 0}%`,
         inline: false,
       },
+      { name: '🧬 Style Progress', value: formatStyleProgress(progress), inline: false },
       { name: '💰 Zenny', value: String(p?.zenny ?? 0), inline: true },
       { name: '🎒 Inventory Preview', value: invLine, inline: false },
     );
+
+  if (desc) embed.setDescription(desc);
+  return embed;
 }
+
+function formatStyleProgress(progress: any): string {
+  const threshold = Number(progress?.threshold || STYLE_CHANGE_THRESHOLD || 500);
+  return [
+    `🔥 Fire: ${Number(progress?.fire_points || 0)}/${threshold}`,
+    `💧 Aqua: ${Number(progress?.aqua_points || 0)}/${threshold}`,
+    `⚡ Elec: ${Number(progress?.elec_points || 0)}/${threshold}`,
+    `🌿 Wood: ${Number(progress?.wood_points || 0)}/${threshold}`,
+  ].join('\n');
+}
+
+function styleEmoji(element: string): string {
+  switch (String(element)) {
+    case 'Fire': return '🔥';
+    case 'Aqua': return '💧';
+    case 'Elec': return '⚡';
+    case 'Wood': return '🌿';
+    default: return '🧬';
+  }
+}
+
 
 function formatInventoryTop(userId: string, limit = 12): string {
   const rows = getInventory(userId) || [];
