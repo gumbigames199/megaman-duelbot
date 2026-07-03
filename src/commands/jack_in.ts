@@ -1191,6 +1191,7 @@ function buildVirusDexDetailEmbed(userId: string, id: string) {
       { name: '🧬 Element', value: String(v.element || 'Neutral'), inline: true },
       { name: '❤️ HP', value: String(v.hp || 0), inline: true },
       { name: '⭐ CR', value: String(v.cr || 1), inline: true },
+      { name: '📍 Location', value: formatVirusLocation(v, b.regions), inline: false },
       { name: '📊 Stats', value: [`ATK ${v.atk ?? 0}`, `DEF ${v.def ?? 0}`, `SPD ${v.spd ?? 0}`, `ACC ${formatAcc(v.acc)}`].join(' • '), inline: false },
       { name: '⚔️ Moveset', value: formatMoves(v), inline: false },
       { name: '🎁 Possible Drops', value: formatDrops(v, b.dropTables), inline: false },
@@ -1206,27 +1207,85 @@ function formatMoves(v: any): string {
     .filter((m): m is any => !!m);
   if (!rawMoves.length) return '—';
   return rawMoves.map((m, i) => {
-    const name = m.name || `Move ${i + 1}`;
-    const kind = m.kind ? titleCase(String(m.kind)) : 'Move';
+    const name = safeMoveText(m.name) || `Move ${i + 1}`;
+    const kind = safeMoveText(m.kind) ? titleCase(safeMoveText(m.kind)) : 'Move';
     const parts: string[] = [];
-    if (m.element) parts.push(String(m.element));
-    if (m.power !== undefined && String(m.power).trim() !== '') parts.push(`PWR ${m.power}`);
-    if (m.hits !== undefined && Number(m.hits) > 1) parts.push(`${m.hits} hits`);
-    if (m.acc !== undefined && String(m.acc).trim() !== '') parts.push(`${formatAcc(m.acc)} acc`);
-    const fx = m.effects || m.effect || m.status;
-    if (fx) parts.push(String(fx));
+    const element = safeMoveText(m.element);
+    if (element) parts.push(element);
+    if (isScalarMoveValue(m.power) && String(m.power).trim() !== '') parts.push(`PWR ${m.power}`);
+    if (isScalarMoveValue(m.hits) && Number(m.hits) > 1) parts.push(`${m.hits} hits`);
+    if (isScalarMoveValue(m.acc) && String(m.acc).trim() !== '') parts.push(`${formatAcc(m.acc)} acc`);
+
+    // Hide structured move metadata such as { burn: ... } / { atk: ... }.
+    // Those objects are useful to the battle engine but render as "[object Object]" in Discord.
+    const fx = scalarMoveText(m.effects ?? m.effect ?? m.status);
+    if (fx) parts.push(fx);
+
     return `**${i + 1}. ${name}** — ${kind}${parts.length ? ` • ${parts.join(' • ')}` : ''}`;
   }).join('\n');
 }
 
 function parseMove(raw: any, slot: number): any | null {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+
   const text = String(raw ?? '').trim();
   if (!text) return null;
   try {
     const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === 'object') return parsed;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
   } catch {}
   return { name: `Move ${slot}`, kind: text };
+}
+
+function isScalarMoveValue(v: any): boolean {
+  return v === null || ['string', 'number', 'boolean'].includes(typeof v);
+}
+
+function safeMoveText(v: any): string {
+  if (!isScalarMoveValue(v)) return '';
+  const text = String(v ?? '').trim();
+  return text === '[object Object]' ? '' : text;
+}
+
+function scalarMoveText(v: any): string {
+  return safeMoveText(v);
+}
+
+function formatVirusLocation(v: any, regions: Record<string, any>): string {
+  const regionId = String(v.region_id ?? v.region ?? '').trim();
+  const region = regionId ? regions?.[regionId] : null;
+  const regionName = region?.name || region?.label || regionId || 'Unknown region';
+
+  const zones = normalizeVirusZones(v.zones ?? v.zone);
+  const zoneText = zones.length
+    ? zones.map(z => `Zone ${z}`).join(', ')
+    : 'All zones / unspecified';
+
+  return `**${regionName}** — ${zoneText}`;
+}
+
+function normalizeVirusZones(raw: any): number[] {
+  if (Array.isArray(raw)) {
+    return Array.from(new Set(raw.map(n => Number(n)).filter(n => Number.isFinite(n)))).sort((a, b) => a - b);
+  }
+
+  const text = String(raw ?? '').trim();
+  if (!text) return [];
+
+  const out: number[] = [];
+  for (const part of text.split(/[,;| ]+/).map(x => x.trim()).filter(Boolean)) {
+    const m = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      let a = Number(m[1]);
+      let b = Number(m[2]);
+      if (a > b) [a, b] = [b, a];
+      for (let z = a; z <= b; z++) out.push(z);
+    } else {
+      const n = Number(part);
+      if (Number.isFinite(n)) out.push(n);
+    }
+  }
+  return Array.from(new Set(out)).sort((a, b) => a - b);
 }
 
 function formatDrops(v: any, dropTables: Record<string, any>): string {
