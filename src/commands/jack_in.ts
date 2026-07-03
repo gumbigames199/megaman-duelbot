@@ -27,7 +27,7 @@ import {
 } from '../lib/db';
 import { startBattle } from '../lib/battle';
 import { createOpenPvpChallenge } from '../lib/pvp';
-import { getFolder, setFolder, validateFolder, MAX_FOLDER, maxCopiesForChip } from '../lib/folder';
+import { getFolder, setFolder, validateFolder, validateFolderMinimum, MAX_FOLDER, MIN_FOLDER, maxCopiesForChip, getMaxRemovableFolderSlots } from '../lib/folder';
 
 const JACK_GIF =
   process.env.JACK_IN_GIF_URL ||
@@ -412,6 +412,18 @@ export async function onEncounter(ix: ButtonInteraction) {
   const regionId = String(p?.region_id ?? '').trim();
   if (!regionId) {
     await ix.reply({ ephemeral: true, content: 'No region set. Use **/jack_in** first.' });
+    return;
+  }
+
+  const folderMinimum = validateFolderMinimum(userId, getFolder(userId));
+  if (!folderMinimum.ok) {
+    await renderJackInHUD(ix, {
+      title: 'Folder Not Ready',
+      lines: [
+        `Your folder must contain at least **${MIN_FOLDER} BattleChips** before battling.`,
+        'Open **PET → Folder → Add Chips** to fill empty slots.',
+      ],
+    });
     return;
   }
 
@@ -841,11 +853,12 @@ export async function onConfigFolder(ix: ButtonInteraction | StringSelectMenuInt
       notice ? `📌 **${notice}**\n` : '',
       formatFolderPanel(folder),
     ].filter(Boolean).join('\n'))
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER}` })
     .setImage(getConfigImage());
 
   const addBtn = new ButtonBuilder().setCustomId('jackin:configFolderAdd').setStyle(ButtonStyle.Secondary).setLabel('Add Chips');
-  const remBtn = new ButtonBuilder().setCustomId('jackin:configFolderRemove').setStyle(ButtonStyle.Secondary).setLabel('Remove Chips').setDisabled(!folder.length);
+  const maxRemovable = getMaxRemovableFolderSlots(ix.user.id, folder.length);
+  const remBtn = new ButtonBuilder().setCustomId('jackin:configFolderRemove').setStyle(ButtonStyle.Secondary).setLabel('Remove Chips').setDisabled(maxRemovable <= 0);
   const cfgBtn = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Back');
 
   await ix.update({ embeds: [embed], components: [navButtons(addBtn, remBtn, cfgBtn)] });
@@ -863,11 +876,12 @@ export async function onConfigFolderAdd(ix: ButtonInteraction) {
       const chip: any = getChipById(chipId);
       return { row, chipId, chip };
     })
-    .filter(({ chipId, chip }) => chip && !chipIsUpgrade(chip) && !folderCounts.has(chipId))
-    .map(({ row, chipId, chip }) => {
+    .map(({ row, chipId, chip }) => ({ row, chipId, chip, available: availableOutsideFolder(row, folderCounts) }))
+    .filter(({ chip, available }) => chip && !chipIsUpgrade(chip) && available > 0)
+    .map(({ row, chipId, chip, available }) => {
       const cap = maxCopiesForChip(chipId);
       return {
-        label: `${formatChipName(chip)} (own ${row.qty}, cap ${cap})`.slice(0, 100),
+        label: `${formatChipName(chip)} (available ${available}/${row.qty}, cap ${cap})`.slice(0, 100),
         value: chipId,
         description: String(chip?.element || 'BattleChip').slice(0, 100),
       };
@@ -875,7 +889,7 @@ export async function onConfigFolderAdd(ix: ButtonInteraction) {
     .slice(0, 25);
 
   if (!options.length) {
-    await onConfigFolder(ix, 'You have no BattleChips outside your folder available to add.');
+    await onConfigFolder(ix, 'You have no available BattleChip copies outside your folder to add.');
     return;
   }
 
@@ -888,8 +902,8 @@ export async function onConfigFolderAdd(ix: ButtonInteraction) {
 
   const embed = new EmbedBuilder()
     .setTitle('🗂️ Add Chips')
-    .setDescription('Select one or more owned chips that are not already in your folder.')
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
+    .setDescription('Select one or more owned chip copies that are not already committed to your folder.')
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER}` })
     .setImage(getConfigImage());
 
   await ix.update({
@@ -908,6 +922,12 @@ export async function onConfigFolderRemove(ix: ButtonInteraction) {
     return;
   }
 
+  const maxRemovable = getMaxRemovableFolderSlots(ix.user.id, folder.length);
+  if (maxRemovable <= 0) {
+    await onConfigFolder(ix, `Folder minimum is ${MIN_FOLDER} chips. Add more chips before removing any.`);
+    return;
+  }
+
   const options = folder.slice(0, 25).map((id, i) => {
     const c: any = getChipById(id) || {};
     return {
@@ -920,13 +940,13 @@ export async function onConfigFolderRemove(ix: ButtonInteraction) {
     .setCustomId('jackin:folderRemoveSelect')
     .setPlaceholder('Select folder slots to remove')
     .setMinValues(1)
-    .setMaxValues(Math.min(10, options.length))
+    .setMaxValues(Math.min(10, options.length, maxRemovable))
     .addOptions(options);
 
   const embed = new EmbedBuilder()
     .setTitle('🗂️ Remove Chips')
     .setDescription('Select one or more folder entries to remove.')
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER}` })
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER}` })
     .setImage(getConfigImage());
 
   await ix.update({
@@ -971,6 +991,12 @@ export async function onConfigFolderRemoveSelect(ix: StringSelectMenuInteraction
   const v = validateFolder(ix.user.id, folder);
   if (!v.ok) {
     await onConfigFolder(ix, `Could not remove chips: ${v.error}`);
+    return;
+  }
+
+  const min = validateFolderMinimum(ix.user.id, folder);
+  if (!min.ok) {
+    await onConfigFolder(ix, `Could not remove chips: ${min.error}`);
     return;
   }
 
@@ -1063,6 +1089,12 @@ function countValues(values: string[]) {
   const out = new Map<string, number>();
   for (const v of values) out.set(String(v), (out.get(String(v)) || 0) + 1);
   return out;
+}
+
+function availableOutsideFolder(row: any, folderCounts: Map<string, number>): number {
+  const owned = Math.max(0, Number(row?.qty ?? 0) || 0);
+  const inFolder = Math.max(0, folderCounts.get(String(row?.chip_id)) || 0);
+  return Math.max(0, owned - inFolder);
 }
 
 function groupChips(chips: any[]): ChipGroup[] {
@@ -1542,15 +1574,16 @@ function salePriceForChip(chip: any): number {
 }
 
 function sellableInventoryRows(userId: string) {
-  const folderSet = new Set(getFolder(userId).map(id => String(id)));
+  const folderCounts = countValues(getFolder(userId));
   return getInventory(userId)
     .filter(row => Number(row.qty) > 0)
     .map(row => {
       const chipId = String(row.chip_id);
       const chip: any = getChipById(chipId);
-      return { row, chipId, chip, salePrice: salePriceForChip(chip) };
+      const available = availableOutsideFolder(row, folderCounts);
+      return { row, chipId, chip, salePrice: salePriceForChip(chip), available };
     })
-    .filter(({ chipId, chip }) => chip && !chipIsUpgrade(chip) && !folderSet.has(chipId));
+    .filter(({ chip, available }) => chip && !chipIsUpgrade(chip) && available > 0);
 }
 
 async function renderJackInSellShop(
@@ -1569,9 +1602,9 @@ async function renderJackInSellShop(
       .setTitle('💰 Sell BattleChips')
       .setDescription([
         notice ? `📌 **${notice}**` : '',
-        'You have no BattleChips outside your folder that can be sold.',
+        'You have no available BattleChip copies outside your folder that can be sold.',
         '',
-        'Chips currently in your folder cannot be sold.',
+        'Folder-committed copies are protected; extra copies can still be sold.',
       ].filter(Boolean).join('\n'))
       .setImage(region ? (getRegionImage(region) || getTravelImage()) : getTravelImage());
     await ix.update({
@@ -1586,10 +1619,10 @@ async function renderJackInSellShop(
     : null;
 
   const options = sellable
-    .map(({ row, chipId, chip, salePrice }) => ({
+    .map(({ row, chipId, chip, salePrice, available }) => ({
       label: `${formatChipName(chip)} — sell ${salePrice}z`.slice(0, 100),
       value: chipId,
-      description: `Own ${row.qty} • Not in folder`.slice(0, 100),
+      description: `Available ${available} of ${row.qty} owned`.slice(0, 100),
       default: selected?.chipId === chipId,
     }))
     .slice(0, 25);
@@ -1617,7 +1650,7 @@ async function renderJackInSellShop(
     .setDescription([
       `Your Zenny: **${p?.zenny ?? 0}z**`,
       '',
-      notice ? `📌 **${notice}**` : 'Select a BattleChip outside your folder. Sale value is half listed price.',
+      notice ? `📌 **${notice}**` : 'Select an available BattleChip copy outside your folder. Sale value is half listed price.',
     ].join('\n'))
     .setImage(region ? (getRegionImage(region) || getTravelImage()) : getTravelImage());
 
@@ -1629,6 +1662,7 @@ async function renderJackInSellShop(
         `Listed Price: **${priceText(chip.zenny_cost) || '0z'}**`,
         `Sell Value: **${selected.salePrice}z**`,
         `Owned: **${selected.row.qty}**`,
+        `Available to Sell: **${selected.available}**`,
         chip.element ? `Element: **${chip.element}**` : '',
         Number.isFinite(Number(chip.power)) && Number(chip.power) > 0 ? `Power: **${chip.power}**` : '',
         chip.effects ? `Effects: ${String(chip.effects)}` : '',
@@ -1665,7 +1699,7 @@ export async function onShopSell(ix: ButtonInteraction, chipId: string) {
   const sellable = sellableInventoryRows(userId);
   const item = sellable.find(x => x.chipId === chipId);
   if (!item) {
-    await renderJackInSellShop(ix, null, 'That chip cannot be sold. It may be in your folder or no longer in your inventory.');
+    await renderJackInSellShop(ix, null, 'That chip cannot be sold. All owned copies may be committed to your folder or no longer in your inventory.');
     return;
   }
 

@@ -13,9 +13,10 @@ import {
 } from './db';
 
 const MAX_FOLDER = envInt('MAX_FOLDER', 30);
+const MIN_FOLDER = envInt('MIN_FOLDER', 20);
 const DEFAULT_MAX_COPIES = envInt('DEFAULT_MAX_COPIES', 5);
 
-export { MAX_FOLDER };
+export { MAX_FOLDER, MIN_FOLDER };
 
 // ---------- public API ----------
 
@@ -91,6 +92,52 @@ export function validateFolder(user_id: string, chips: string[]): { ok: boolean;
     }
   }
 
+  return { ok: true };
+}
+
+
+/** Total owned non-upgrade BattleChip copies. */
+export function getOwnedBattleChipQty(user_id: string): number {
+  const b = getBundle();
+  let total = 0;
+  for (const row of listInventory(user_id)) {
+    const chip: any = b.chips[row.chip_id] || {};
+    if (!chip || chipIsUpgrade(chip)) continue;
+    total += Math.max(0, Number(row.qty) || 0);
+  }
+  return total;
+}
+
+/** Exact copies of a chip currently committed to the folder. */
+export function getFolderChipQty(user_id: string, chip_id: string): number {
+  const id = String(chip_id);
+  return getFolder(user_id).filter(x => String(x) === id).length;
+}
+
+/** Owned copies that are not currently committed to the folder. */
+export function getAvailableChipQty(user_id: string, chip_id: string): number {
+  const id = String(chip_id);
+  const row = listInventory(user_id).find(r => String(r.chip_id) === id);
+  const owned = Math.max(0, Number(row?.qty ?? 0) || 0);
+  const inFolder = getFolderChipQty(user_id, id);
+  return Math.max(0, owned - inFolder);
+}
+
+/** The 20-chip minimum only applies once the player owns enough chips to legally meet it. */
+export function shouldEnforceMinFolder(user_id: string): boolean {
+  return MIN_FOLDER > 0 && getOwnedBattleChipQty(user_id) >= MIN_FOLDER;
+}
+
+export function getMaxRemovableFolderSlots(user_id: string, currentSize = getFolder(user_id).length): number {
+  if (!shouldEnforceMinFolder(user_id)) return Math.max(0, currentSize);
+  return Math.max(0, currentSize - MIN_FOLDER);
+}
+
+export function validateFolderMinimum(user_id: string, chips: string[]): { ok: boolean; error?: string } {
+  if (!shouldEnforceMinFolder(user_id)) return { ok: true };
+  if (chips.length < MIN_FOLDER) {
+    return { ok: false, error: `Folder must contain at least ${MIN_FOLDER} chips.` };
+  }
   return { ok: true };
 }
 

@@ -18,6 +18,7 @@ import {
   getChipById,
 } from './data';
 import { ensurePlayer, getPlayer, listFolder as listFolderQty } from './db';
+import { getFolder, validateFolderMinimum, MIN_FOLDER } from './folder';
 import { resolveDamageRoll } from './damage';
 import {
   type ParsedEffect,
@@ -272,6 +273,20 @@ async function acceptChallenge(ix: ButtonInteraction, challengeId: string) {
   }
   if (ch.targetId && ix.user.id !== ch.targetId) {
     await ix.reply({ ephemeral: true, content: 'Only the challenged player can accept this duel.' });
+    return;
+  }
+
+  const c1Folder = validateFolderMinimum(ch.challengerId, getFolder(ch.challengerId));
+  const c2Folder = validateFolderMinimum(ix.user.id, getFolder(ix.user.id));
+  if (!c1Folder.ok || !c2Folder.ok) {
+    clearTimer(ch.timer);
+    challenges.delete(challengeId);
+    await ix.update({
+      embeds: [new EmbedBuilder()
+        .setTitle('PvP Challenge Canceled')
+        .setDescription(`Both players need at least ${MIN_FOLDER} BattleChips in their folder before dueling.`)],
+      components: [],
+    });
     return;
   }
 
