@@ -236,10 +236,7 @@ export async function handleLock(ix: ButtonInteraction) {
 
     if (bs.enemy_hp <= 0 && bs.player_hp > 0) {
       const rewards = grantVirusRewards(bs.user_id, bs.virus_id);
-      const completedMissions =
-        bs.enemy_kind === "virus"
-          ? progressDefeat(bs.user_id, bs.virus_id)
-          : [];
+      const completedMissions = progressDefeat(bs.user_id, bs.virus_id);
 
       const rewardTitle = bs.enemy_kind === "boss" ? "Boss Rewards" : "Rewards";
       const rewardLines = [

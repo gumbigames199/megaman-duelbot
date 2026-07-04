@@ -28,6 +28,10 @@ import {
 import { startBattle } from '../lib/battle';
 import { createOpenPvpChallenge } from '../lib/pvp';
 import { getFolder, setFolder, validateFolder, validateFolderMinimum, MAX_FOLDER, MIN_FOLDER, maxCopiesForChip, getMaxRemovableFolderSlots, getAvailableChipQty } from '../lib/folder';
+import {
+  listCurrentMissions, getMissionBoard, acceptBoardMission, quitMission,
+  completeReadyMissions, getQuitCooldown, formatDuration, evaluateMission,
+} from '../lib/missions';
 
 const JACK_GIF =
   process.env.JACK_IN_GIF_URL ||
@@ -142,11 +146,12 @@ export async function renderJackInHUD(
   const travelBtn    = new ButtonBuilder().setCustomId('jackin:openTravel').setStyle(ButtonStyle.Secondary).setLabel('Travel');
   const shopBtn      = new ButtonBuilder().setCustomId('jackin:openShop').setStyle(ButtonStyle.Success).setLabel('Shop');
   const dataBtn      = new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data');
+  const bbsBtn       = new ButtonBuilder().setCustomId('jackin:openBbs').setStyle(ButtonStyle.Secondary).setLabel('BBS');
   const configBtn    = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('PET');
   const pvpBtn       = new ButtonBuilder().setCustomId('jackin:openPvp').setStyle(ButtonStyle.Danger).setLabel('PvP');
 
   const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(encounterBtn, travelBtn, shopBtn);
-  const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(dataBtn, configBtn, pvpBtn);
+  const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(dataBtn, bbsBtn, configBtn, pvpBtn);
 
   if (ix.isChatInputCommand()) {
     await ix.reply({ ephemeral: true, embeds: [embed], components: [row1, row2] });
@@ -532,6 +537,196 @@ async function updatePanel(ix: AnyJackInInteraction, payload: { embeds: EmbedBui
   if (typeof anyIx.reply === 'function') {
     await anyIx.reply({ embeds: payload.embeds, components: payload.components ?? [], ephemeral: true });
   }
+}
+
+/* ------------------------------ BBS Missions ------------------------------ */
+
+export async function onOpenBbs(ix: ButtonInteraction) {
+  const embed = new EmbedBuilder()
+    .setTitle('📋 BBS Mission Board')
+    .setDescription([
+      'Check active jobs or browse today\'s board postings.',
+      '',
+      '**Current** shows missions you accepted, progress, and completion status.',
+      '**Board** shows 5 available missions from your unlocked regions. The board refreshes every 24 hours.',
+    ].join('\n'))
+    .setImage(getDataImage())
+    .setFooter({ text: 'You may quit one active mission every 12 hours.' });
+
+  await ix.update({
+    embeds: [embed],
+    components: [navButtons(
+      new ButtonBuilder().setCustomId('jackin:bbsCurrent').setStyle(ButtonStyle.Primary).setLabel('Current'),
+      new ButtonBuilder().setCustomId('jackin:bbsBoard').setStyle(ButtonStyle.Secondary).setLabel('Board'),
+      makeBackButton(),
+    )],
+  });
+}
+
+export async function onBbsCurrent(ix: ButtonInteraction | StringSelectMenuInteraction, notice?: string) {
+  const current = listCurrentMissions(ix.user.id);
+  const ready = current.filter(m => m.ready);
+  const desc: string[] = [];
+  if (notice) desc.push(`📌 **${notice}**`, '');
+
+  if (!current.length) {
+    desc.push('No current missions. Open the **Board** to accept a job.');
+  } else {
+    current.slice(0, 10).forEach((m, idx) => {
+      const title = m.ready ? `**${idx + 1}. ${m.mission.name || m.mission.id} — READY**` : `**${idx + 1}. ${m.mission.name || m.mission.id}**`;
+      desc.push(title);
+      if (m.mission.description) desc.push(bbsTrim(String(m.mission.description), 220));
+      desc.push(...m.progressLines.map(line => `  ${line}`));
+      desc.push(`  Reward: ${m.rewardLines.join(' • ')}`);
+      desc.push('');
+    });
+  }
+
+  const quitCd = getQuitCooldown(ix.user.id);
+  const embed = new EmbedBuilder()
+    .setTitle('📋 BBS — Current Missions')
+    .setDescription(desc.join('\n').slice(0, 3900) || '—')
+    .setImage(getDataImage())
+    .setFooter({ text: quitCd.ready ? 'Quit mission is available.' : `Quit cooldown: ${formatDuration(quitCd.remainingMs)} remaining.` });
+
+  const buttons: ButtonBuilder[] = [
+    new ButtonBuilder().setCustomId('jackin:bbsBoard').setStyle(ButtonStyle.Secondary).setLabel('Board'),
+  ];
+  if (ready.length) {
+    buttons.unshift(new ButtonBuilder().setCustomId('jackin:bbsCompleteReady').setStyle(ButtonStyle.Success).setLabel('Complete Ready'));
+  }
+  if (current.length) {
+    buttons.push(new ButtonBuilder().setCustomId('jackin:bbsQuitOpen').setStyle(ButtonStyle.Danger).setLabel('Quit Mission').setDisabled(!quitCd.ready));
+  }
+  buttons.push(new ButtonBuilder().setCustomId('jackin:openBbs').setStyle(ButtonStyle.Secondary).setLabel('BBS'));
+  buttons.push(makeBackButton());
+
+  await updatePanel(ix, { embeds: [embed], components: [navButtons(...buttons.slice(0, 5))] });
+}
+
+export async function onBbsBoard(ix: ButtonInteraction | StringSelectMenuInteraction, notice?: string) {
+  const unlocked = (await listUnlocked(ix.user.id)).map((r: any) => String(r.id));
+  const board = getMissionBoard(ix.user.id, unlocked);
+  const b = getBundle() as any;
+
+  const desc: string[] = [];
+  if (notice) desc.push(`📌 **${notice}**`, '');
+  if (!board.missions.length) {
+    desc.push('No available BBS missions for your unlocked regions. Complete current jobs or unlock more regions.');
+  } else {
+    board.missions.forEach((m: any, idx: number) => {
+      const ev = evaluateMission(ix.user.id, m);
+      const region = b.regions?.[String(m.region_id)];
+      desc.push(`**${idx + 1}. ${m.name || m.id}**`);
+      desc.push(`Region: **${region?.name || region?.label || m.region_id || '—'}** • Type: **${m.type || 'Mission'}**`);
+      if (m.description) desc.push(bbsTrim(String(m.description), 220));
+      desc.push(`Requirement: ${ev.progressLines.map(x => x.replace(/^•\s*/, '')).join(' • ')}`);
+      desc.push(`Reward: ${ev.rewardLines.join(' • ')}`);
+      desc.push('');
+    });
+  }
+
+  const minutes = Math.max(1, Math.ceil((board.refreshAt - Date.now()) / 60000));
+  const embed = new EmbedBuilder()
+    .setTitle('📋 BBS — Board')
+    .setDescription(desc.join('\n').slice(0, 3900) || '—')
+    .setImage(getDataImage())
+    .setFooter({ text: `Board refreshes in ${minutes >= 60 ? formatDuration(minutes * 60000) : `${minutes}m`}.` });
+
+  const components: any[] = [];
+  if (board.missions.length) {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId('jackin:bbsBoardAcceptSelect')
+      .setPlaceholder('Accept a BBS mission')
+      .setMinValues(1)
+      .setMaxValues(1)
+      .addOptions(board.missions.slice(0, 25).map((m: any) => ({
+        label: bbsTrim(`${m.id}. ${m.name || m.id}`, 100),
+        value: String(m.id),
+        description: bbsTrim(`${m.type || 'Mission'} • ${m.region_id || 'Any Region'}`, 100),
+      })));
+    components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select));
+  }
+  components.push(navButtons(
+    new ButtonBuilder().setCustomId('jackin:bbsCurrent').setStyle(ButtonStyle.Primary).setLabel('Current'),
+    new ButtonBuilder().setCustomId('jackin:openBbs').setStyle(ButtonStyle.Secondary).setLabel('BBS'),
+    makeBackButton(),
+  ));
+
+  await updatePanel(ix, { embeds: [embed], components });
+}
+
+export async function onBbsAcceptSelect(ix: StringSelectMenuInteraction) {
+  const missionId = ix.values[0];
+  const unlocked = (await listUnlocked(ix.user.id)).map((r: any) => String(r.id));
+  const res = acceptBoardMission(ix.user.id, missionId, unlocked);
+  if (!res.ok) {
+    await onBbsBoard(ix, res.msg);
+    return;
+  }
+  await onBbsCurrent(ix, `Accepted mission ${missionId}.`);
+}
+
+export async function onBbsCompleteReady(ix: ButtonInteraction) {
+  const res = completeReadyMissions(ix.user.id);
+  const lines: string[] = [];
+  if (res.completed.length) lines.push(`Completed: ${res.completed.join(', ')}`);
+  if (res.rewardZ) lines.push(`Rewards: +${res.rewardZ}z`);
+  if (res.rewardChips.length) lines.push(`Chips: ${res.rewardChips.join(', ')}`);
+  if (res.failed.length) lines.push(...res.failed);
+  await onBbsCurrent(ix, lines.join(' • ') || 'No missions were ready to complete.');
+}
+
+export async function onBbsQuitOpen(ix: ButtonInteraction) {
+  const current = listCurrentMissions(ix.user.id);
+  const cd = getQuitCooldown(ix.user.id);
+  if (!cd.ready) {
+    await onBbsCurrent(ix, `Mission quit is on cooldown. Try again in ${formatDuration(cd.remainingMs)}.`);
+    return;
+  }
+  if (!current.length) {
+    await onBbsCurrent(ix, 'No active missions to quit.');
+    return;
+  }
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('jackin:bbsQuitSelect')
+    .setPlaceholder('Select a mission to quit')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(current.slice(0, 25).map(m => ({
+      label: bbsTrim(`${m.mission.id}. ${m.mission.name || m.mission.id}`, 100),
+      value: String(m.mission.id),
+      description: 'Quit mission and reset progress',
+    })));
+
+  const embed = new EmbedBuilder()
+    .setTitle('⚠️ Quit Mission?')
+    .setDescription([
+      'Choose one mission to quit.',
+      '',
+      'This resets that mission\'s progress. You may quit only **one mission every 12 hours**.',
+    ].join('\n'))
+    .setImage(getDataImage());
+
+  await ix.update({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
+      navButtons(new ButtonBuilder().setCustomId('jackin:bbsCurrent').setStyle(ButtonStyle.Secondary).setLabel('Cancel')),
+    ],
+  });
+}
+
+export async function onBbsQuitSelect(ix: StringSelectMenuInteraction) {
+  const missionId = ix.values[0];
+  const res = quitMission(ix.user.id, missionId);
+  await onBbsCurrent(ix, res.msg);
+}
+
+function bbsTrim(text: string, max: number): string {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  return s.length > max ? `${s.slice(0, Math.max(0, max - 1))}…` : s;
 }
 
 export async function onOpenData(ix: ButtonInteraction) {
