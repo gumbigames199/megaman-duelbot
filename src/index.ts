@@ -15,7 +15,7 @@ import {
 
 import loadTSVBundle from './lib/tsv';
 import { invalidateBundleCache, getBundle } from './lib/data';
-import { normalizeChipIds } from './lib/db';
+import { normalizeChipIds, getPlayer } from './lib/db';
 
 import * as Start from './commands/start';
 import * as Profile from './commands/profile';
@@ -88,6 +88,32 @@ async function safeInteractionError(ix: Interaction, err: any) {
     if (anyIx.replied || anyIx.deferred) await anyIx.followUp?.(payload);
     else await anyIx.reply(payload);
   } catch {}
+}
+
+async function requireStarted(ix: Interaction): Promise<boolean> {
+  const user = (ix as any).user;
+  if (!user?.id) return true;
+  if (getPlayer(user.id)) return true;
+  if (!ix.isRepliable()) return false;
+
+  const payload = {
+    content: '❌ **NetNavi not initialized.** Run **/start** first to create your Navi, then use **/jack_in**.',
+    ephemeral: true,
+  };
+
+  const anyIx: any = ix as any;
+  try {
+    if (typeof anyIx.update === 'function') {
+      await anyIx.reply?.(payload);
+    } else if (anyIx.replied || anyIx.deferred) {
+      await anyIx.followUp?.(payload);
+    } else {
+      await anyIx.reply(payload);
+    }
+  } catch {
+    try { await anyIx.followUp?.(payload); } catch {}
+  }
+  return false;
 }
 
 client.on('interactionCreate', async (ix) => {
@@ -166,6 +192,9 @@ client.on('interactionCreate', async (ix) => {
       }
 
       if (ix.commandName === 'start') { await Start.execute(ix); return; }
+
+      if (!(await requireStarted(ix))) return;
+
       if (ix.commandName === 'profile') { await Profile.execute(ix); return; }
       if (ix.commandName === 'folder') { await Folder.execute(ix); return; }
       if (ix.commandName === 'shop') { await ShopCmd.execute(ix); return; }
@@ -180,17 +209,19 @@ client.on('interactionCreate', async (ix) => {
 
 
     if (ix.isModalSubmit()) {
+      if (!(await requireStarted(ix))) return;
       if (ix.customId === 'jackin:chipSearchModal') { await JackIn.onChipSearchModal(ix); return; }
     }
 
     if (ix.isStringSelectMenu()) {
+      if (!(await requireStarted(ix))) return;
       if (ix.customId === 'jackin:selectRegion') { await JackIn.onSelectRegion(ix); return; }
       if (ix.customId === 'jackin:selectZone') { await JackIn.onSelectZone(ix); return; }
       if (ix.customId === 'jackin:selectTravelRegion') { await JackIn.onSelectTravelRegion(ix); return; }
       if (ix.customId === 'jackin:shopSelect') { await JackIn.onShopSelect(ix); return; }
       if (ix.customId === 'jackin:shopSellSelect') { await JackIn.onShopSellSelect(ix); return; }
       if (ix.customId === 'jackin:dataVirusSelect') { await JackIn.onDataVirusSelect(ix); return; }
-      if (ix.customId === 'jackin:bbsBoardAcceptSelect') { await JackIn.onBbsAcceptSelect(ix); return; }
+      if (ix.customId === 'jackin:bbsBoardViewSelect') { await JackIn.onBbsBoardViewSelect(ix); return; }
       if (ix.customId === 'jackin:bbsQuitSelect') { await JackIn.onBbsQuitSelect(ix); return; }
       if (ix.customId === 'jackin:folderAddSelect') { await JackIn.onConfigFolderAddSelect(ix); return; }
       if (ix.customId === 'jackin:folderRemoveSelect') { await JackIn.onConfigFolderRemoveSelect(ix); return; }
@@ -202,6 +233,7 @@ client.on('interactionCreate', async (ix) => {
     }
 
     if (ix.isButton()) {
+      if (!(await requireStarted(ix))) return;
       if (ix.customId === 'jackin:openTravel') { await JackIn.onOpenTravel(ix); return; }
       if (ix.customId === 'jackin:travelRegion') { await JackIn.onTravelRegion(ix); return; }
       if (ix.customId === 'jackin:travelZone') { await JackIn.onTravelZone(ix); return; }
@@ -212,6 +244,11 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:openBbs') { await JackIn.onOpenBbs(ix); return; }
       if (ix.customId === 'jackin:bbsCurrent') { await JackIn.onBbsCurrent(ix); return; }
       if (ix.customId === 'jackin:bbsBoard') { await JackIn.onBbsBoard(ix); return; }
+      if (ix.customId.startsWith('jackin:bbsAccept:')) {
+        const missionId = ix.customId.split(':')[2] || '';
+        await JackIn.onBbsAccept(ix, missionId);
+        return;
+      }
       if (ix.customId === 'jackin:bbsCompleteReady') { await JackIn.onBbsCompleteReady(ix); return; }
       if (ix.customId === 'jackin:bbsQuitOpen') { await JackIn.onBbsQuitOpen(ix); return; }
       if (ix.customId === 'jackin:dataChip') { await JackIn.onDataChip(ix); return; }

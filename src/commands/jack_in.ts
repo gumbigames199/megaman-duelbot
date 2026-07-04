@@ -184,6 +184,15 @@ export const data = new SlashCommandBuilder()
   .setDescription('Jack in → pick a region (dropdown), start at Zone 1, then Encounter/Travel/Shop.');
 
 export async function execute(ix: ChatInputCommandInteraction) {
+  const player = await getPlayer(ix.user.id);
+  if (!player) {
+    await ix.reply({
+      ephemeral: true,
+      content: '❌ **NetNavi not initialized.** Run **/start** first to create your Navi, then use **/jack_in**.',
+    });
+    return;
+  }
+
   await ensureStartUnlocked(ix.user.id);
 
   const regionsUnlocked = await listUnlocked(ix.user.id);
@@ -548,7 +557,7 @@ export async function onOpenBbs(ix: ButtonInteraction) {
       'Check active jobs or browse today\'s board postings.',
       '',
       '**Current** shows missions you accepted, progress, and completion status.',
-      '**Board** shows 5 available missions from your unlocked regions. The board refreshes every 24 hours.',
+      '**Board** shows 5 available missions from your unlocked regions. Open a post to view its BBS image and accept it.',
     ].join('\n'))
     .setImage(getDataImage())
     .setFooter({ text: 'You may quit one active mission every 12 hours.' });
@@ -636,14 +645,14 @@ export async function onBbsBoard(ix: ButtonInteraction | StringSelectMenuInterac
   const components: any[] = [];
   if (board.missions.length) {
     const select = new StringSelectMenuBuilder()
-      .setCustomId('jackin:bbsBoardAcceptSelect')
-      .setPlaceholder('Accept a BBS mission')
+      .setCustomId('jackin:bbsBoardViewSelect')
+      .setPlaceholder('Open a BBS post')
       .setMinValues(1)
       .setMaxValues(1)
       .addOptions(board.missions.slice(0, 25).map((m: any) => ({
         label: bbsTrim(`${m.id}. ${m.name || m.id}`, 100),
         value: String(m.id),
-        description: bbsTrim(`${m.type || 'Mission'} • ${m.region_id || 'Any Region'}`, 100),
+        description: bbsTrim(`${m.type || 'Mission'} • ${m.region_id || 'Any Region'} • View post`, 100),
       })));
     components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select));
   }
@@ -656,8 +665,12 @@ export async function onBbsBoard(ix: ButtonInteraction | StringSelectMenuInterac
   await updatePanel(ix, { embeds: [embed], components });
 }
 
-export async function onBbsAcceptSelect(ix: StringSelectMenuInteraction) {
+export async function onBbsBoardViewSelect(ix: StringSelectMenuInteraction) {
   const missionId = ix.values[0];
+  await renderBbsMissionPost(ix, missionId);
+}
+
+export async function onBbsAccept(ix: ButtonInteraction, missionId: string) {
   const unlocked = (await listUnlocked(ix.user.id)).map((r: any) => String(r.id));
   const res = acceptBoardMission(ix.user.id, missionId, unlocked);
   if (!res.ok) {
@@ -665,6 +678,57 @@ export async function onBbsAcceptSelect(ix: StringSelectMenuInteraction) {
     return;
   }
   await onBbsCurrent(ix, `Accepted mission ${missionId}.`);
+}
+
+async function renderBbsMissionPost(ix: ButtonInteraction | StringSelectMenuInteraction, missionId: string, notice?: string) {
+  const unlocked = (await listUnlocked(ix.user.id)).map((r: any) => String(r.id));
+  const board = getMissionBoard(ix.user.id, unlocked);
+  const mission = board.missions.find((m: any) => String(m.id) === String(missionId));
+
+  if (!mission) {
+    await onBbsBoard(ix, 'That BBS post is no longer available on your current board.');
+    return;
+  }
+
+  const b = getBundle() as any;
+  const region = b.regions?.[String(mission.region_id)];
+  const ev = evaluateMission(ix.user.id, mission);
+  const image = getMissionImage(mission) || getDataImage();
+
+  const desc = [
+    notice ? `📌 **${notice}**` : '',
+    `Region: **${region?.name || region?.label || mission.region_id || '—'}**`,
+    `Type: **${mission.type || 'Mission'}**`,
+    '',
+    mission.description ? String(mission.description) : '—',
+    '',
+    '**Requirement**',
+    ...ev.progressLines.map(line => line.replace(/^•\s*/, '• ')),
+    '',
+    '**Reward**',
+    ev.rewardLines.join(' • '),
+  ].filter(Boolean);
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📋 BBS Post — ${mission.name || mission.id}`)
+    .setDescription(desc.join('\n').slice(0, 3900))
+    .setImage(image)
+    .setFooter({ text: `Mission ID: ${mission.id}` });
+
+  await updatePanel(ix, {
+    embeds: [embed],
+    components: [navButtons(
+      new ButtonBuilder().setCustomId(`jackin:bbsAccept:${mission.id}`).setStyle(ButtonStyle.Success).setLabel('Accept Mission'),
+      new ButtonBuilder().setCustomId('jackin:bbsBoard').setStyle(ButtonStyle.Secondary).setLabel('Back to Board'),
+      new ButtonBuilder().setCustomId('jackin:openBbs').setStyle(ButtonStyle.Secondary).setLabel('BBS'),
+    )],
+  });
+}
+
+function getMissionImage(mission: any): string | null {
+  const raw = mission?.image_url || mission?.image || mission?.art_url || mission?.post_url || null;
+  const text = String(raw ?? '').trim();
+  return /^https?:\/\//i.test(text) ? text : null;
 }
 
 export async function onBbsCompleteReady(ix: ButtonInteraction) {
