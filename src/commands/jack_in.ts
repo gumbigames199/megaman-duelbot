@@ -598,6 +598,21 @@ export async function onBbsCurrent(ix: ButtonInteraction | StringSelectMenuInter
     .setImage(getDataImage())
     .setFooter({ text: quitCd.ready ? 'Quit mission is available.' : `Quit cooldown: ${formatDuration(quitCd.remainingMs)} remaining.` });
 
+  const components: any[] = [];
+  if (current.length) {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId('jackin:bbsCurrentViewSelect')
+      .setPlaceholder('Open a current BBS post')
+      .setMinValues(1)
+      .setMaxValues(1)
+      .addOptions(current.slice(0, 25).map((m, idx) => ({
+        label: bbsTrim(`${idx + 1}. ${m.mission.name || m.mission.id}`, 100),
+        value: String(m.mission.id),
+        description: bbsTrim(`${m.ready ? 'READY' : 'In progress'} • View full post`, 100),
+      })));
+    components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select));
+  }
+
   const buttons: ButtonBuilder[] = [
     new ButtonBuilder().setCustomId('jackin:bbsBoard').setStyle(ButtonStyle.Secondary).setLabel('Board'),
   ];
@@ -609,8 +624,9 @@ export async function onBbsCurrent(ix: ButtonInteraction | StringSelectMenuInter
   }
   buttons.push(new ButtonBuilder().setCustomId('jackin:openBbs').setStyle(ButtonStyle.Secondary).setLabel('BBS'));
   buttons.push(makeBackButton());
+  components.push(navButtons(...buttons.slice(0, 5)));
 
-  await updatePanel(ix, { embeds: [embed], components: [navButtons(...buttons.slice(0, 5))] });
+  await updatePanel(ix, { embeds: [embed], components });
 }
 
 export async function onBbsBoard(ix: ButtonInteraction | StringSelectMenuInteraction, notice?: string) {
@@ -670,6 +686,11 @@ export async function onBbsBoardViewSelect(ix: StringSelectMenuInteraction) {
   await renderBbsMissionPost(ix, missionId);
 }
 
+export async function onBbsCurrentViewSelect(ix: StringSelectMenuInteraction) {
+  const missionId = ix.values[0];
+  await renderBbsCurrentMissionPost(ix, missionId);
+}
+
 export async function onBbsAccept(ix: ButtonInteraction, missionId: string) {
   const unlocked = (await listUnlocked(ix.user.id)).map((r: any) => String(r.id));
   const res = acceptBoardMission(ix.user.id, missionId, unlocked);
@@ -722,6 +743,54 @@ async function renderBbsMissionPost(ix: ButtonInteraction | StringSelectMenuInte
       new ButtonBuilder().setCustomId('jackin:bbsBoard').setStyle(ButtonStyle.Secondary).setLabel('Back to Board'),
       new ButtonBuilder().setCustomId('jackin:openBbs').setStyle(ButtonStyle.Secondary).setLabel('BBS'),
     )],
+  });
+}
+
+async function renderBbsCurrentMissionPost(ix: ButtonInteraction | StringSelectMenuInteraction, missionId: string, notice?: string) {
+  const current = listCurrentMissions(ix.user.id);
+  const row = current.find(m => String(m.mission.id) === String(missionId));
+
+  if (!row) {
+    await onBbsCurrent(ix, 'That mission is no longer in your current BBS jobs.');
+    return;
+  }
+
+  const b = getBundle() as any;
+  const mission = row.mission;
+  const region = b.regions?.[String(mission.region_id)];
+  const image = getMissionImage(mission) || getDataImage();
+
+  const desc = [
+    notice ? `📌 **${notice}**` : '',
+    row.ready ? '**READY TO COMPLETE**' : '**IN PROGRESS**',
+    `Region: **${region?.name || region?.label || mission.region_id || '—'}**`,
+    `Type: **${mission.type || 'Mission'}**`,
+    '',
+    mission.description ? String(mission.description) : '—',
+    '',
+    '**Progress**',
+    ...row.progressLines.map(line => line.replace(/^•\s*/, '• ')),
+    '',
+    '**Reward**',
+    row.rewardLines.join(' • '),
+  ].filter(Boolean);
+
+  const buttons: ButtonBuilder[] = [];
+  if (row.ready) {
+    buttons.push(new ButtonBuilder().setCustomId('jackin:bbsCompleteReady').setStyle(ButtonStyle.Success).setLabel('Complete Ready'));
+  }
+  buttons.push(new ButtonBuilder().setCustomId('jackin:bbsCurrent').setStyle(ButtonStyle.Secondary).setLabel('Back to Current'));
+  buttons.push(new ButtonBuilder().setCustomId('jackin:openBbs').setStyle(ButtonStyle.Secondary).setLabel('BBS'));
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📋 Current BBS Post — ${mission.name || mission.id}`)
+    .setDescription(desc.join('\n').slice(0, 3900))
+    .setImage(image)
+    .setFooter({ text: `Mission ID: ${mission.id}` });
+
+  await updatePanel(ix, {
+    embeds: [embed],
+    components: [navButtons(...buttons)],
   });
 }
 

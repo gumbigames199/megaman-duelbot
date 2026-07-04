@@ -222,6 +222,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:shopSellSelect') { await JackIn.onShopSellSelect(ix); return; }
       if (ix.customId === 'jackin:dataVirusSelect') { await JackIn.onDataVirusSelect(ix); return; }
       if (ix.customId === 'jackin:bbsBoardViewSelect') { await JackIn.onBbsBoardViewSelect(ix); return; }
+      if (ix.customId === 'jackin:bbsCurrentViewSelect') { await JackIn.onBbsCurrentViewSelect(ix); return; }
       if (ix.customId === 'jackin:bbsQuitSelect') { await JackIn.onBbsQuitSelect(ix); return; }
       if (ix.customId === 'jackin:folderAddSelect') { await JackIn.onConfigFolderAddSelect(ix); return; }
       if (ix.customId === 'jackin:folderRemoveSelect') { await JackIn.onConfigFolderRemoveSelect(ix); return; }
