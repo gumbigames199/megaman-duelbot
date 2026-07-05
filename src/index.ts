@@ -231,6 +231,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'shop:select') { await ShopCmd.handleShopSelect(ix); return; }
       if (ix.customId.startsWith('pvp:pick:')) { await PvP.onSelect(ix); return; }
       if (ix.customId.startsWith('pick:')) { await Battle.handlePick(ix); return; }
+      if (ix.customId.startsWith('target:')) { await Battle.handleTarget(ix); return; }
     }
 
     if (ix.isButton()) {

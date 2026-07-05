@@ -23,6 +23,8 @@ export type DataBundle = {
   program_advances: ProgramAdvanceRow[];
   programAdvances: ProgramAdvanceRow[]; // alias for callers expecting camelCase
   shops: ShopRow[];
+  encounter_rules: any[];
+  encounterRules: any[];
 };
 
 let _cache: DataBundle | null = null;
@@ -53,6 +55,7 @@ export function getBundle(): DataBundle {
   const missions = readTSV(path.join(dataDir, 'missions.tsv'));
   const program_advances = readTSV(path.join(dataDir, 'program_advances.tsv'));
   const shops = readTSV(path.join(dataDir, 'shops.tsv'));
+  const encounter_rules = readTSV(path.join(dataDir, 'encounter_rules.tsv'));
 
   _cache = {
     chips,
@@ -63,6 +66,8 @@ export function getBundle(): DataBundle {
     program_advances,
     programAdvances: program_advances, // alias
     shops,
+    encounter_rules,
+    encounterRules: encounter_rules,
   };
   _mtimeKey = key;
 

@@ -38,6 +38,17 @@ type ProgramAdvanceRenderInfo = {
   resultChipId?: string;
 };
 
+type EnemyRenderItem = {
+  id: string;
+  name: string;
+  hp: number;
+  hpMax: number;
+  status?: string;
+  active?: boolean;
+  targeted?: boolean;
+  defeated?: boolean;
+};
+
 function petEmoji(): string {
   const full = String(process.env.PET_EMOJI || '').trim();
   if (full) return full;
@@ -91,7 +102,7 @@ function selectedChipLines(hand: BattleHandRenderItem[], selectedIds: string[]):
 function chipQueueBlock(hand: BattleHandRenderItem[], selectedIds: string[]): string | undefined {
   const lines = selectedChipLines(hand, selectedIds);
   if (!lines.length) return undefined;
-  return [`⚡ **Chip Queue (${lines.length}/3)**`, ...lines, '', '✅ Valid queue.'].join('\n');
+  return [`⚡ **Chip Queue (${lines.length}/5)**`, ...lines, '', '✅ Valid queue.'].join('\n');
 }
 
 function programAdvanceBlock(pa?: ProgramAdvanceRenderInfo): string | undefined {
@@ -114,23 +125,58 @@ function optionText(c: BattleHandRenderItem): { label: string; description?: str
   };
 }
 
+function buildTargetSelect(battleId: string, enemies?: EnemyRenderItem[], targetEnemyIndex?: number): StringSelectMenuBuilder | null {
+  const living = (enemies || [])
+    .map((e, idx) => ({ e, idx }))
+    .filter(({ e }) => !e.defeated && Number(e.hp) > 0);
+  if (living.length <= 1) return null;
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`target:${battleId}`)
+    .setPlaceholder(`Target: Enemy ${(Number(targetEnemyIndex ?? living[0]?.idx ?? 0) + 1)}`)
+    .setMinValues(1)
+    .setMaxValues(1);
+
+  select.addOptions(
+    living.slice(0, 25).map(({ e, idx }) => ({
+      label: `Enemy ${idx + 1}: ${e.name}`.slice(0, 100),
+      description: `HP ${Math.max(0, Math.floor(Number(e.hp) || 0))}/${Math.max(1, Math.floor(Number(e.hpMax) || 1))}`.slice(0, 100),
+      value: String(idx),
+      default: idx === Number(targetEnemyIndex ?? living[0]?.idx ?? 0),
+    })),
+  );
+
+  return select;
+}
+
+function enemiesStatusBlock(enemies?: EnemyRenderItem[], fallback?: { hp: { enemyHP: number; enemyHPMax: number }; status?: string }): string {
+  const live = (enemies || []).filter(e => !e.defeated);
+  if (!live.length && fallback) {
+    return ['🟥 **Enemy**', hpBar(fallback.hp.enemyHP, fallback.hp.enemyHPMax), `Status: ${statusBadges(fallback.status)}`].join('\n');
+  }
+  if (!live.length) return '🟥 **Enemy**\n—';
+  return live.map((e, i) => {
+    const marker = e.targeted ? '🎯 TARGET' : e.active ? '▶️ ACTIVE' : `${i + 1}.`;
+    return `${marker} **${e.name}**\n${hpBar(e.hp, e.hpMax)}\nStatus: ${statusBadges(e.status)}`;
+  }).join('\n');
+}
+
 function combatStatusBlock(args: {
   hp: { playerHP: number; playerHPMax: number; enemyHP: number; enemyHPMax: number };
   status?: { player?: string; enemy?: string };
+  enemies?: EnemyRenderItem[];
 }): string {
-  const { hp, status } = args;
+  const { hp, status, enemies } = args;
   return [
     '🟦 **You**',
     hpBar(hp.playerHP, hp.playerHPMax),
     `Status: ${statusBadges(status?.player)}`,
     '',
-    '🟥 **Enemy**',
-    hpBar(hp.enemyHP, hp.enemyHPMax),
-    `Status: ${statusBadges(status?.enemy)}`,
+    enemiesStatusBlock(enemies, { hp: { enemyHP: hp.enemyHP, enemyHPMax: hp.enemyHPMax }, status: status?.enemy }),
   ].join('\n');
 }
 
-/** First screen of a battle with a single multi-select (max 3) + Lock/Run buttons. */
+/** First screen of a battle with chip multi-select, target select, and Lock/Run buttons. */
 export function renderBattleScreen(args: {
   battleId: string;
   enemy: EnemyRef;
@@ -138,26 +184,28 @@ export function renderBattleScreen(args: {
   hand: BattleHandRenderItem[];
   selectedIds: string[];
   status?: { player?: string; enemy?: string };
+  enemies?: EnemyRenderItem[];
   programAdvance?: ProgramAdvanceRenderInfo;
+  targetEnemyIndex?: number;
 }) {
-  const { battleId, enemy, hp, hand, selectedIds, status, programAdvance } = args;
+  const { battleId, enemy, hp, hand, selectedIds, status, enemies, programAdvance, targetEnemyIndex } = args;
 
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
       '⚔️ **TURN CONSOLE**',
-      combatStatusBlock({ hp, status }),
+      combatStatusBlock({ hp, status, enemies }),
       '',
       chipQueueBlock(hand, selectedIds),
       programAdvanceBlock(programAdvance),
-      hand.length ? '🎛️ **Choose up to 3 chips, then lock your turn.**' : '📁 Your hand is empty.',
+      hand.length ? '🎛️ **Choose up to 5 chips, choose a target, then lock your turn.**' : '📁 Your hand is empty.',
     ].filter((line) => line !== undefined).join('\n')
   );
 
   const select = new StringSelectMenuBuilder()
     .setCustomId(`pick:${battleId}`)
-    .setPlaceholder(`Select up to 3 chips (${selectedIds.length}/3)`)
+    .setPlaceholder(`Select up to 5 chips (${selectedIds.length}/5)`)
     .setMinValues(0)
-    .setMaxValues(Math.min(3, hand.length));
+    .setMaxValues(Math.min(5, hand.length));
 
   const opts = hand.map((c) => {
     const text = optionText(c);
@@ -166,12 +214,14 @@ export function renderBattleScreen(args: {
   if (opts.length) select.addOptions(opts);
 
   const rowSel = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+  const targetSelect = buildTargetSelect(battleId, enemies, targetEnemyIndex);
+  const rowTarget = targetSelect ? new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(targetSelect) : null;
   const rowBtns = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`lock:${battleId}`).setStyle(ButtonStyle.Success).setLabel('Lock Turn').setEmoji('✅'),
     new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run').setEmoji('🏃'),
   );
 
-  return { embed, components: [rowSel, rowBtns] as const };
+  return { embed, components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const };
 }
 
 /** Round result embed + NEW hand picker (single multi-select) with buttons. */
@@ -183,9 +233,11 @@ export function renderRoundResultWithNextHand(args: {
   nextHand: BattleHandRenderItem[];
   selectedIds: string[];
   status?: { player?: string; enemy?: string };
+  enemies?: EnemyRenderItem[];
   programAdvance?: ProgramAdvanceRenderInfo;
+  targetEnemyIndex?: number;
 }) {
-  const { battleId, enemy, hp, round, nextHand, selectedIds, status, programAdvance } = args;
+  const { battleId, enemy, hp, round, nextHand, selectedIds, status, enemies, programAdvance, targetEnemyIndex } = args;
 
   const combinedLog = [
     ...round.playerLogLines.map(line => `🟦 ${line}`),
@@ -195,21 +247,21 @@ export function renderRoundResultWithNextHand(args: {
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
       '⚔️ **ROUND RESULT**',
-      combatStatusBlock({ hp, status }),
+      combatStatusBlock({ hp, status, enemies }),
       '',
       combinedLog.length ? `📜 **Combat Log**\n${combinedLog.join('\n')}` : '📜 **Combat Log**\n—',
       '',
       chipQueueBlock(nextHand, selectedIds),
       programAdvanceBlock(programAdvance),
-      '🎛️ **Next hand:** pick up to 3 chips.',
+      '🎛️ **Next hand:** pick up to 5 chips and choose a target.',
     ].filter(Boolean).join('\n')
   );
 
   const select = new StringSelectMenuBuilder()
     .setCustomId(`pick:${battleId}`)
-    .setPlaceholder(`Select up to 3 chips (${selectedIds.length}/3)`)
+    .setPlaceholder(`Select up to 5 chips (${selectedIds.length}/5)`)
     .setMinValues(0)
-    .setMaxValues(Math.min(3, nextHand.length));
+    .setMaxValues(Math.min(5, nextHand.length));
 
   const opts = nextHand.map((c) => {
     const text = optionText(c);
@@ -218,12 +270,14 @@ export function renderRoundResultWithNextHand(args: {
   if (opts.length) select.addOptions(opts);
 
   const rowSel = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+  const targetSelect = buildTargetSelect(battleId, enemies, targetEnemyIndex);
+  const rowTarget = targetSelect ? new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(targetSelect) : null;
   const rowBtns = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`lock:${battleId}`).setStyle(ButtonStyle.Success).setLabel('Lock Turn').setEmoji('✅'),
     new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run').setEmoji('🏃'),
   );
 
-  return { embed, components: [rowSel, rowBtns] as const };
+  return { embed, components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const };
 }
 
 /** Final screen after victory/defeat; light wrapper so callers can update once. */

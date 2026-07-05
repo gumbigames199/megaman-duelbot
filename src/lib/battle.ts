@@ -48,9 +48,20 @@ import {
 import type { Element } from "./types";
 
 const DEFAULT_PLAYER_HP = 100;
+const MAX_CHIPS_PER_TURN = Math.max(1, Math.min(5, Number(process.env.MAX_CHIPS_PER_TURN ?? 5) || 5));
+const FOLDER_REFRESH_MIN_UNUSED = Math.max(1, Math.min(30, Number(process.env.FOLDER_REFRESH_MIN_UNUSED ?? MAX_CHIPS_PER_TURN) || MAX_CHIPS_PER_TURN));
 
 type EnemyKind = "virus" | "boss";
 type ChipRef = { id: string; uid: string };
+
+type BattleEnemy = {
+  uid: string;
+  virus_id: string;
+  enemy_kind: EnemyKind;
+  hp: number;
+  hp_max: number;
+  status: StatusState;
+};
 
 type BattleHandItem = {
   id: string;
@@ -70,6 +81,9 @@ type BattleState = {
   virus_id: string;
   enemy_kind: EnemyKind;
   region_id: string;
+  enemies: BattleEnemy[];
+  active_enemy_index: number;
+  target_enemy_index: number;
 
   player_hp: number;
   player_hp_max: number;
@@ -114,15 +128,37 @@ export function startBattle(
   user_id: string,
   virus_id: string,
   enemy_kind: EnemyKind = "virus",
-  opts: { returnMode?: BattleReturnMode } = {},
+  opts: { returnMode?: BattleReturnMode; enemies?: Array<{ virus_id: string; enemy_kind?: EnemyKind }> } = {},
 ) {
   ensurePlayer(user_id);
-  markSeenVirus(user_id, virus_id);
 
   const player = getPlayer(user_id)!;
-  const virus = getVirusById(virus_id);
-  addStyleProgress(user_id, (virus as any)?.element, 1);
-  const enemyHP = Math.max(1, toInt((virus as any)?.hp, 100));
+  const requestedEnemies = (opts.enemies && opts.enemies.length)
+    ? opts.enemies
+    : [{ virus_id, enemy_kind }];
+  const enemies: BattleEnemy[] = requestedEnemies
+    .map((e, i) => {
+      const id = String(e.virus_id || '').trim();
+      const virus = getVirusById(id) as any;
+      if (!virus) return null;
+      markSeenVirus(user_id, id);
+      addStyleProgress(user_id, virus?.element, 1);
+      const hpMax = Math.max(1, toInt(virus?.hp, 100));
+      return {
+        uid: `${id}:${i}`,
+        virus_id: id,
+        enemy_kind: e.enemy_kind || enemy_kind,
+        hp: hpMax,
+        hp_max: hpMax,
+        status: {},
+      } as BattleEnemy;
+    })
+    .filter((e): e is BattleEnemy => !!e);
+
+  if (!enemies.length) throw new Error('No valid enemies for battle.');
+
+  const virus = getVirusById(enemies[0].virus_id);
+  const enemyHP = enemies[0].hp;
 
   const fullDeck = buildDeckFromFolder(user_id);
   if (fullDeck.length === 0) fullDeck.push(...fallbackDeck());
@@ -135,11 +171,14 @@ export function startBattle(
   const bs: BattleState = {
     id,
     user_id,
-    virus_id,
-    enemy_kind,
+    virus_id: enemies[0].virus_id,
+    enemy_kind: enemies[0].enemy_kind,
     region_id: String(
       (player as any)?.region_id || (virus as any)?.region_id || "",
     ),
+    enemies,
+    active_enemy_index: 0,
+    target_enemy_index: 0,
     player_hp: hpMax,
     player_hp_max: hpMax,
     enemy_hp: enemyHP,
@@ -188,7 +227,7 @@ export async function handlePick(ix: StringSelectMenuInteraction) {
     return;
   }
 
-  const selected = resolveToIndexValues(bs, (ix.values ?? []).slice(0, 3));
+  const selected = resolveToIndexValues(bs, (ix.values ?? []).slice(0, MAX_CHIPS_PER_TURN));
   const chipRows = selected.map((idxText) => {
     const idx = Number(idxText);
     const chipId = bs.hand[idx]?.id ?? "";
@@ -212,6 +251,43 @@ export async function handlePick(ix: StringSelectMenuInteraction) {
   }
 
   bs.selected = selected;
+  ensureValidTarget(bs);
+  const view = renderBattle(bs);
+  await ix.update({ embeds: [view.embed], components: view.components });
+}
+
+export async function handleTarget(ix: StringSelectMenuInteraction) {
+  const [prefix, battleId] = parseCustom(ix.customId);
+  if (prefix !== "target") return;
+
+  const bs = battles.get(battleId);
+  if (!bs || bs.is_over) {
+    await safeRespond(ix, {
+      content: "⚠️ This battle is no longer active.",
+      components: [],
+      embeds: [],
+      ephemeral: true,
+    });
+    return;
+  }
+  if (bs.user_id !== ix.user.id) {
+    await safeRespond(ix, { content: "This is not your battle.", ephemeral: true });
+    return;
+  }
+
+  const raw = String(ix.values?.[0] ?? "auto").trim();
+  if (raw === "auto") {
+    bs.target_enemy_index = firstLivingEnemyIndex(bs);
+  } else {
+    const idx = Number(raw);
+    if (Number.isFinite(idx) && idx >= 0 && idx < bs.enemies.length && bs.enemies[idx]?.hp > 0) {
+      bs.target_enemy_index = idx;
+    } else {
+      bs.target_enemy_index = firstLivingEnemyIndex(bs);
+    }
+  }
+  ensureValidTarget(bs);
+
   const view = renderBattle(bs);
   await ix.update({ embeds: [view.embed], components: view.components });
 }
@@ -239,66 +315,67 @@ export async function handleLock(ix: ButtonInteraction) {
   }
 
   const round = _resolveRoundInternal(bs);
+  const won = allEnemiesDefeated(bs) && bs.player_hp > 0;
 
-  if (bs.player_hp <= 0 || bs.enemy_hp <= 0) {
+  if (bs.player_hp <= 0 || won) {
     bs.is_over = true;
 
-    if (bs.enemy_hp <= 0 && bs.player_hp > 0) {
-      const rewards = grantVirusRewards(bs.user_id, bs.virus_id);
-      const completedMissions = progressDefeat(bs.user_id, bs.virus_id);
+    if (won) {
+      const defeated = bs.enemies.slice();
+      let totalZenny = 0;
+      let totalXp = 0;
+      let leveledUp = 0;
+      const drops: string[] = [];
+      const missionDone = new Set<string>();
 
-      const rewardTitle = bs.enemy_kind === "boss" ? "Boss Rewards" : "Rewards";
+      for (const enemy of defeated) {
+        const rewards = grantVirusRewards(bs.user_id, enemy.virus_id);
+        totalZenny += rewards.zenny_gained || 0;
+        totalXp += rewards.xp_gained || 0;
+        leveledUp += rewards.leveledUp || 0;
+        for (const d of rewards.drops || []) drops.push(`${d.item_id} x${d.qty}`);
+        for (const m of progressDefeat(bs.user_id, enemy.virus_id) || []) missionDone.add(m);
+      }
+
+      const hasBoss = defeated.some(e => e.enemy_kind === 'boss');
+      const rewardTitle = hasBoss ? "Battle Rewards" : "Rewards";
       const rewardLines = [
-        `${rewardTitle}: ${rewards.zenny_gained ? `+${rewards.zenny_gained}z` : "+0z"}${rewards.xp_gained ? ` • +${rewards.xp_gained} XP` : ""}`,
-        rewards.drops.length
-          ? `Drops: ${rewards.drops.map((d) => `**${d.item_id}** x${d.qty}`).join(", ")}`
-          : "",
-        rewards.leveledUp ? `🆙 Level Up x${rewards.leveledUp}` : "",
-        completedMissions.length
-          ? `Mission completed: ${completedMissions.join(", ")}`
-          : "",
+        `${rewardTitle}: +${totalZenny}z${totalXp ? ` • +${totalXp} XP` : ""}`,
+        drops.length ? `Drops: ${drops.map(d => `**${d}**`).join(", ")}` : "",
+        leveledUp ? `🆙 Level Up x${leveledUp}` : "",
+        missionDone.size ? `Mission completed: ${Array.from(missionDone).join(", ")}` : "",
       ].filter(Boolean);
 
       const newly = diffNewlyUnlockedRegions(bs.user_id);
-      if (newly.length)
-        rewardLines.push(
-          `🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`,
-        );
+      if (newly.length) {
+        rewardLines.push(`🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`);
+      }
 
       const victoryView = renderVictoryToHub({
-        enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
+        enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
         victory: { title: "Victory!", rewardLines },
       });
       const view = endBattleView(bs, victoryView, {
-        title: `Deleted ${getVirusName(bs.virus_id)}`,
+        title: `Deleted ${enemySummaryTitle(bs)}`,
         lines: rewardLines,
       });
 
-      await ix.update({
-        embeds: [view.embed],
-        components: view.components,
-      });
+      await ix.update({ embeds: [view.embed], components: view.components });
       battles.delete(battleId);
       return;
     }
 
     const title = bs.player_hp <= 0 ? "☠️ Navi Deleted" : "Battle End";
     const lossView = renderVictoryToHub({
-      enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
-      victory: {
-        title,
-        rewardLines: [],
-      },
+      enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
+      victory: { title, rewardLines: [] },
     });
     const view = endBattleView(bs, lossView, {
-      title: `${title} vs ${getVirusName(bs.virus_id)}`,
+      title: `${title} vs ${enemySummaryTitle(bs)}`,
       lines: [],
     });
 
-    await ix.update({
-      embeds: [view.embed],
-      components: view.components,
-    });
+    await ix.update({ embeds: [view.embed], components: view.components });
     battles.delete(battleId);
     return;
   }
@@ -306,7 +383,8 @@ export async function handleLock(ix: ButtonInteraction) {
   drawHand(bs);
   const view = renderRoundResultWithNextHand({
     battleId,
-    enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
+    enemy: { virusId: bs.virus_id, displayName: enemySummaryTitle(bs) },
+    enemies: enemyRenderItems(bs),
     hp: {
       playerHP: bs.player_hp,
       playerHPMax: bs.player_hp_max,
@@ -316,6 +394,7 @@ export async function handleLock(ix: ButtonInteraction) {
     round,
     nextHand: toHandItems(bs.hand),
     selectedIds: [],
+    targetEnemyIndex: bs.target_enemy_index,
     ...statusPayload(bs),
   });
 
@@ -489,6 +568,84 @@ function styleEmoji(element: string): string {
   }
 }
 
+
+function saveActiveEnemy(bs: BattleState) {
+  const e = bs.enemies[bs.active_enemy_index];
+  if (!e) return;
+  e.virus_id = bs.virus_id;
+  e.enemy_kind = bs.enemy_kind;
+  e.hp = bs.enemy_hp;
+  e.hp_max = bs.enemy_hp_max;
+  e.status = bs.enemy_status;
+}
+
+function activateEnemy(bs: BattleState, idx: number) {
+  const e = bs.enemies[idx];
+  if (!e) return false;
+  bs.active_enemy_index = idx;
+  bs.virus_id = e.virus_id;
+  bs.enemy_kind = e.enemy_kind;
+  bs.enemy_hp = e.hp;
+  bs.enemy_hp_max = e.hp_max;
+  bs.enemy_status = e.status;
+  return true;
+}
+
+function advanceToNextEnemy(bs: BattleState): boolean {
+  saveActiveEnemy(bs);
+  const idx = bs.enemies.findIndex(e => e.hp > 0);
+  if (idx < 0) return false;
+  if (!bs.enemies[bs.target_enemy_index] || bs.enemies[bs.target_enemy_index].hp <= 0) bs.target_enemy_index = idx;
+  return activateEnemy(bs, idx);
+}
+
+function allEnemiesDefeated(bs: BattleState): boolean {
+  saveActiveEnemy(bs);
+  return bs.enemies.every(e => e.hp <= 0);
+}
+
+function livingEnemyIndexes(bs: BattleState): number[] {
+  saveActiveEnemy(bs);
+  const out: number[] = [];
+  bs.enemies.forEach((e, i) => { if (e.hp > 0) out.push(i); });
+  return out;
+}
+
+function firstLivingEnemyIndex(bs: BattleState): number {
+  saveActiveEnemy(bs);
+  const idx = bs.enemies.findIndex(e => e.hp > 0);
+  return idx >= 0 ? idx : 0;
+}
+
+function ensureValidTarget(bs: BattleState) {
+  saveActiveEnemy(bs);
+  const cur = bs.enemies[bs.target_enemy_index];
+  if (!cur || cur.hp <= 0) bs.target_enemy_index = firstLivingEnemyIndex(bs);
+}
+
+function enemySummaryTitle(bs: BattleState): string {
+  saveActiveEnemy(bs);
+  const names = bs.enemies.map(e => getVirusName(e.virus_id));
+  const unique = Array.from(new Set(names));
+  if (bs.enemies.length <= 1) return unique[0] || getVirusName(bs.virus_id);
+  if (unique.length === 1) return `${unique[0]} x${bs.enemies.length}`;
+  return unique.slice(0, 3).join(' + ') + (unique.length > 3 ? ` +${unique.length - 3}` : '');
+}
+
+function enemyRenderItems(bs: BattleState) {
+  saveActiveEnemy(bs);
+  return bs.enemies.map((e, i) => ({
+    id: e.virus_id,
+    name: getVirusName(e.virus_id),
+    hp: e.hp,
+    hpMax: e.hp_max,
+    status: statusSummary(e.status),
+    active: i === bs.active_enemy_index && e.hp > 0,
+    targeted: i === bs.target_enemy_index && e.hp > 0,
+    defeated: e.hp <= 0,
+  }));
+}
+
 // ---------------- Compatibility API ----------------
 export function startEncounterBattle(init: {
   user_id: string;
@@ -516,7 +673,7 @@ export function save(s: any): void {
   const bs = battles.get(s.id);
   if (!bs) return;
   const locked = Array.isArray(s.locked)
-    ? s.locked.filter(Boolean).slice(0, 3)
+    ? s.locked.filter(Boolean).slice(0, MAX_CHIPS_PER_TURN)
     : [];
   bs.selected = resolveToIndexValues(bs, locked);
 }
@@ -536,12 +693,12 @@ export function resolveTurn(s: any, chosenIds: string[]) {
 
   bs.selected = resolveToIndexValues(
     bs,
-    (chosenIds ?? []).filter(Boolean).slice(0, 3),
+    (chosenIds ?? []).filter(Boolean).slice(0, MAX_CHIPS_PER_TURN),
   );
   const round = _resolveRoundInternal(bs);
 
   let outcome: "ongoing" | "victory" | "defeat" = "ongoing";
-  if (bs.enemy_hp <= 0 && bs.player_hp > 0) outcome = "victory";
+  if (allEnemiesDefeated(bs) && bs.player_hp > 0) outcome = "victory";
   else if (bs.player_hp <= 0) outcome = "defeat";
 
   if (outcome === "ongoing") {
@@ -551,6 +708,7 @@ export function resolveTurn(s: any, chosenIds: string[]) {
   }
 
   s.enemy_hp = bs.enemy_hp;
+  s.enemies = bs.enemies.map(e => ({ virus_id: e.virus_id, hp: e.hp, hp_max: e.hp_max, enemy_kind: e.enemy_kind }));
   s.player_hp = bs.player_hp;
   s.hand = bs.hand.map((c) => c.id);
   s.locked = [];
@@ -571,7 +729,8 @@ function renderBattle(bs: BattleState) {
 
   return renderBattleScreen({
     battleId: bs.id,
-    enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
+    enemy: { virusId: bs.virus_id, displayName: enemySummaryTitle(bs) },
+    enemies: enemyRenderItems(bs),
     hp: {
       playerHP: bs.player_hp,
       playerHPMax: bs.player_hp_max,
@@ -580,6 +739,7 @@ function renderBattle(bs: BattleState) {
     },
     hand: toHandItems(bs.hand),
     selectedIds: bs.selected.slice(),
+    targetEnemyIndex: bs.target_enemy_index,
     ...(playerStatus || enemyStatus
       ? { status: { player: playerStatus, enemy: enemyStatus } }
       : {}),
@@ -650,8 +810,8 @@ function drawHand(bs: BattleState) {
     shuffle(bs.deck);
   }
 
-  // Once fewer than 3 unused chip instances remain, refresh the entire folder.
-  if (bs.deck.length < 3) {
+  // Once fewer than the configured minimum unused chip instances remain, refresh the entire folder.
+  if (bs.deck.length < FOLDER_REFRESH_MIN_UNUSED) {
     refreshChipCycle(bs);
   }
 
@@ -676,7 +836,7 @@ function resolveToIndexValues(bs: BattleState, chosen: string[]): string[] {
   const out: string[] = [];
   const used = new Set<number>();
 
-  for (const raw of chosen.slice(0, 3)) {
+  for (const raw of chosen.slice(0, MAX_CHIPS_PER_TURN)) {
     const v = String(raw ?? "").trim();
     if (!v) continue;
 
@@ -719,45 +879,43 @@ function _resolveRoundInternal(bs: BattleState) {
   bs.reflector_prevented = 0;
 
   applyStartTicks(bs, playerLog, enemyLog);
-  if (bs.enemy_hp <= 0)
+  if (allEnemiesDefeated(bs)) {
     return {
       playerLogLines: playerLog,
       enemyLogLines: [...enemyLog, "Enemy deleted."],
     };
-  if (bs.player_hp <= 0)
+  }
+  if (bs.player_hp <= 0) {
     return { playerLogLines: playerLog, enemyLogLines: enemyLog };
+  }
 
   const playerCanAct = canActFromStatus(bs.player_status, Math.random);
   if (!playerCanAct.canAct) {
     playerLog.push(`You are ${playerCanAct.reason} and could not act.`);
   } else {
+    ensureValidTarget(bs);
+    activateEnemy(bs, bs.target_enemy_index);
     resolvePlayerChips(bs, selectedIndices(bs), playerLog);
   }
 
   discardSelected(bs);
 
-  if (bs.enemy_hp <= 0) {
+  if (allEnemiesDefeated(bs)) {
     enemyLog.push("Enemy deleted.");
-    tickEnd(bs.enemy_status);
+    tickEndAllEnemyStatuses(bs);
     tickEnd(bs.player_status);
     return { playerLogLines: playerLog, enemyLogLines: enemyLog };
   }
 
-  const enemyCanAct = canActFromStatus(bs.enemy_status, Math.random);
-  if (!enemyCanAct.canAct) {
-    enemyLog.push(
-      `${getVirusName(bs.virus_id)} is ${enemyCanAct.reason} and could not act.`,
-    );
-  } else {
-    resolveEnemyAction(bs, enemyLog);
-  }
-
+  resolveAllEnemyActions(bs, enemyLog);
   applyReflectorDamage(bs, enemyLog);
+  if (bs.enemy_hp <= 0) advanceToNextEnemy(bs);
   expireTurnBarriers(bs, playerLog, enemyLog);
 
-  tickEnd(bs.enemy_status);
+  tickEndAllEnemyStatuses(bs);
   tickEnd(bs.player_status);
 
+  advanceToNextEnemy(bs);
   return { playerLogLines: playerLog, enemyLogLines: enemyLog };
 }
 
@@ -766,10 +924,15 @@ function applyStartTicks(
   playerLog: string[],
   enemyLog: string[],
 ) {
-  const enemyTick = tickStart(bs.enemy_hp, bs.enemy_hp_max, bs.enemy_status);
-  bs.enemy_hp = enemyTick.hp;
-  if (enemyTick.notes.length)
-    enemyLog.push(`Enemy took ${enemyTick.notes.join(" + ")}.`);
+  saveActiveEnemy(bs);
+  for (let i = 0; i < bs.enemies.length; i++) {
+    const e = bs.enemies[i];
+    if (!e || e.hp <= 0) continue;
+    const tick = tickStart(e.hp, e.hp_max, e.status);
+    e.hp = tick.hp;
+    if (tick.notes.length) enemyLog.push(`${getVirusName(e.virus_id)} took ${tick.notes.join(" + ")}.`);
+  }
+  advanceToNextEnemy(bs);
 
   const playerTick = tickStart(
     bs.player_hp,
@@ -779,6 +942,12 @@ function applyStartTicks(
   bs.player_hp = playerTick.hp;
   if (playerTick.notes.length)
     playerLog.push(`You took ${playerTick.notes.join(" + ")}.`);
+}
+
+function tickEndAllEnemyStatuses(bs: BattleState) {
+  saveActiveEnemy(bs);
+  for (const e of bs.enemies) tickEnd(e.status);
+  advanceToNextEnemy(bs);
 }
 
 function resolvePlayerChips(
@@ -800,17 +969,25 @@ function resolvePlayerChips(
       displayName: pa.name,
       forceAttackPlusReset: true,
     });
+    if (bs.enemy_hp <= 0) {
+      playerLog.push(`${getVirusName(bs.virus_id)} deleted.`);
+      advanceToNextEnemy(bs);
+    }
     return;
   }
 
   let pendingAttackPlus = 0;
   for (const idx of idxs) {
+    if (allEnemiesDefeated(bs)) break;
     const chipId = bs.hand[idx]?.id;
     if (!chipId) continue;
     pendingAttackPlus = executeChip(bs, chipId, playerLog, {
       pendingAttackPlus,
     });
-    if (bs.enemy_hp <= 0) break;
+    if (bs.enemy_hp <= 0) {
+      playerLog.push(`${getVirusName(bs.virus_id)} deleted.`);
+      if (!advanceToNextEnemy(bs)) break;
+    }
   }
 }
 
@@ -941,10 +1118,16 @@ function expireTurnBarriers(bs: BattleState, playerLog: string[], enemyLog: stri
     delete bs.player_status.barrier;
     playerLog.push('Barrier expired.');
   }
-  if ((bs.enemy_status.barrier ?? 0) > 0) {
-    delete bs.enemy_status.barrier;
-    enemyLog.push('Enemy barrier expired.');
+  saveActiveEnemy(bs);
+  let expired = 0;
+  for (const e of bs.enemies) {
+    if ((e.status.barrier ?? 0) > 0) {
+      delete e.status.barrier;
+      expired += 1;
+    }
   }
+  if (expired > 0) enemyLog.push(expired === 1 ? 'Enemy barrier expired.' : `${expired} enemy barriers expired.`);
+  advanceToNextEnemy(bs);
 }
 
 function applyOffensiveEffects(
@@ -982,6 +1165,24 @@ function discardSelected(bs: BattleState) {
   const sel = new Set(idxs);
   bs.discard.push(...idxs.map((i) => bs.hand[i]).filter(Boolean));
   bs.hand = bs.hand.filter((_, i) => !sel.has(i));
+}
+
+
+function resolveAllEnemyActions(bs: BattleState, enemyLog: string[]) {
+  const idxs = livingEnemyIndexes(bs);
+  for (const idx of idxs) {
+    if (bs.player_hp <= 0) break;
+    activateEnemy(bs, idx);
+    const enemyCanAct = canActFromStatus(bs.enemy_status, Math.random);
+    if (!enemyCanAct.canAct) {
+      enemyLog.push(`${getVirusName(bs.virus_id)} is ${enemyCanAct.reason} and could not act.`);
+      saveActiveEnemy(bs);
+      continue;
+    }
+    resolveEnemyAction(bs, enemyLog);
+    saveActiveEnemy(bs);
+  }
+  advanceToNextEnemy(bs);
 }
 
 function resolveEnemyAction(bs: BattleState, enemyLog: string[]) {
@@ -1291,6 +1492,8 @@ function toCompatState(bs: BattleState) {
     region_id: bs.region_id,
     enemy_id: bs.virus_id,
     enemy_hp: bs.enemy_hp,
+    enemies: bs.enemies.map(e => ({ virus_id: e.virus_id, hp: e.hp, hp_max: e.hp_max, enemy_kind: e.enemy_kind })),
+    target_enemy_index: bs.target_enemy_index,
     player_element: (p?.element as any) || "Neutral",
     player_hp: bs.player_hp,
     player_hp_max: bs.player_hp_max,

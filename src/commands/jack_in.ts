@@ -27,6 +27,7 @@ import {
   getXPProgress, getScaledUpgradePrice, recordUpgradePurchase, getUpgradePurchaseCount,
 } from '../lib/db';
 import { startBattle } from '../lib/battle';
+import { chooseScaledEncounter } from '../lib/encounter-scaling';
 import { createOpenPvpChallenge } from '../lib/pvp';
 import { getFolder, setFolder, validateFolder, validateFolderMinimum, MAX_FOLDER, MIN_FOLDER, maxCopiesForChip, getMaxRemovableFolderSlots, getAvailableChipQty } from '../lib/folder';
 import {
@@ -472,18 +473,23 @@ export async function onEncounter(ix: ButtonInteraction) {
   }
 
   const allViruses = asArray<any>(b.viruses);
-  const eligible = listVirusesForRegionZone({
+  const picked = chooseScaledEncounter({
     region_id: regionId,
     zone,
-    includeNormals: true,
-    includeBosses: true,
-  }) as any[];
+    playerLevel,
+    regionMinLevel: requiredLevel,
+    bossEncounterRate: BOSS_ENCOUNTER,
+  });
 
-  const eligibleBosses = eligible.filter(isBossFlag);
-  const eligibleNormals = eligible.filter(v => !isBossFlag(v));
-
-  const picked = pickEncounterFromEligible(eligible);
   if (!picked) {
+    const eligible = listVirusesForRegionZone({
+      region_id: regionId,
+      zone,
+      includeNormals: true,
+      includeBosses: true,
+    }) as any[];
+    const eligibleBosses = eligible.filter(isBossFlag);
+    const eligibleNormals = eligible.filter(v => !isBossFlag(v));
     const regionSamples = Array.from(
       new Set(allViruses.map(v => String(v?.region_id ?? v?.region ?? '').trim()).filter(Boolean))
     ).slice(0, 12);
@@ -492,9 +498,13 @@ export async function onEncounter(ix: ButtonInteraction) {
       .setTitle('⚠️ No Encounter Available')
       .setDescription(
         `No eligible encounters configured for **${reg?.name || reg?.label || regionId} / Zone ${zone}**.` +
-        `\n\nDebug — player.region_id: **${regionId}** • zone: **${zone}** • zone_count: **${reg?.zone_count ?? '?'}**` +
-        `\nDebug — viruses_loaded: **${allViruses.length}** • eligible: **${eligible.length}** (normals:${eligibleNormals.length} bosses:${eligibleBosses.length})` +
-        (regionSamples.length ? `\nDebug — virus region_id samples: ${regionSamples.join(', ')}` : '')
+        `
+
+Debug — player.region_id: **${regionId}** • zone: **${zone}** • zone_count: **${reg?.zone_count ?? '?'}**` +
+        `
+Debug — viruses_loaded: **${allViruses.length}** • eligible: **${eligible.length}** (normals:${eligibleNormals.length} bosses:${eligibleBosses.length})` +
+        (regionSamples.length ? `
+Debug — virus region_id samples: ${regionSamples.join(', ')}` : '')
       );
     const back = new ButtonBuilder()
       .setCustomId('jackin:back')
@@ -509,9 +519,10 @@ export async function onEncounter(ix: ButtonInteraction) {
   }
 
   try {
-    // ✅ go straight into combat UI
-    const virusId = String((picked.virus as any).id);
-    const view = startBattle(userId, virusId, picked.enemy_kind, { returnMode: "jackin" });
+    const view = startBattle(userId, String(picked.primary.id), picked.enemy_kind, {
+      returnMode: "jackin",
+      enemies: picked.enemies,
+    });
 
     await ix.update({
       embeds: [view.embed],
@@ -523,12 +534,15 @@ export async function onEncounter(ix: ButtonInteraction) {
       .setTitle('⚠️ Encounter Error')
       .setDescription(
         `Encounter error in **${reg?.name || reg?.label || regionId} / Zone ${zone}**.` +
-        `\nDebug — player.region_id: **${regionId}** • viruses_loaded: **${allViruses.length}** • eligible: **${eligible.length}** (normals:${eligibleNormals.length} bosses:${eligibleBosses.length})` +
-        `\nError: ${err?.message || String(err)}`
+        `
+Debug — player.region_id: **${regionId}** • viruses_loaded: **${allViruses.length}** • encounter_size: **${picked.enemies.length}**` +
+        `
+Error: ${err?.message || String(err)}`
       );
     const back = new ButtonBuilder().setCustomId('jackin:back').setStyle(ButtonStyle.Secondary).setLabel('Back');
     await ix.update({ embeds: [embed], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(back)] });
   }
+
 }
 
 

@@ -27,6 +27,8 @@ export type NormalizedBundle = {
 
   // computed
   shopsByRegion: Map<string, ShopItemRow[]>;
+  encounterRules: Record<string, any>;
+  encounter_rule_list: any[];
 };
 
 export function invalidateBundleCache() {
@@ -144,6 +146,11 @@ function normalizeRawBundle(raw: any): NormalizedBundle {
       ? raw.programAdvances
       : [];
   const shop_list = Array.isArray(raw?.shops) ? raw.shops : [];
+  const encounter_rule_list = Array.isArray(raw?.encounter_rules)
+    ? raw.encounter_rules
+    : Array.isArray(raw?.encounterRules)
+      ? raw.encounterRules
+      : [];
 
   // ---- chips map ----
   const chips: Record<string, any> = {};
@@ -270,6 +277,19 @@ function normalizeRawBundle(raw: any): NormalizedBundle {
     }
   }
 
+
+  // ---- encounter rules map ----
+  const encounterRules: Record<string, any> = {};
+  for (const er of encounter_rule_list) {
+    const rid = normStr((er as any).region_id ?? (er as any).id);
+    if (!rid) continue;
+    (er as any).region_id = rid;
+    for (const k of ['min_player_level','encounter_budget','min_enemies','max_enemies','multi_enemy_chance','overlevel_bonus_every','overlevel_bonus_chance','boss_support_max','boss_support_chance']) {
+      if ((er as any)[k] != null && String((er as any)[k]).trim() !== '') (er as any)[k] = Number((er as any)[k]) || 0;
+    }
+    encounterRules[rid] = er;
+  }
+
   return {
     chips,
     viruses,
@@ -284,6 +304,8 @@ function normalizeRawBundle(raw: any): NormalizedBundle {
     shop_list,
 
     shopsByRegion,
+    encounterRules,
+    encounter_rule_list,
   };
 }
 
@@ -305,6 +327,13 @@ export function getRegionById(id: string | number) {
 export function listRegions() { return Object.values(getBundle().regions); }
 export function listChips()   { return Object.values(getBundle().chips); }
 export function listViruses() { return Object.values(getBundle().viruses); }
+
+export function listEncounterRules() { return Object.values(getBundle().encounterRules || {}); }
+export function getEncounterRuleByRegion(region_id: string | number) {
+  const rid = resolveRegionIdLoose(String(region_id));
+  const rules = getBundle().encounterRules || {};
+  return rules[String(rid)] || null;
+}
 
 export function chipBaseId(cOrId: any): string {
   const c = typeof cOrId === 'string' || typeof cOrId === 'number'
