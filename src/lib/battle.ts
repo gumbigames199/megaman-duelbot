@@ -403,7 +403,7 @@ function renderJackInReturnView(bs: BattleState, result: { title: string; lines?
       '📌 **Last Result**',
       lastLines.length ? lastLines.join('\n') : '—',
     ].join('\n'))
-    .setFooter({ text: 'Encounter, Travel, Shop, Data, PET, or PvP from this same screen.' });
+    .setFooter({ text: 'Encounter, Travel, Shop, Data, BBS, PET, or PvP from this same screen.' });
 
   const bg = jackInRegionImage(region) || jackInTravelImage();
   if (bg) embed.setImage(String(bg));
@@ -416,6 +416,7 @@ function renderJackInReturnView(bs: BattleState, result: { title: string; lines?
 
   const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'),
+    new ButtonBuilder().setCustomId('jackin:openBbs').setStyle(ButtonStyle.Secondary).setLabel('BBS'),
     new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('PET'),
     new ButtonBuilder().setCustomId('jackin:openPvp').setStyle(ButtonStyle.Danger).setLabel('PvP'),
   );
