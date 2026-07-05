@@ -1015,6 +1015,14 @@ async function renderChipIndexPanel(ix: AnyJackInInteraction, search: string, pa
 }
 
 export async function onDataVirus(ix: ButtonInteraction) {
+  await renderDataVirusPage(ix, 1);
+}
+
+export async function onDataVirusPage(ix: ButtonInteraction, page: number) {
+  await renderDataVirusPage(ix, page);
+}
+
+async function renderDataVirusPage(ix: ButtonInteraction, page: number) {
   const b = getBundle() as any;
   const seen = listSeenViruses(ix.user.id).map(String).filter(id => b.viruses?.[id]);
 
@@ -1029,12 +1037,17 @@ export async function onDataVirus(ix: ButtonInteraction) {
 
   seen.sort((a, bId) => String(b.viruses[a]?.name || a).localeCompare(String(b.viruses[bId]?.name || bId)));
 
+  const perPage = 25;
+  const pages = Math.max(1, Math.ceil(seen.length / perPage));
+  const pageSafe = Math.min(Math.max(1, Math.floor(Number(page) || 1)), pages);
+  const pageItems = seen.slice((pageSafe - 1) * perPage, pageSafe * perPage);
+
   const select = new StringSelectMenuBuilder()
     .setCustomId('jackin:dataVirusSelect')
-    .setPlaceholder('Select an encountered virus')
+    .setPlaceholder(`Select an encountered virus — Page ${pageSafe}/${pages}`)
     .setMinValues(1)
     .setMaxValues(1)
-    .addOptions(seen.slice(0, 25).map(id => {
+    .addOptions(pageItems.map(id => {
       const v = b.viruses[id];
       return {
         label: String(v?.name || id).slice(0, 100),
@@ -1045,17 +1058,35 @@ export async function onDataVirus(ix: ButtonInteraction) {
 
   const embed = new EmbedBuilder()
     .setTitle('🧾 VirusDex')
-    .setDescription('Select a virus you have encountered to view stats, moves, and possible drops.')
-    .setImage(getDataImage())
-    .setFooter({ text: `${seen.length} seen virus entr${seen.length === 1 ? 'y' : 'ies'}.` });
+    .setDescription([
+      'Select a virus you have encountered to view stats, moves, locations, and possible drops.',
+      '',
+      `Page **${pageSafe}/${pages}** • **${seen.length}** seen virus entr${seen.length === 1 ? 'y' : 'ies'}.`,
+    ].join('\n'))
+    .setImage(getDataImage());
 
-  await ix.update({
-    embeds: [embed],
-    components: [
-      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
-      navButtons(new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Back')),
-    ],
-  });
+  const components: any[] = [
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
+  ];
+
+  if (pages > 1) {
+    components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`jackin:dataVirusPage:${Math.max(1, pageSafe - 1)}`)
+        .setStyle(ButtonStyle.Secondary)
+        .setLabel('Previous')
+        .setDisabled(pageSafe <= 1),
+      new ButtonBuilder()
+        .setCustomId(`jackin:dataVirusPage:${Math.min(pages, pageSafe + 1)}`)
+        .setStyle(ButtonStyle.Secondary)
+        .setLabel('Next')
+        .setDisabled(pageSafe >= pages),
+    ));
+  }
+
+  components.push(navButtons(new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Back')));
+
+  await ix.update({ embeds: [embed], components });
 }
 
 export async function onDataVirusSelect(ix: StringSelectMenuInteraction) {

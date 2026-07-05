@@ -6,7 +6,8 @@ import { getBundle } from '../lib/data';
 export const data = new SlashCommandBuilder()
   .setName('virusdex')
   .setDescription('Seen viruses (dex)')
-  .addStringOption(o => o.setName('id').setDescription('Optional virus_id for details'));
+  .addStringOption(o => o.setName('id').setDescription('Optional virus_id for details'))
+  .addIntegerOption(o => o.setName('page').setDescription('Page number for your seen-virus list').setMinValue(1));
 
 export async function execute(ix: ChatInputCommandInteraction) {
   const id = ix.options.getString('id', false)?.trim();
@@ -36,14 +37,29 @@ export async function execute(ix: ChatInputCommandInteraction) {
     return;
   }
 
-  const seen = listSeenViruses(ix.user.id);
-  const lines = seen.map(sid => {
+  const seen = listSeenViruses(ix.user.id)
+    .map(String)
+    .filter(sid => b.viruses?.[sid])
+    .sort((a, bId) => String(b.viruses[a]?.name || a).localeCompare(String(b.viruses[bId]?.name || bId)));
+
+  const perPage = 20;
+  const pages = Math.max(1, Math.ceil(seen.length / perPage));
+  const requestedPage = ix.options.getInteger('page') ?? 1;
+  const page = Math.min(Math.max(1, requestedPage), pages);
+  const pageItems = seen.slice((page - 1) * perPage, page * perPage);
+
+  const lines = pageItems.map(sid => {
     const v = b.viruses?.[sid];
     const location = v ? ` — ${formatVirusLocation(v, b.regions).replace(/\*\*/g, '')}` : '';
     return `• ${v?.name || sid}${location}`;
   }).join('\n') || '—';
 
-  await ix.reply({ ephemeral: true, embeds: [new EmbedBuilder().setTitle('🧾 VirusDex').setDescription(lines)] });
+  const embed = new EmbedBuilder()
+    .setTitle('🧾 VirusDex')
+    .setDescription(lines)
+    .setFooter({ text: `Page ${page}/${pages} • ${seen.length} seen entr${seen.length === 1 ? 'y' : 'ies'} • Use /virusdex page:<n>` });
+
+  await ix.reply({ ephemeral: true, embeds: [embed] });
 }
 
 function formatMoves(v: any): string {
