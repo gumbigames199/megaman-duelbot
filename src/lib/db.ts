@@ -140,6 +140,14 @@ CREATE TABLE IF NOT EXISTS style_progress (
   wood_prompted INTEGER NOT NULL DEFAULT 0,
   pending_element TEXT DEFAULT NULL
 );
+
+CREATE TABLE IF NOT EXISTS upgrade_purchases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  chip_id TEXT NOT NULL,
+  qty INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(user_id, chip_id)
+);
 `);
 
 // Safe migrations
@@ -168,6 +176,7 @@ CREATE INDEX IF NOT EXISTS idx_folder_user ON folder (user_id);
 CREATE INDEX IF NOT EXISTS idx_seen_user ON seen_viruses (user_id);
 CREATE INDEX IF NOT EXISTS idx_settings_user ON player_settings (user_id);
 CREATE INDEX IF NOT EXISTS idx_missions_user ON missions_state (user_id);
+CREATE INDEX IF NOT EXISTS idx_upgrade_purchases_user ON upgrade_purchases (user_id);
 `);
 
 // -------------------------------
@@ -429,7 +438,48 @@ export function addXP(user_id: string, amount: number) {
 }
 export function getXPProgress(user_id: string) {
   const p = ensurePlayer(user_id);
-  return { xp_total: p.xp_total, level: p.level, next_threshold: xpThresholdForLevel(p.level + 1) };
+  const level = Math.max(1, toInt(p.level, 1));
+  const xpTotal = Math.max(0, toInt(p.xp_total, 0));
+  const currentThreshold = xpThresholdForLevel(level);
+  const nextThreshold = xpThresholdForLevel(level + 1);
+  const neededThisLevel = Math.max(1, nextThreshold - currentThreshold);
+  const intoLevel = clamp(xpTotal - currentThreshold, 0, neededThisLevel);
+  return {
+    xp_total: xpTotal,
+    level,
+    current_threshold: currentThreshold,
+    next_threshold: nextThreshold,
+    xp_into_level: intoLevel,
+    xp_needed_for_next: neededThisLevel,
+  };
+}
+
+export function getUpgradePurchaseCount(user_id: string, chip_id: string): number {
+  ensurePlayer(user_id);
+  const safeId = normalizeChipIdLocal(String(chip_id));
+  const row = db.prepare(`SELECT qty FROM upgrade_purchases WHERE user_id = ? AND chip_id = ?`)
+    .get(user_id, safeId) as { qty: number } | undefined;
+  return Math.max(0, toInt(row?.qty ?? 0, 0));
+}
+
+export function getScaledUpgradePrice(user_id: string, chip_id: string, basePrice: number): number {
+  const base = Math.max(0, toInt(basePrice, 0));
+  if (base <= 0) return 0;
+  const count = getUpgradePurchaseCount(user_id, chip_id);
+  const multiplier = Math.pow(2, Math.max(0, count));
+  const scaled = base * multiplier;
+  return Number.isFinite(scaled) ? Math.trunc(scaled) : base;
+}
+
+export function recordUpgradePurchase(user_id: string, chip_id: string, qty = 1): number {
+  ensurePlayer(user_id);
+  const safeId = normalizeChipIdLocal(String(chip_id));
+  const addQty = Math.max(1, toInt(qty, 1));
+  db.prepare(`
+    INSERT INTO upgrade_purchases (user_id, chip_id, qty) VALUES (?, ?, ?)
+    ON CONFLICT(user_id, chip_id) DO UPDATE SET qty = qty + excluded.qty
+  `).run(user_id, safeId, addQty);
+  return getUpgradePurchaseCount(user_id, safeId);
 }
 
 // Stats

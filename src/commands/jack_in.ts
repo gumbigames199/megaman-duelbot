@@ -24,6 +24,7 @@ import {
   addHPMax, addATK, addDEF, addSPD, addACC, addEvasion, addCRIT,
   getStyleProgress, getPendingStyleElement, acceptStyleChange, declineStyleChange,
   resetStyleToNeutral, normalizeStyleElement, STYLE_CHANGE_THRESHOLD,
+  getXPProgress, getScaledUpgradePrice, recordUpgradePurchase, getUpgradePurchaseCount,
 } from '../lib/db';
 import { startBattle } from '../lib/battle';
 import { createOpenPvpChallenge } from '../lib/pvp';
@@ -1389,6 +1390,17 @@ export async function onConfigFolderRemoveSelect(ix: StringSelectMenuInteraction
   await onConfigFolder(ix, 'Folder updated.');
 }
 
+
+function xpBar(userId: string): string {
+  const xp = getXPProgress(userId) as any;
+  const cur = Math.max(0, Number(xp?.xp_into_level ?? 0));
+  const max = Math.max(1, Number(xp?.xp_needed_for_next ?? xp?.next_threshold ?? 1));
+  const ratio = Math.max(0, Math.min(1, cur / max));
+  const filled = Math.round(ratio * 10);
+  const empty = 10 - filled;
+  return `${cur} XP ${'🟦'.repeat(filled)}${'⬛'.repeat(empty)} ${max} XP`;
+}
+
 function buildProfileEmbed(userId: string, username: string, avatarUrl: string, notice?: string) {
   const p: any = getPlayer(userId);
   const invLine = formatInventoryTop(userId, 12);
@@ -1410,6 +1422,7 @@ function buildProfileEmbed(userId: string, username: string, avatarUrl: string, 
       { name: '🧬 Current Style', value: currentStyle, inline: true },
       { name: '⭐ Level', value: String(p?.level ?? 1), inline: true },
       { name: '❤️ HP', value: String(p?.hp_max ?? 100), inline: true },
+      { name: '🔵 EXP', value: xpBar(userId), inline: false },
       {
         name: '📊 Stats',
         value:
@@ -1919,6 +1932,19 @@ function normalizeUpgradeStatKey(k: string): keyof UpgradeDelta | null {
   return null;
 }
 
+
+function effectiveShopPrice(userId: string, item: any): number {
+  const base = Number(item?.zenny_price ?? 0);
+  if (!item?.is_upgrade) return Number.isFinite(base) ? Math.max(0, Math.trunc(base)) : 0;
+  return getScaledUpgradePrice(userId, String(item.item_id), base);
+}
+
+function upgradePurchaseLabel(userId: string, item: any): string {
+  if (!item?.is_upgrade) return '';
+  const count = getUpgradePurchaseCount(userId, String(item.item_id));
+  return count > 0 ? ` • Upgrade purchase #${count + 1}` : ' • First upgrade purchase';
+}
+
 export async function onOpenShop(ix: ButtonInteraction) {
   await renderJackInShop(ix, null);
 }
@@ -1960,9 +1986,9 @@ async function renderJackInShop(
 
   const options = items
     .map((it) => ({
-      label: `${it.name} — ${it.zenny_price}z`.slice(0, 100),
+      label: `${it.name} — ${effectiveShopPrice(userId, it)}z`.slice(0, 100),
       value: it.item_id,
-      description: `${it.is_upgrade ? 'Upgrade' : 'BattleChip'}${it.chip?.element ? ` • ${it.chip.element}` : ''}`.slice(0, 100),
+      description: `${it.is_upgrade ? 'Upgrade' : 'BattleChip'}${upgradePurchaseLabel(userId, it)}${it.chip?.element ? ` • ${it.chip.element}` : ''}`.slice(0, 100),
       default: selected?.item_id === it.item_id,
     }))
     .slice(0, 25);
@@ -1977,7 +2003,7 @@ async function renderJackInShop(
   const buy = new ButtonBuilder()
     .setCustomId(`jackin:shopBuy:${selected?.item_id || '_none'}`)
     .setStyle(ButtonStyle.Success)
-    .setLabel(selected ? `Buy for ${selected.zenny_price}z` : 'Buy')
+    .setLabel(selected ? `Buy for ${effectiveShopPrice(userId, selected)}z` : 'Buy')
     .setDisabled(!selected);
   const sell = new ButtonBuilder()
     .setCustomId('jackin:shopSellOpen')
@@ -2000,7 +2026,7 @@ async function renderJackInShop(
   if (selected) {
     const c: any = selected.chip || {};
     const details = [
-      `Price: **${selected.zenny_price}z**`,
+      `Price: **${effectiveShopPrice(userId, selected)}z**${selected.is_upgrade ? ` (base ${selected.zenny_price}z${upgradePurchaseLabel(userId, selected)})` : ''}`, 
       `Type: **${selected.is_upgrade ? 'Upgrade' : 'BattleChip'}**`,
       c.element ? `Element: **${c.element}**` : '',
       Number.isFinite(Number(c.power)) && Number(c.power) > 0 ? `Power: **${c.power}**` : '',
@@ -2055,25 +2081,28 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
       return;
     }
 
-    const pay = spendZenny(userId, item.zenny_price);
+    const price = effectiveShopPrice(userId, item);
+    const pay = spendZenny(userId, price);
     if (!pay.ok) {
-      await renderJackInShop(ix, chipId, `Not enough Zenny. You need ${item.zenny_price}z.`);
+      await renderJackInShop(ix, chipId, `Not enough Zenny. You need ${price}z.`);
       return;
     }
 
     if (item.is_upgrade) {
       const applied = applyUpgradeImmediate(userId, item.chip);
       if (!applied.ok) {
-        addZenny(userId, item.zenny_price);
+        addZenny(userId, price);
         await renderJackInShop(ix, chipId, `Could not apply ${item.name}; purchase refunded. Reason: ${applied.summary}.`);
         return;
       }
-      await renderJackInShop(ix, chipId, `Purchased ${item.name} for ${item.zenny_price}z. Upgrade applied: ${applied.summary}.`);
+      recordUpgradePurchase(userId, item.item_id, 1);
+      const nextPrice = getScaledUpgradePrice(userId, item.item_id, item.zenny_price);
+      await renderJackInShop(ix, chipId, `Purchased ${item.name} for ${price}z. Upgrade applied: ${applied.summary}. Next purchase: ${nextPrice}z.`);
       return;
     }
 
     grantChip(userId, chipId, 1);
-    await renderJackInShop(ix, chipId, `Bought ${item.name} for ${item.zenny_price}z. Added to inventory.`);
+    await renderJackInShop(ix, chipId, `Bought ${item.name} for ${price}z. Added to inventory.`);
   } catch (err: any) {
     console.error('onShopBuy error:', err);
     try {

@@ -16,6 +16,7 @@ import {
   normalizeStyleElement,
   resetStyleToNeutral,
   STYLE_CHANGE_THRESHOLD,
+  getXPProgress,
 } from '../lib/db';
 import { getChipById, chipIsUpgrade, formatChipName } from '../lib/data';
 import { getAvailableChipQty } from '../lib/folder';
@@ -66,6 +67,17 @@ function styleEmoji(element: string): string {
   }
 }
 
+
+function xpBar(userId: string): string {
+  const xp = getXPProgress(userId) as any;
+  const cur = Math.max(0, Number(xp?.xp_into_level ?? 0));
+  const max = Math.max(1, Number(xp?.xp_needed_for_next ?? xp?.next_threshold ?? 1));
+  const ratio = Math.max(0, Math.min(1, cur / max));
+  const filled = Math.round(ratio * 10);
+  const empty = 10 - filled;
+  return `${cur} XP ${'🟦'.repeat(filled)}${'⬛'.repeat(empty)} ${max} XP`;
+}
+
 function buildProfileEmbed(user: { id: string; username: string; displayAvatarURL: () => string }, notice?: string) {
   const p: any = getPlayer(user.id);
   const invLine = formatInventoryTop(user.id, 12);
@@ -85,6 +97,7 @@ function buildProfileEmbed(user: { id: string; username: string; displayAvatarUR
       { name: 'Current Style', value: String(p?.element ?? 'Neutral'), inline: true },
       { name: 'Level', value: String(p?.level ?? 1), inline: true },
       { name: 'HP', value: String(p?.hp_max ?? 100), inline: true },
+      { name: 'EXP', value: xpBar(user.id), inline: false },
       {
         name: 'Stats',
         value:

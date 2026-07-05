@@ -27,6 +27,9 @@ import {
   grantChip,
   applyStatDeltas,
   addZenny,
+  getScaledUpgradePrice,
+  recordUpgradePurchase,
+  getUpgradePurchaseCount,
   type Player,
 } from '../lib/db';
 
@@ -129,6 +132,19 @@ export async function handleShopSelect(ix: StringSelectMenuInteraction) {
 // Render
 // -------------------------------
 
+
+function effectiveShopPrice(userId: string, item: any): number {
+  const base = Number(item?.zenny_price ?? priceForShopItem(item?.shop_row, item?.chip));
+  if (!item?.is_upgrade) return Number.isFinite(base) ? Math.max(0, Math.trunc(base)) : 0;
+  return getScaledUpgradePrice(userId, String(item.item_id), base);
+}
+
+function upgradePurchaseLabel(userId: string, item: any): string {
+  if (!item?.is_upgrade) return '';
+  const count = getUpgradePurchaseCount(userId, String(item.item_id));
+  return count > 0 ? ` • Upgrade purchase #${count + 1}` : ' • First upgrade purchase';
+}
+
 function buildShopMessage(
   userId: string,
   regionId: string,
@@ -140,7 +156,7 @@ function buildShopMessage(
   const items = resolveShopInventory(regionId);
   const options = items.map((it) => ({
     label: truncate(`${it.name}`, 75),
-    description: truncate(`Price: ${it.zenny_price}z${it.is_upgrade ? ' • Upgrade' : ''}`, 100),
+    description: truncate(`Price: ${effectiveShopPrice(userId, it)}z${it.is_upgrade ? ' • Upgrade' : ''}${upgradePurchaseLabel(userId, it)}`, 100),
     value: it.item_id,
   }));
 
@@ -177,7 +193,7 @@ function buildShopMessage(
         name: `${selected.name} ${selected.is_upgrade ? '• Upgrade' : ''}`,
         value:
           [
-            `Price: ${inlineCode(`${selected.zenny_price}z`)}`,
+            `Price: ${inlineCode(`${effectiveShopPrice(userId, selected)}z`)}${selected.is_upgrade ? ` (base ${selected.zenny_price}z${upgradePurchaseLabel(userId, selected)})` : ''}`, 
             details.length ? details.join(' • ') : '—',
           ].join('\n'),
       }
@@ -201,7 +217,7 @@ function buildShopMessage(
       new ButtonBuilder()
         .setCustomId(buyCustomId)
         .setStyle(ButtonStyle.Primary)
-        .setLabel(selected ? `Buy (${selected.zenny_price}z)` : 'Buy')
+        .setLabel(selected ? `Buy (${effectiveShopPrice(userId, selected)}z)` : 'Buy')
         .setDisabled(!selected || items.length === 0),
       new ButtonBuilder()
         .setCustomId(CID.EXIT)
@@ -228,7 +244,7 @@ async function handleBuy(ix: ButtonInteraction, regionId: string, chipId: string
   }
 
   // Check funds
-  const price = priceForShopItem(item.shop_row, item.chip);
+  const price = effectiveShopPrice(userId, item);
   const spend = spendZenny(userId, price);
   if (!spend.ok) {
     await ix.reply({ content: `❌ Not enough zenny. You need ${price}z.`, ephemeral: true });
@@ -246,7 +262,9 @@ async function handleBuy(ix: ButtonInteraction, regionId: string, chipId: string
       await ix.reply({ content: `⚠️ Could not apply upgrade. Purchase canceled & refunded.`, ephemeral: true });
       return;
     }
-    resultText = `✅ Applied upgrade **${item.name}**.`;
+    recordUpgradePurchase(userId, item.item_id, 1);
+    const nextPrice = getScaledUpgradePrice(userId, item.item_id, item.zenny_price);
+    resultText = `✅ Applied upgrade **${item.name}**. Next purchase: ${nextPrice}z.`;
   } else {
     grantChip(userId, item.item_id, 1);
     resultText = `✅ Purchased **${item.name}** and added to your inventory.`;
