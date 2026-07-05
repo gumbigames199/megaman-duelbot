@@ -43,11 +43,14 @@ export function listUnlocked(userId: string): RegionRow[] {
   ensureStartUnlocked(userId);
 
   const level = playerLevel(userId);
-  for (const id of eligibleRegionIdsForLevel(level)) Q.add.run(userId, id);
+  const eligible = eligibleRegionIdsForLevel(level);
+  for (const id of eligible) Q.add.run(userId, id);
 
-  const existing = (Q.allForUser.all(userId) as any[]).map(r => String(r.region_id));
+  // Region access is strictly level-gated. Ignore any legacy/boss-unlocked rows
+  // that are above the player's current level.
+  const allowed = new Set(eligible.map(String));
   const { regions } = getBundle();
-  return existing.map(id => (regions as any)[id]).filter(Boolean) as RegionRow[];
+  return Array.from(allowed).map(id => (regions as any)[id]).filter(Boolean) as RegionRow[];
 }
 
 export function diffNewlyUnlockedRegions(userId: string): string[] {
@@ -66,25 +69,9 @@ export function diffNewlyUnlockedRegions(userId: string): string[] {
   return newly;
 }
 
-/**
- * Boss progression unlocks explicit next_region_ids when present. If absent,
- * it unlocks the next region by min_level order.
- */
-export function unlockNextFromRegion(userId: string, regionId: string): string[] {
-  const { regions } = getBundle() as any;
-  const cur = regions[String(regionId)];
-  if (!cur) return [];
-
-  const prev = currentUnlockedSet(userId);
-  const nextIds = nextRegionIds(cur, regions);
-  const names: string[] = [];
-
-  for (const id of nextIds) {
-    if (!regions[id] || prev.has(id)) continue;
-    Q.add.run(userId, id);
-    names.push(String(regions[id]?.name || id));
-  }
-  return names;
+/** Boss progression is disabled. Regions unlock only by player level. */
+export function unlockNextFromRegion(_userId: string, _regionId: string): string[] {
+  return [];
 }
 
 function currentUnlockedSet(userId: string): Set<string> {

@@ -13,7 +13,7 @@ import {
 } from './db';
 
 const MAX_FOLDER = envInt('MAX_FOLDER', 30);
-const MIN_FOLDER = envInt('MIN_FOLDER', 20);
+const MIN_FOLDER = envInt('MIN_FOLDER', MAX_FOLDER);
 const DEFAULT_MAX_COPIES = envInt('DEFAULT_MAX_COPIES', 5);
 
 export { MAX_FOLDER, MIN_FOLDER };
@@ -52,9 +52,6 @@ export function setFolder(user_id: string, chips: string[]) {
 export function validateFolder(user_id: string, chips: string[]): { ok: boolean; error?: string } {
   const b = getBundle();
 
-  if (chips.length > MAX_FOLDER) {
-    return { ok: false, error: `Folder exceeds ${MAX_FOLDER} slots.` };
-  }
 
   // No upgrades allowed (STRICT: handles "0"/"1" correctly)
   for (const id of chips) {
@@ -123,22 +120,31 @@ export function getAvailableChipQty(user_id: string, chip_id: string): number {
   return Math.max(0, owned - inFolder);
 }
 
-/** The 20-chip minimum only applies once the player owns enough chips to legally meet it. */
-export function shouldEnforceMinFolder(user_id: string): boolean {
-  return MIN_FOLDER > 0 && getOwnedBattleChipQty(user_id) >= MIN_FOLDER;
+/** Strict alpha rule: folders must be exactly 30 chips before battle/save. */
+export function shouldEnforceMinFolder(_user_id: string): boolean {
+  return true;
 }
 
-export function getMaxRemovableFolderSlots(user_id: string, currentSize = getFolder(user_id).length): number {
-  if (!shouldEnforceMinFolder(user_id)) return Math.max(0, currentSize);
-  return Math.max(0, currentSize - MIN_FOLDER);
+/** Editing may temporarily go below or above 30; validation happens on Save/Use. */
+export function getMaxRemovableFolderSlots(_user_id: string, currentSize = getFolder(_user_id).length): number {
+  return Math.max(0, currentSize);
 }
 
-export function validateFolderMinimum(user_id: string, chips: string[]): { ok: boolean; error?: string } {
-  if (!shouldEnforceMinFolder(user_id)) return { ok: true };
-  if (chips.length < MIN_FOLDER) {
-    return { ok: false, error: `Folder must contain at least ${MIN_FOLDER} chips.` };
+export function validateFolderExactSize(user_id: string, chips: string[]): { ok: boolean; error?: string } {
+  const base = validateFolder(user_id, chips);
+  if (!base.ok) return base;
+  if (chips.length !== MAX_FOLDER) {
+    return {
+      ok: false,
+      error: `Folder must contain exactly ${MAX_FOLDER} chips before it can be saved or used. Current: ${chips.length}/${MAX_FOLDER}.`,
+    };
   }
   return { ok: true };
+}
+
+/** Back-compat name used by current routers. Now enforces exact 30, not just minimum. */
+export function validateFolderMinimum(user_id: string, chips: string[]): { ok: boolean; error?: string } {
+  return validateFolderExactSize(user_id, chips);
 }
 
 /** Max copies allowed for a chip (TSV max_copies or DEFAULT_MAX_COPIES). Upgrades = 0. */
@@ -155,7 +161,7 @@ export function maxCopiesForChip(id: string): number {
 /** How many free slots remain in the folder. */
 export function getFolderRemaining(user_id: string): number {
   const cur = getFolder(user_id).length;
-  return Math.max(0, MAX_FOLDER - cur);
+  return MAX_FOLDER - cur;
 }
 
 /** Try to add qty copies of a chip, respecting caps and capacity. */
@@ -187,14 +193,9 @@ export function tryAddToFolder(user_id: string, chip_id: string, qty = 1): {
     return { ok: false, added: 0, remaining: getFolderRemaining(user_id), cap, reason: `Reached cap of ${cap} for ${displayName(chip_id)} variants.` };
   }
 
-  const free = getFolderRemaining(user_id);
-  if (free <= 0) {
-    return { ok: false, added: 0, remaining: 0, cap, reason: 'Folder is full.' };
-  }
-
-  const toAdd = Math.min(qty, canAddOfThis, free);
+  const toAdd = Math.min(qty, canAddOfThis);
   if (toAdd <= 0) {
-    return { ok: false, added: 0, remaining: free, cap, reason: 'No capacity to add.' };
+    return { ok: false, added: 0, remaining: getFolderRemaining(user_id), cap, reason: 'No copies can be added.' };
   }
 
   _addToFolder(user_id, chip_id, toAdd);

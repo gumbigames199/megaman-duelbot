@@ -49,6 +49,8 @@ const DATA_GIF =
 const BOSS_ENCOUNTER =
   Number(process.env.BOSS_ENCOUNTER_RATE ?? process.env.BOSS_ENCOUNTER ?? 0.10);
 
+const MENU_PAGE_SIZE = 25;
+
 /* ------------------------------ helpers ------------------------------ */
 
 function isBossFlag(v: any): boolean {
@@ -434,7 +436,7 @@ export async function onEncounter(ix: ButtonInteraction) {
     await renderJackInHUD(ix, {
       title: 'Folder Not Ready',
       lines: [
-        `Your folder must contain at least **${MIN_FOLDER} BattleChips** before battling.`,
+        `Your folder must contain exactly **${MAX_FOLDER} BattleChips** before battling.`,
         'Open **PET → Folder → Add Chips** to fill empty slots.',
       ],
     });
@@ -447,6 +449,19 @@ export async function onEncounter(ix: ButtonInteraction) {
   const reg =
     (regionsMap ? regionsMap[regionId] : null) ||
     regionsArr.find(r => String(r?.id) === regionId);
+
+  const requiredLevel = Number(reg?.min_level ?? 1);
+  const playerLevel = Number(p?.level ?? 1);
+  if (Number.isFinite(requiredLevel) && playerLevel < requiredLevel) {
+    await renderJackInHUD(ix, {
+      title: 'Region Locked',
+      lines: [
+        `**${reg?.name || reg?.label || regionId}** requires Level **${requiredLevel}**.`,
+        `Your current level is **${playerLevel}**. Regions unlock by level only.`,
+      ],
+    });
+    return;
+  }
 
   let zone = getZone(userId) || 1;
   const maxZone = Math.max(1, Number(reg?.zone_count || 1));
@@ -1181,23 +1196,34 @@ export async function onConfigFolder(ix: ButtonInteraction | StringSelectMenuInt
       notice ? `📌 **${notice}**\n` : '',
       formatFolderPanel(folder),
     ].filter(Boolean).join('\n'))
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER}` })
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Required exactly ${MAX_FOLDER}` })
     .setImage(getConfigImage());
 
   const addBtn = new ButtonBuilder().setCustomId('jackin:configFolderAdd').setStyle(ButtonStyle.Secondary).setLabel('Add Chips');
   const maxRemovable = getMaxRemovableFolderSlots(ix.user.id, folder.length);
   const remBtn = new ButtonBuilder().setCustomId('jackin:configFolderRemove').setStyle(ButtonStyle.Secondary).setLabel('Remove Chips').setDisabled(maxRemovable <= 0);
+  const saveBtn = new ButtonBuilder().setCustomId('jackin:configFolderSave').setStyle(ButtonStyle.Success).setLabel('Save');
   const cfgBtn = new ButtonBuilder().setCustomId('jackin:openConfig').setStyle(ButtonStyle.Secondary).setLabel('Back');
 
-  await ix.update({ embeds: [embed], components: [navButtons(addBtn, remBtn, cfgBtn)] });
+  await ix.update({ embeds: [embed], components: [navButtons(addBtn, remBtn, saveBtn, cfgBtn)] });
 }
 
-export async function onConfigFolderAdd(ix: ButtonInteraction) {
+export async function onConfigFolderSave(ix: ButtonInteraction) {
+  const folder = getFolder(ix.user.id);
+  const v = validateFolderMinimum(ix.user.id, folder);
+  if (!v.ok) {
+    await onConfigFolder(ix, `Could not save folder: ${v.error}`);
+    return;
+  }
+  await onConfigFolder(ix, 'Folder saved. Your folder is valid for battle.');
+}
+
+export async function onConfigFolderAdd(ix: ButtonInteraction, page = 0) {
   let inv = getInventory(ix.user.id);
   const folder = getFolder(ix.user.id);
   const folderCounts = countValues(folder);
 
-  const options = inv
+  const allOptions = inv
     .filter(row => Number(row.qty) > 0)
     .map(row => {
       const chipId = String(row.chip_id);
@@ -1213,16 +1239,19 @@ export async function onConfigFolderAdd(ix: ButtonInteraction) {
         value: chipId,
         description: String(chip?.element || 'BattleChip').slice(0, 100),
       };
-    })
-    .slice(0, 25);
+    });
 
-  if (!options.length) {
+  const pageCount = Math.max(1, Math.ceil(allOptions.length / MENU_PAGE_SIZE));
+  const pageSafe = clampPage(page, pageCount);
+  const options = allOptions.slice(pageSafe * MENU_PAGE_SIZE, (pageSafe + 1) * MENU_PAGE_SIZE);
+
+  if (!allOptions.length) {
     await onConfigFolder(ix, 'You have no available BattleChip copies outside your folder to add.');
     return;
   }
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId('jackin:folderAddSelect')
+    .setCustomId(`jackin:folderAddSelect:${pageSafe}`)
     .setPlaceholder('Select chips to add')
     .setMinValues(1)
     .setMaxValues(Math.min(10, options.length))
@@ -1230,15 +1259,19 @@ export async function onConfigFolderAdd(ix: ButtonInteraction) {
 
   const embed = new EmbedBuilder()
     .setTitle('🗂️ Add Chips')
-    .setDescription('Select one or more owned chip copies that are not already committed to your folder.')
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER}` })
+    .setDescription(`Select owned chip copies that are not already committed to your folder. Page **${pageSafe + 1}/${pageCount}**.`)
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Required exactly ${MAX_FOLDER}` })
     .setImage(getConfigImage());
 
   await ix.update({
     embeds: [embed],
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
-      navButtons(new ButtonBuilder().setCustomId('jackin:configFolder').setStyle(ButtonStyle.Secondary).setLabel('Back')),
+      navButtons(
+        new ButtonBuilder().setCustomId(`jackin:configFolderAddPage:${Math.max(0, pageSafe - 1)}`).setStyle(ButtonStyle.Secondary).setLabel('Previous').setDisabled(pageSafe <= 0),
+        new ButtonBuilder().setCustomId(`jackin:configFolderAddPage:${Math.min(pageCount - 1, pageSafe + 1)}`).setStyle(ButtonStyle.Secondary).setLabel('Next').setDisabled(pageSafe >= pageCount - 1),
+        new ButtonBuilder().setCustomId('jackin:configFolder').setStyle(ButtonStyle.Secondary).setLabel('Back'),
+      ),
     ],
   });
 }
@@ -1251,11 +1284,6 @@ export async function onConfigFolderRemove(ix: ButtonInteraction) {
   }
 
   const maxRemovable = getMaxRemovableFolderSlots(ix.user.id, folder.length);
-  if (maxRemovable <= 0) {
-    await onConfigFolder(ix, `Folder minimum is ${MIN_FOLDER} chips. Add more chips before removing any.`);
-    return;
-  }
-
   const options = folder.slice(0, 25).map((id, i) => {
     const c: any = getChipById(id) || {};
     return {
@@ -1274,7 +1302,7 @@ export async function onConfigFolderRemove(ix: ButtonInteraction) {
   const embed = new EmbedBuilder()
     .setTitle('🗂️ Remove Chips')
     .setDescription('Select one or more folder entries to remove.')
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER}` })
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Required exactly ${MAX_FOLDER}` })
     .setImage(getConfigImage());
 
   await ix.update({
@@ -1284,6 +1312,10 @@ export async function onConfigFolderRemove(ix: ButtonInteraction) {
       navButtons(new ButtonBuilder().setCustomId('jackin:configFolder').setStyle(ButtonStyle.Secondary).setLabel('Back')),
     ],
   });
+}
+
+export async function onConfigFolderAddPage(ix: ButtonInteraction, page = 0) {
+  await onConfigFolderAdd(ix, page);
 }
 
 export async function onConfigFolderAddSelect(ix: StringSelectMenuInteraction) {
@@ -1319,12 +1351,6 @@ export async function onConfigFolderRemoveSelect(ix: StringSelectMenuInteraction
   const v = validateFolder(ix.user.id, folder);
   if (!v.ok) {
     await onConfigFolder(ix, `Could not remove chips: ${v.error}`);
-    return;
-  }
-
-  const min = validateFolderMinimum(ix.user.id, folder);
-  if (!min.ok) {
-    await onConfigFolder(ix, `Could not remove chips: ${min.error}`);
     return;
   }
 
@@ -1413,6 +1439,11 @@ function formatFolderPanel(chips: string[]): string {
     lines.push(`• ${formatChipName(c || id)} ×${qty}`);
   }
   return lines.slice(0, 30).join('\n');
+}
+
+function clampPage(page: number, pageCount: number): number {
+  const p = Number.isFinite(page) ? Math.trunc(page) : 0;
+  return Math.max(0, Math.min(Math.max(1, pageCount) - 1, p));
 }
 
 function countValues(values: string[]) {
@@ -2045,6 +2076,7 @@ async function renderJackInSellShop(
   ix: ButtonInteraction | StringSelectMenuInteraction,
   selectedId: string | null,
   notice?: string,
+  page = 0,
 ) {
   const userId = ix.user.id;
   const b: any = getBundle();
@@ -2073,24 +2105,27 @@ async function renderJackInSellShop(
     ? sellable.find(x => x.chipId === selectedId) || null
     : null;
 
+  const pageCount = Math.max(1, Math.ceil(sellable.length / MENU_PAGE_SIZE));
+  const selectedIndex = selected ? sellable.findIndex(x => x.chipId === selected.chipId) : -1;
+  const pageSafe = selectedIndex >= 0 ? Math.floor(selectedIndex / MENU_PAGE_SIZE) : clampPage(page, pageCount);
   const options = sellable
+    .slice(pageSafe * MENU_PAGE_SIZE, (pageSafe + 1) * MENU_PAGE_SIZE)
     .map(({ row, chipId, chip, salePrice, available }) => ({
       label: `${formatChipName(chip)} — sell ${salePrice}z`.slice(0, 100),
       value: chipId,
       description: `Available ${available} of ${row.qty} owned`.slice(0, 100),
       default: selected?.chipId === chipId,
-    }))
-    .slice(0, 25);
+    }));
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId('jackin:shopSellSelect')
+    .setCustomId(`jackin:shopSellSelect:${pageSafe}`)
     .setPlaceholder(selected ? `Selected: ${formatChipName(selected.chip)}` : 'Select a chip to sell')
     .setMinValues(1)
     .setMaxValues(1)
     .addOptions(options);
 
   const sellBtn = new ButtonBuilder()
-    .setCustomId(`jackin:shopSell:${selected?.chipId || '_none'}`)
+    .setCustomId(`jackin:shopSell:${selected?.chipId || '_none'}:${pageSafe}`)
     .setStyle(ButtonStyle.Success)
     .setLabel(selected ? `Sell for ${selected.salePrice}z` : 'Sell')
     .setDisabled(!selected);
@@ -2105,7 +2140,7 @@ async function renderJackInSellShop(
     .setDescription([
       `Your Zenny: **${p?.zenny ?? 0}z**`,
       '',
-      notice ? `📌 **${notice}**` : 'Select an available BattleChip copy outside your folder. Sale value is half listed price.',
+      notice ? `📌 **${notice}**` : `Select an available BattleChip copy outside your folder. Page **${pageSafe + 1}/${pageCount}**. Sale value is half listed price.`,
     ].join('\n'))
     .setImage(region ? (getRegionImage(region) || getTravelImage()) : getTravelImage());
 
@@ -2131,7 +2166,12 @@ async function renderJackInSellShop(
     embeds: [embed],
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
-      new ActionRowBuilder<ButtonBuilder>().addComponents(sellBtn, backBtn),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(`jackin:shopSellPage:${Math.max(0, pageSafe - 1)}`).setStyle(ButtonStyle.Secondary).setLabel('Previous').setDisabled(pageSafe <= 0),
+        new ButtonBuilder().setCustomId(`jackin:shopSellPage:${Math.min(pageCount - 1, pageSafe + 1)}`).setStyle(ButtonStyle.Secondary).setLabel('Next').setDisabled(pageSafe >= pageCount - 1),
+        sellBtn,
+        backBtn,
+      ),
     ],
   });
 }
@@ -2140,13 +2180,18 @@ export async function onShopSellOpen(ix: ButtonInteraction) {
   await renderJackInSellShop(ix, null);
 }
 
-export async function onShopSellSelect(ix: StringSelectMenuInteraction) {
-  await renderJackInSellShop(ix, ix.values?.[0] || null);
+export async function onShopSellPage(ix: ButtonInteraction, page = 0) {
+  await renderJackInSellShop(ix, null, undefined, page);
 }
 
-export async function onShopSell(ix: ButtonInteraction, chipId: string) {
+export async function onShopSellSelect(ix: StringSelectMenuInteraction) {
+  const page = Number(ix.customId.split(':')[2] || '0');
+  await renderJackInSellShop(ix, ix.values?.[0] || null, undefined, page);
+}
+
+export async function onShopSell(ix: ButtonInteraction, chipId: string, page = 0) {
   if (!chipId || chipId === '_none') {
-    await renderJackInSellShop(ix, null, 'Please select a BattleChip first.');
+    await renderJackInSellShop(ix, null, 'Please select a BattleChip first.', page);
     return;
   }
 
@@ -2154,18 +2199,18 @@ export async function onShopSell(ix: ButtonInteraction, chipId: string) {
   const sellable = sellableInventoryRows(userId);
   const item = sellable.find(x => x.chipId === chipId);
   if (!item) {
-    await renderJackInSellShop(ix, null, 'That chip cannot be sold. All owned copies may be committed to your folder or no longer in your inventory.');
+    await renderJackInSellShop(ix, null, 'That chip cannot be sold. All owned copies may be committed to your folder or no longer in your inventory.', page);
     return;
   }
 
   const removed = removeChip(userId, chipId, 1);
   if (!removed) {
-    await renderJackInSellShop(ix, chipId, 'Could not remove that chip from inventory.');
+    await renderJackInSellShop(ix, chipId, 'Could not remove that chip from inventory.', page);
     return;
   }
 
   addZenny(userId, item.salePrice);
-  await renderJackInSellShop(ix, null, `Sold ${formatChipName(item.chip)} for ${item.salePrice}z.`);
+  await renderJackInSellShop(ix, null, `Sold ${formatChipName(item.chip)} for ${item.salePrice}z.`, page);
 }
 
 

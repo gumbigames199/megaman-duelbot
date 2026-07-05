@@ -57,7 +57,7 @@ export async function execute(ix: ChatInputCommandInteraction) {
   const e = new EmbedBuilder()
     .setTitle('🗂️ Your Folder')
     .setDescription(formatFolder(folder))
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER}` });
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Required exactly ${MAX_FOLDER}` });
 
   const editBtn = new ButtonBuilder().setCustomId('folder:edit').setStyle(ButtonStyle.Primary).setLabel('Edit');
   await ix.reply({ ephemeral: true, embeds: [e], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(editBtn)] });
@@ -68,7 +68,7 @@ export async function onEdit(ix: ButtonInteraction) {
   const e = new EmbedBuilder()
     .setTitle('🗂️ Edit Folder')
     .setDescription(formatFolder(folder))
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER} — Add or remove chips.` });
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Required exactly ${MAX_FOLDER} — Add/remove, then Save at exactly 30.` });
 
   const addBtn = new ButtonBuilder().setCustomId('folder:addOpen').setStyle(ButtonStyle.Secondary).setLabel('Add chips');
   const maxRemovable = getMaxRemovableFolderSlots(ix.user.id, folder.length);
@@ -136,11 +136,6 @@ export async function onOpenRemove(ix: ButtonInteraction) {
   }
 
   const maxRemovable = getMaxRemovableFolderSlots(ix.user.id, folder.length);
-  if (maxRemovable <= 0) {
-    await ix.reply({ ephemeral: true, content: `Folder minimum is ${MIN_FOLDER} chips. Add more chips before removing any.` });
-    return;
-  }
-
   const options = folder.slice(0, 25).map((id, i) => {
     const chipId = String(id);
     const c: any = getChipById(chipId) || {};
@@ -184,7 +179,7 @@ export async function onAddSelect(ix: StringSelectMenuInteraction) {
   const e = new EmbedBuilder()
     .setTitle('🗂️ Folder updated')
     .setDescription(formatFolder(folder))
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER}` });
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Required exactly ${MAX_FOLDER}` });
   await ix.reply({ ephemeral: true, embeds: [e] });
 }
 
@@ -207,26 +202,26 @@ export async function onRemoveSelect(ix: StringSelectMenuInteraction) {
     return;
   }
 
-  const min = validateFolderMinimum(userId, folder);
-  if (!min.ok) {
-    await ix.reply({ ephemeral: true, content: `❌ ${min.error}` });
-    return;
-  }
-
   setFolder(userId, folder);
   const e = new EmbedBuilder()
     .setTitle('🗂️ Folder updated')
     .setDescription(formatFolder(folder))
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER}` });
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Required exactly ${MAX_FOLDER}` });
   await ix.reply({ ephemeral: true, embeds: [e] });
 }
 
 export async function onSave(ix: ButtonInteraction) {
   const folder = getFolder(ix.user.id);
+  const v = validateFolderMinimum(ix.user.id, folder);
+  if (!v.ok) {
+    await ix.reply({ ephemeral: true, content: `❌ ${v.error}` });
+    return;
+  }
+
   const e = new EmbedBuilder()
     .setTitle('✅ Folder saved')
     .setDescription(formatFolder(folder))
-    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Minimum ${MIN_FOLDER}` });
+    .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Valid folder` });
   await ix.reply({ ephemeral: true, embeds: [e] });
 }
 

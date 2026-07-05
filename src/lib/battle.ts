@@ -27,7 +27,7 @@ import {
 import { grantVirusRewards } from "./rewards";
 import { validateLetterRule } from "./rules";
 import { progressDefeat } from "./missions";
-import { diffNewlyUnlockedRegions, unlockNextFromRegion } from "./unlock";
+import { diffNewlyUnlockedRegions } from "./unlock";
 import { detectPAResult } from "./pas";
 import { resolveDamageRoll } from "./damage";
 import {
@@ -50,7 +50,7 @@ import type { Element } from "./types";
 const DEFAULT_PLAYER_HP = 100;
 
 type EnemyKind = "virus" | "boss";
-type ChipRef = { id: string };
+type ChipRef = { id: string; uid: string };
 
 type BattleHandItem = {
   id: string;
@@ -77,10 +77,14 @@ type BattleState = {
   enemy_hp_max: number;
 
   turn: number;
+  full_deck: ChipRef[];
   deck: ChipRef[];
   discard: ChipRef[];
   hand: ChipRef[];
   selected: string[];
+  used_pa_ids: string[];
+  reflector_pool: number;
+  reflector_prevented: number;
   is_over: boolean;
   return_mode: BattleReturnMode;
 
@@ -120,8 +124,9 @@ export function startBattle(
   addStyleProgress(user_id, (virus as any)?.element, 1);
   const enemyHP = Math.max(1, toInt((virus as any)?.hp, 100));
 
-  const deck = buildDeckFromFolder(user_id);
-  if (deck.length === 0) deck.push(...fallbackDeck());
+  const fullDeck = buildDeckFromFolder(user_id);
+  if (fullDeck.length === 0) fullDeck.push(...fallbackDeck());
+  const deck = cloneDeck(fullDeck);
   shuffle(deck);
 
   const id = nextBattleId();
@@ -140,10 +145,14 @@ export function startBattle(
     enemy_hp: enemyHP,
     enemy_hp_max: enemyHP,
     turn: 1,
+    full_deck: cloneDeck(fullDeck),
     deck,
     discard: [],
     hand: [],
     selected: [],
+    used_pa_ids: [],
+    reflector_pool: 0,
+    reflector_prevented: 0,
     is_over: false,
     return_mode: opts.returnMode ?? "standalone",
     player_status: {},
@@ -250,12 +259,7 @@ export async function handleLock(ix: ButtonInteraction) {
           : "",
       ].filter(Boolean);
 
-      const bossUnlocks =
-        bs.enemy_kind === "boss"
-          ? unlockNextFromRegion(bs.user_id, bs.region_id)
-          : [];
-      const levelUnlocks = diffNewlyUnlockedRegions(bs.user_id);
-      const newly = Array.from(new Set([...bossUnlocks, ...levelUnlocks]));
+      const newly = diffNewlyUnlockedRegions(bs.user_id);
       if (newly.length)
         rewardLines.push(
           `🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`,
@@ -589,7 +593,9 @@ function activeProgramAdvance(bs: BattleState) {
   const ids = selectedIndices(bs)
     .map((i) => bs.hand[i]?.id)
     .filter(Boolean) as string[];
-  return detectPAResult(ids);
+  const pa = detectPAResult(ids);
+  if (!pa) return null;
+  return bs.used_pa_ids.includes(pa.id) ? null : pa;
 }
 
 function toHandItems(hand: ChipRef[]): BattleHandItem[] {
@@ -618,11 +624,12 @@ function getVirusName(virus_id: string) {
 function buildDeckFromFolder(user_id: string): ChipRef[] {
   const folder = listFolderQty(user_id);
   const deck: ChipRef[] = [];
+  let seq = 0;
   for (const f of folder) {
     const chipId = String((f as any).chip_id);
     const qty = Math.max(0, toInt((f as any).qty, 0));
     if (!getChipById(chipId)) continue;
-    for (let i = 0; i < qty; i++) deck.push({ id: chipId });
+    for (let i = 0; i < qty; i++) deck.push({ id: chipId, uid: `${chipId}:${seq++}` });
   }
   return deck;
 }
@@ -632,22 +639,36 @@ function fallbackDeck(): ChipRef[] {
     resolveChipIdLoose("Cannon") ||
     resolveChipIdLoose("Guard") ||
     firstUsableChipId();
-  return id ? Array.from({ length: 10 }, () => ({ id })) : [];
+  return id ? Array.from({ length: 10 }, (_, i) => ({ id, uid: `fallback:${i}` })) : [];
 }
 
 function drawHand(bs: BattleState) {
-  bs.discard.push(...bs.hand);
-  bs.hand = [];
+  // Unselected chips remain unused and go back into the available cycle.
+  if (bs.hand.length) {
+    bs.deck.push(...bs.hand);
+    bs.hand = [];
+    shuffle(bs.deck);
+  }
 
-  if (bs.deck.length < 5 && bs.discard.length > 0) {
-    shuffle(bs.discard);
-    bs.deck.push(...bs.discard);
-    bs.discard = [];
+  // Once fewer than 3 unused chip instances remain, refresh the entire folder.
+  if (bs.deck.length < 3) {
+    refreshChipCycle(bs);
   }
 
   while (bs.hand.length < 5 && bs.deck.length > 0) {
     bs.hand.push(bs.deck.shift()!);
   }
+}
+
+function refreshChipCycle(bs: BattleState) {
+  bs.deck = cloneDeck(bs.full_deck);
+  bs.discard = [];
+  bs.hand = [];
+  shuffle(bs.deck);
+}
+
+function cloneDeck(deck: ChipRef[]): ChipRef[] {
+  return deck.map(c => ({ id: c.id, uid: c.uid }));
 }
 
 // ---------------- Selection mapping ----------------
@@ -694,6 +715,9 @@ function _resolveRoundInternal(bs: BattleState) {
   const playerLog: string[] = [];
   const enemyLog: string[] = [];
 
+  bs.reflector_pool = 0;
+  bs.reflector_prevented = 0;
+
   applyStartTicks(bs, playerLog, enemyLog);
   if (bs.enemy_hp <= 0)
     return {
@@ -727,6 +751,9 @@ function _resolveRoundInternal(bs: BattleState) {
   } else {
     resolveEnemyAction(bs, enemyLog);
   }
+
+  applyReflectorDamage(bs, enemyLog);
+  expireTurnBarriers(bs, playerLog, enemyLog);
 
   tickEnd(bs.enemy_status);
   tickEnd(bs.player_status);
@@ -764,7 +791,8 @@ function resolvePlayerChips(
     .filter(Boolean) as string[];
   const pa = detectPAResult(selectedChipIds);
 
-  if (pa) {
+  if (pa && !bs.used_pa_ids.includes(pa.id)) {
+    bs.used_pa_ids.push(pa.id);
     playerLog.push(
       `Program Advance **${pa.name}** activated → **${pa.result_chip_id}**.`,
     );
@@ -824,7 +852,12 @@ function executeChip(
     }
     if (eff.barrier) {
       addBarrier(bs.player_status, eff.barrier.hp);
-      playerLog.push(`**${chipName}** gave you Barrier ${eff.barrier.hp}.`);
+      if (isReflectorChip(chip)) {
+        bs.reflector_pool += Math.max(0, Number(eff.barrier.hp) || 0);
+        playerLog.push(`**${chipName}** armed a Reflector barrier (${eff.barrier.hp}).`);
+      } else {
+        playerLog.push(`**${chipName}** gave you Barrier ${eff.barrier.hp}.`);
+      }
     }
     if (eff.aura) {
       addAura(bs.player_status, eff.aura.element, eff.aura.hp);
@@ -879,6 +912,39 @@ function executeChip(
   for (const eff of effects)
     applyOffensiveEffects(chipName, eff, bs.enemy_status, playerLog);
   return pendingAttackPlus;
+}
+
+function isReflectorChip(chip: any): boolean {
+  const base = String((chip as any)?.base_id || (chip as any)?.baseId || (chip as any)?.name || (chip as any)?.id || '').toLowerCase();
+  return /^reflector[123]$/.test(base);
+}
+
+function trackReflectorPrevention(bs: BattleState, incoming: number, damageAfterBarrier: number) {
+  const prevented = Math.max(0, Math.trunc((Number(incoming) || 0) - (Number(damageAfterBarrier) || 0)));
+  if (prevented > 0) bs.reflector_prevented += prevented;
+}
+
+function applyReflectorDamage(bs: BattleState, enemyLog: string[]) {
+  const reflected = Math.min(
+    Math.max(0, Math.trunc(bs.reflector_pool || 0)),
+    Math.max(0, Math.trunc(bs.reflector_prevented || 0)),
+  );
+  if (reflected <= 0) return;
+  bs.enemy_hp = Math.max(0, bs.enemy_hp - reflected);
+  enemyLog.push(`🪞 Reflector returned **${reflected}** dmg.`);
+  bs.reflector_pool = 0;
+  bs.reflector_prevented = 0;
+}
+
+function expireTurnBarriers(bs: BattleState, playerLog: string[], enemyLog: string[]) {
+  if ((bs.player_status.barrier ?? 0) > 0) {
+    delete bs.player_status.barrier;
+    playerLog.push('Barrier expired.');
+  }
+  if ((bs.enemy_status.barrier ?? 0) > 0) {
+    delete bs.enemy_status.barrier;
+    enemyLog.push('Enemy barrier expired.');
+  }
 }
 
 function applyOffensiveEffects(
@@ -968,6 +1034,7 @@ function resolveEnemyAction(bs: BattleState, enemyLog: string[]) {
   }
 
   const absorbed = absorbDamage(bs.player_status, roll.total, element);
+  trackReflectorPrevention(bs, roll.total, absorbed.damage);
   bs.player_hp = Math.max(0, bs.player_hp - absorbed.damage);
   const tags = [
     roll.crit ? "crit" : "",
@@ -1023,6 +1090,7 @@ function resolveFallbackEnemyAttack(bs: BattleState, enemyLog: string[]) {
   }
 
   const absorbed = absorbDamage(bs.player_status, roll.total, element);
+  trackReflectorPrevention(bs, roll.total, absorbed.damage);
   bs.player_hp = Math.max(0, bs.player_hp - absorbed.damage);
   enemyLog.push(
     `${virus?.name ?? "Virus"} hit you for **${absorbed.damage}** dmg${roll.crit ? " (crit)" : ""}.`,
@@ -1065,6 +1133,7 @@ function isSupportOnlyChip(
   chip: any,
   effects: ReturnType<typeof parseEffects>,
 ): boolean {
+  if (isReflectorChip(chip)) return true;
   const category = String(chip?.category ?? "").toLowerCase();
   const power = asNum(chip?.power, 0);
   if (power > 0) return false;

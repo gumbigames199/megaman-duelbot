@@ -284,7 +284,7 @@ async function acceptChallenge(ix: ButtonInteraction, challengeId: string) {
     await ix.update({
       embeds: [new EmbedBuilder()
         .setTitle('PvP Challenge Canceled')
-        .setDescription(`Both players need at least ${MIN_FOLDER} BattleChips in their folder before dueling.`)],
+        .setDescription(`Both players need exactly 30 BattleChips in their folder before dueling.`)],
       components: [],
     });
     return;

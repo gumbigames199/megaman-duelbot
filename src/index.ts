@@ -219,12 +219,12 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:selectZone') { await JackIn.onSelectZone(ix); return; }
       if (ix.customId === 'jackin:selectTravelRegion') { await JackIn.onSelectTravelRegion(ix); return; }
       if (ix.customId === 'jackin:shopSelect') { await JackIn.onShopSelect(ix); return; }
-      if (ix.customId === 'jackin:shopSellSelect') { await JackIn.onShopSellSelect(ix); return; }
+      if (ix.customId.startsWith('jackin:shopSellSelect')) { await JackIn.onShopSellSelect(ix); return; }
       if (ix.customId === 'jackin:dataVirusSelect') { await JackIn.onDataVirusSelect(ix); return; }
       if (ix.customId === 'jackin:bbsBoardViewSelect') { await JackIn.onBbsBoardViewSelect(ix); return; }
       if (ix.customId === 'jackin:bbsCurrentViewSelect') { await JackIn.onBbsCurrentViewSelect(ix); return; }
       if (ix.customId === 'jackin:bbsQuitSelect') { await JackIn.onBbsQuitSelect(ix); return; }
-      if (ix.customId === 'jackin:folderAddSelect') { await JackIn.onConfigFolderAddSelect(ix); return; }
+      if (ix.customId.startsWith('jackin:folderAddSelect')) { await JackIn.onConfigFolderAddSelect(ix); return; }
       if (ix.customId === 'jackin:folderRemoveSelect') { await JackIn.onConfigFolderRemoveSelect(ix); return; }
       if (ix.customId === 'folder:addSelect') { await Folder.onAddSelect(ix); return; }
       if (ix.customId === 'folder:removeSelect') { await Folder.onRemoveSelect(ix); return; }
@@ -241,6 +241,11 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:encounter') { await JackIn.onEncounter(ix); return; }
       if (ix.customId === 'jackin:openShop') { await JackIn.onOpenShop(ix); return; }
       if (ix.customId === 'jackin:shopSellOpen') { await JackIn.onShopSellOpen(ix); return; }
+      if (ix.customId.startsWith('jackin:shopSellPage:')) {
+        const page = Number(ix.customId.split(':')[2] || '0');
+        await JackIn.onShopSellPage(ix, page);
+        return;
+      }
       if (ix.customId === 'jackin:openData') { await JackIn.onOpenData(ix); return; }
       if (ix.customId === 'jackin:openBbs') { await JackIn.onOpenBbs(ix); return; }
       if (ix.customId === 'jackin:bbsCurrent') { await JackIn.onBbsCurrent(ix); return; }
@@ -279,7 +284,13 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'jackin:styleNeutralConfirm') { await JackIn.onStyleNeutralConfirm(ix); return; }
       if (ix.customId === 'jackin:configFolder') { await JackIn.onConfigFolder(ix); return; }
       if (ix.customId === 'jackin:configFolderAdd') { await JackIn.onConfigFolderAdd(ix); return; }
+      if (ix.customId.startsWith('jackin:configFolderAddPage:')) {
+        const page = Number(ix.customId.split(':')[2] || '0');
+        await JackIn.onConfigFolderAddPage(ix, page);
+        return;
+      }
       if (ix.customId === 'jackin:configFolderRemove') { await JackIn.onConfigFolderRemove(ix); return; }
+      if (ix.customId === 'jackin:configFolderSave') { await JackIn.onConfigFolderSave(ix); return; }
       if (ix.customId === 'jackin:shopExit' || ix.customId === 'jackin:back') { await JackIn.onShopExit(ix); return; }
       if (ix.customId.startsWith('jackin:shopBuy:')) {
         const chipId = ix.customId.split(':')[2];
@@ -287,8 +298,10 @@ client.on('interactionCreate', async (ix) => {
         return;
       }
       if (ix.customId.startsWith('jackin:shopSell:')) {
-        const chipId = ix.customId.split(':')[2];
-        await JackIn.onShopSell(ix, chipId);
+        const parts = ix.customId.split(':');
+        const chipId = parts[2];
+        const page = Number(parts[3] || '0');
+        await JackIn.onShopSell(ix, chipId, page);
         return;
       }
 
