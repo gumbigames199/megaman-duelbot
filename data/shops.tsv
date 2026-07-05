@@ -7,4 +7,5 @@ scilab_area	scilab_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,Magnum,Tornado,Reco
 seaside_area	seaside_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,GrassSeed,PoisnSeed,Recover150,AntiDmg
 sky_area	sky_area	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,Recover200,Guardian
 graveyard	graveyard	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,Recover300,Anubis
-undernet	undernet	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,Muramasa
+underground	underground	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,Recover300,Muramasa
+undernet	undernet	HP+50,HP+100,Atk+1,Spd+1,Acc+1,Eva+1,LifeAura
