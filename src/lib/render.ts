@@ -156,7 +156,7 @@ function enemiesStatusBlock(enemies?: EnemyRenderItem[], fallback?: { hp: { enem
   }
   if (!live.length) return '🟥 **Enemy**\n—';
   return live.map((e, i) => {
-    const marker = e.targeted ? '🎯 TARGET' : e.active ? '▶️ ACTIVE' : `${i + 1}.`;
+    const marker = e.targeted ? '🎯 TARGET' : `${i + 1}.`;
     return `${marker} **${e.name}**\n${hpBar(e.hp, e.hpMax)}\nStatus: ${statusBadges(e.status)}`;
   }).join('\n');
 }

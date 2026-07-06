@@ -835,10 +835,24 @@ export function resolveTurn(s: any, chosenIds: string[]) {
 
 // ---------------- Render helpers ----------------
 async function attachEnemyLineup(view: BattleViewPayload, bs: BattleState): Promise<BattleViewPayload> {
-  const lineup = await buildEnemyLineupAttachment(enemyRenderItems(bs), bs.id).catch(() => null);
-  if (!lineup) return view;
-
   const first = view.embeds?.[0] ?? view.embed;
+  const enemies = enemyRenderItems(bs).filter(e => !e.defeated && Number(e.hp) > 0);
+
+  // Multi-virus battles must not fall back to the legacy single-virus thumbnail.
+  // The only valid multi-virus art path is one generated lineup image attachment.
+  if (enemies.length > 1) {
+    try { first?.setThumbnail?.(null); } catch {}
+  }
+
+  const lineup = await buildEnemyLineupAttachment(enemies, bs.id).catch(() => null);
+  if (!lineup) {
+    return {
+      ...view,
+      embed: first ?? view.embed,
+      embeds: view.embeds?.length ? view.embeds : [first ?? view.embed],
+    };
+  }
+
   try { first?.setThumbnail?.(lineup.thumbnailUrl); } catch {}
 
   return {
