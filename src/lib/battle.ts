@@ -426,7 +426,7 @@ export async function handleRun(ix: ButtonInteraction) {
     return;
   }
 
-  const escaped = randInt(1, 100) <= 50;
+  const escaped = randInt(1, 100) <= runChancePct(bs);
   if (escaped) {
     bs.is_over = true;
     const escapedView = renderVictoryToHub({
@@ -434,7 +434,7 @@ export async function handleRun(ix: ButtonInteraction) {
       victory: { title: "Escaped", rewardLines: [] },
     });
     const view = endBattleView(bs, escapedView, {
-      title: `Escaped from ${getVirusName(bs.virus_id)}`,
+      title: `Escaped from ${enemySummaryTitle(bs)}`,
       lines: [],
     });
     await ix.update({ embeds: [view.embed], components: view.components });
@@ -682,8 +682,8 @@ export function end(battleId: string): void {
   battles.delete(battleId);
 }
 
-export function tryRun(_s: any): boolean {
-  return Math.random() < 0.5;
+export function tryRun(s: any): boolean {
+  return Math.random() * 100 < runChancePctFromCompat(s);
 }
 
 export function resolveTurn(s: any, chosenIds: string[]) {
@@ -889,26 +889,34 @@ function _resolveRoundInternal(bs: BattleState) {
     return { playerLogLines: playerLog, enemyLogLines: enemyLog };
   }
 
-  const playerCanAct = canActFromStatus(bs.player_status, Math.random);
-  if (!playerCanAct.canAct) {
-    playerLog.push(`You are ${playerCanAct.reason} and could not act.`);
+  const playerFirst = playerActsFirst(bs);
+
+  if (playerFirst) {
+    resolvePlayerActionPhase(bs, playerLog);
+    discardSelected(bs);
+
+    if (allEnemiesDefeated(bs)) {
+      enemyLog.push("Enemy deleted.");
+      tickEndAllEnemyStatuses(bs);
+      tickEnd(bs.player_status);
+      return { playerLogLines: playerLog, enemyLogLines: enemyLog };
+    }
+
+    resolveAllEnemyActions(bs, enemyLog);
+    applyReflectorDamage(bs, enemyLog);
   } else {
-    ensureValidTarget(bs);
-    activateEnemy(bs, bs.target_enemy_index);
-    resolvePlayerChips(bs, selectedIndices(bs), playerLog);
+    enemyLog.push("Enemy moved first on SPD advantage.");
+    resolveAllEnemyActions(bs, enemyLog);
+    applyReflectorDamage(bs, enemyLog);
+
+    if (bs.player_hp > 0) {
+      resolvePlayerActionPhase(bs, playerLog);
+    }
+    discardSelected(bs);
+
+    if (allEnemiesDefeated(bs)) enemyLog.push("Enemy deleted.");
   }
 
-  discardSelected(bs);
-
-  if (allEnemiesDefeated(bs)) {
-    enemyLog.push("Enemy deleted.");
-    tickEndAllEnemyStatuses(bs);
-    tickEnd(bs.player_status);
-    return { playerLogLines: playerLog, enemyLogLines: enemyLog };
-  }
-
-  resolveAllEnemyActions(bs, enemyLog);
-  applyReflectorDamage(bs, enemyLog);
   if (bs.enemy_hp <= 0) advanceToNextEnemy(bs);
   expireTurnBarriers(bs, playerLog, enemyLog);
 
@@ -917,6 +925,18 @@ function _resolveRoundInternal(bs: BattleState) {
 
   advanceToNextEnemy(bs);
   return { playerLogLines: playerLog, enemyLogLines: enemyLog };
+}
+
+function resolvePlayerActionPhase(bs: BattleState, playerLog: string[]) {
+  const playerCanAct = canActFromStatus(bs.player_status, Math.random);
+  if (!playerCanAct.canAct) {
+    playerLog.push(`You are ${playerCanAct.reason} and could not act.`);
+    return;
+  }
+
+  ensureValidTarget(bs);
+  activateEnemy(bs, bs.target_enemy_index);
+  resolvePlayerChips(bs, selectedIndices(bs), playerLog);
 }
 
 function applyStartTicks(
@@ -1426,6 +1446,46 @@ function normalizeCrit(v: any) {
     : Math.max(0, Math.min(1, n));
 }
 
+function playerSpeed(bs: BattleState): number {
+  const player = getPlayer(bs.user_id) as any;
+  return Math.max(0, asNum(player?.spd, 0) + buffValue(bs.player_status, "spd"));
+}
+
+function enemySpeed(enemy: BattleEnemy): number {
+  const virus = getVirusById(enemy.virus_id) as any;
+  return Math.max(0, asNum(virus?.spd, 0) + buffValue(enemy.status, "spd"));
+}
+
+function fastestLivingEnemySpeed(bs: BattleState): number {
+  saveActiveEnemy(bs);
+  return bs.enemies
+    .filter(e => e.hp > 0)
+    .reduce((max, e) => Math.max(max, enemySpeed(e)), 0);
+}
+
+function playerActsFirst(bs: BattleState): boolean {
+  return playerSpeed(bs) >= fastestLivingEnemySpeed(bs);
+}
+
+function runChancePct(bs: BattleState): number {
+  const diff = playerSpeed(bs) - fastestLivingEnemySpeed(bs);
+  return Math.max(20, Math.min(85, Math.round(50 + diff)));
+}
+
+function runChancePctFromCompat(s: any): number {
+  if (s?.id && battles.has(String(s.id))) return runChancePct(battles.get(String(s.id))!);
+
+  const p = s?.user_id ? getPlayer(String(s.user_id)) as any : null;
+  const playerSpd = asNum(p?.spd ?? s?.navi_spd, 0);
+  const enemies = Array.isArray(s?.enemies) ? s.enemies : [{ virus_id: s?.enemy_id ?? s?.virus_id }];
+  const enemySpd = enemies.reduce((max: number, e: any) => {
+    const virus = getVirusById(String(e?.virus_id ?? e?.enemy_id ?? '')) as any;
+    return Math.max(max, asNum(virus?.spd, 0));
+  }, 0);
+
+  return Math.max(20, Math.min(85, Math.round(50 + playerSpd - enemySpd)));
+}
+
 function nextBattleId() {
   const n = Math.floor(Date.now() / 1000);
   const r = randInt(1000, 9999);
@@ -1499,6 +1559,7 @@ function toCompatState(bs: BattleState) {
     player_hp_max: bs.player_hp_max,
     navi_atk: p?.atk ?? 10,
     navi_def: p?.def ?? 6,
+    navi_spd: p?.spd ?? 0,
     navi_acc: p?.acc ?? 90,
     navi_eva: p?.evasion ?? 10,
     turn: bs.turn,

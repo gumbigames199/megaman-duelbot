@@ -19,6 +19,9 @@ export type ScaledEncounter = {
 };
 
 const DEFAULT_BOSS_ENCOUNTER = Number(process.env.BOSS_ENCOUNTER_RATE ?? process.env.BOSS_ENCOUNTER ?? 0.10);
+const NORMAL_SINGLE_CHANCE = Number(process.env.ENCOUNTER_SINGLE_RATE ?? 0.50);
+const NORMAL_DOUBLE_CHANCE = Number(process.env.ENCOUNTER_DOUBLE_RATE ?? 0.30);
+const NORMAL_TRIPLE_CHANCE = Number(process.env.ENCOUNTER_TRIPLE_RATE ?? 0.20);
 
 function isBossFlag(v: any): boolean {
   const raw = v?.boss ?? v?.is_boss;
@@ -28,43 +31,14 @@ function isBossFlag(v: any): boolean {
   return s === '1' || s === 'true' || s === 'yes' || s === 'y';
 }
 
-function rollPct(pct: number): boolean {
-  const n = Number(pct);
-  if (!Number.isFinite(n) || n <= 0) return false;
-  return Math.random() * 100 < Math.min(100, Math.max(0, n));
-}
-
 function pickOne<T>(arr: T[]): T | null {
   if (!arr.length) return null;
   return arr[Math.floor(Math.random() * arr.length)] ?? null;
 }
 
-function shuffled<T>(arr: T[]): T[] {
-  const out = arr.slice();
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
-}
-
 function asInt(v: any, fallback: number): number {
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
-}
-
-function threatScore(v: any): number {
-  const hp = Math.max(0, Number(v?.hp) || 0);
-  const atk = Math.max(0, Number(v?.atk) || 0);
-  const def = Math.max(0, Number(v?.def) || 0);
-  const statusText = JSON.stringify(v ?? {}).toLowerCase();
-  let score = 1;
-  score += Math.floor(hp / 80);
-  score += Math.floor(atk / 30);
-  score += Math.floor(def / 40);
-  if (statusText.includes('paralyze') || statusText.includes('freeze')) score += 1;
-  if (statusText.includes('poison') || statusText.includes('burn')) score += 1;
-  return Math.max(1, score);
 }
 
 function defaultRuleForRegion(regionMinLevel: number) {
@@ -82,49 +56,32 @@ function defaultRuleForRegion(regionMinLevel: number) {
   };
 }
 
-function targetNormalSize(rule: any, playerLevel: number, regionMinLevel: number): number {
-  let minEnemies = Math.max(1, asInt(rule?.min_enemies, 1));
-  let maxEnemies = Math.max(minEnemies, asInt(rule?.max_enemies, 1));
-  maxEnemies = Math.min(3, maxEnemies);
+function rollNormalEncounterSize(): number {
+  const single = Math.max(0, NORMAL_SINGLE_CHANCE);
+  const double = Math.max(0, NORMAL_DOUBLE_CHANCE);
+  const triple = Math.max(0, NORMAL_TRIPLE_CHANCE);
+  const total = single + double + triple;
+  if (total <= 0) return 1;
 
-  let size = minEnemies;
-  while (size < maxEnemies && rollPct(Number(rule?.multi_enemy_chance ?? 0))) size += 1;
-
-  const every = Math.max(1, asInt(rule?.overlevel_bonus_every, 5));
-  const bonusSteps = Math.floor(Math.max(0, playerLevel - regionMinLevel) / every);
-  for (let i = 0; i < bonusSteps && size < maxEnemies; i++) {
-    if (rollPct(Number(rule?.overlevel_bonus_chance ?? 0))) size += 1;
-  }
-
-  return Math.max(1, Math.min(maxEnemies, size));
+  const roll = Math.random() * total;
+  if (roll < single) return 1;
+  if (roll < single + double) return 2;
+  return 3;
 }
 
-function buildNormalGroup(normals: any[], targetSize: number, budget: number): any[] {
-  const pool = shuffled(normals);
+function buildNormalGroup(normals: any[], targetSize: number, _budget: number): any[] {
+  if (!normals.length) return [];
+
   const out: any[] = [];
-  let usedBudget = 0;
-
-  for (const v of pool) {
-    if (out.length >= targetSize) break;
-    const score = threatScore(v);
-    if (out.length > 0 && usedBudget + score > budget) continue;
-    out.push(v);
-    usedBudget += score;
+  for (let i = 0; i < Math.max(1, Math.min(3, targetSize)); i++) {
+    const pick = pickOne(normals);
+    if (pick) out.push(pick);
   }
-
-  if (!out.length && normals.length) out.push(pickOne(normals));
-  return out.filter(Boolean);
+  return out;
 }
 
-function buildBossGroup(boss: any, normals: any[], rule: any): any[] {
-  const out = [boss];
-  const supportMax = Math.max(0, Math.min(2, asInt(rule?.boss_support_max, 0)));
-  if (supportMax <= 0 || !normals.length || !rollPct(Number(rule?.boss_support_chance ?? 0))) return out;
-
-  const supportCount = Math.min(supportMax, normals.length);
-  const pool = shuffled(normals);
-  for (const v of pool.slice(0, supportCount)) out.push(v);
-  return out;
+function buildBossGroup(boss: any, _normals: any[], _rule: any): any[] {
+  return boss ? [boss] : [];
 }
 
 export function chooseScaledEncounter(opts: {
@@ -135,7 +92,6 @@ export function chooseScaledEncounter(opts: {
   bossEncounterRate?: number;
 }): ScaledEncounter | null {
   const regionMinLevel = Math.max(1, asInt(opts.regionMinLevel, 1));
-  const playerLevel = Math.max(1, asInt(opts.playerLevel, 1));
   const rule = getEncounterRuleByRegion(opts.region_id) || defaultRuleForRegion(regionMinLevel);
   const budget = Math.max(1, asInt(rule?.encounter_budget, 2));
 
@@ -166,7 +122,7 @@ export function chooseScaledEncounter(opts: {
     };
   }
 
-  const targetSize = targetNormalSize(rule, playerLevel, regionMinLevel);
+  const targetSize = rollNormalEncounterSize();
   const group = buildNormalGroup(normals.length ? normals : bosses, targetSize, budget);
   if (!group.length) return null;
 

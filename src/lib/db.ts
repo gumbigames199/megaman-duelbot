@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 // NOTE: used only for chip-id normalization (no circular import back to db.ts)
-import { getChipById, listChips, resolveChipForGrant, resolveChipIdLoose } from "./data";
+import { getChipById, listChips, resolveChipForGrant, resolveChipIdLoose, sellValueForChip } from "./data";
 
 // -------------------------------
 // Environment & Caps
@@ -601,6 +601,19 @@ export function removeChip(user_id: string, chip_id: string, qty = 1): boolean {
   if (newQty > 0) db.prepare(`UPDATE inventory SET qty = ? WHERE id = ?`).run(newQty, row.id);
   else db.prepare(`DELETE FROM inventory WHERE id = ?`).run(row.id);
   return true;
+}
+
+export function sellChip(user_id: string, chip_id: string, qty = 1): { ok: boolean; gained: number; sold: number; balance?: number; reason?: string } {
+  ensurePlayer(user_id);
+  const safeId = normalizeChipIdLocal(String(chip_id));
+  const count = Math.max(1, toInt(qty, 1));
+  const chip = getChipById(safeId);
+  if (!chip) return { ok: false, gained: 0, sold: 0, reason: 'Unknown chip.' };
+  const removed = removeChip(user_id, safeId, count);
+  if (!removed) return { ok: false, gained: 0, sold: 0, reason: 'Not enough copies in inventory.' };
+  const gained = sellValueForChip(chip) * count;
+  addZenny(user_id, gained);
+  return { ok: true, gained, sold: count, balance: getPlayer(user_id)?.zenny ?? 0 };
 }
 export function listInventory(user_id: string): InventoryItem[] {
   return db.prepare(`SELECT chip_id, qty FROM inventory WHERE user_id = ? ORDER BY chip_id`).all(user_id) as InventoryItem[];

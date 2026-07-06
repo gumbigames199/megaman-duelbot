@@ -510,6 +510,12 @@ export function priceForShopItem(s: ShopItemRow, c: any): number {
   return Number.isFinite(base) ? base : 0;
 }
 
+export const CHIP_SELL_ZENNY = 750;
+
+export function sellValueForChip(_chip: any): number {
+  return CHIP_SELL_ZENNY;
+}
+
 export function resolveShopInventory(region_id: string): ResolvedShopItem[] {
   const rid = resolveRegionIdLoose(region_id);
   const rows = getShopsForRegion(rid);

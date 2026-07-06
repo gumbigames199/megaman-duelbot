@@ -12,6 +12,7 @@ export interface TimedBuffState {
   def?: number;
   acc?: number;
   evasion?: number;
+  spd?: number;
   crit?: number;
   turns: number;
 }
@@ -130,14 +131,14 @@ export function applyStatusEffect(target: StatusState, key: 'burn' | 'poison' | 
 export function applyBuff(target: StatusState, buff: Omit<TimedBuffState, 'turns'> & { turns?: number }) {
   const turns = Math.max(1, Math.trunc(buff.turns ?? 3));
   const item: TimedBuffState = { turns };
-  for (const k of ['atk', 'def', 'acc', 'evasion', 'crit'] as const) {
+  for (const k of ['atk', 'def', 'acc', 'evasion', 'spd', 'crit'] as const) {
     const n = Number((buff as any)[k]);
     if (Number.isFinite(n) && n !== 0) (item as any)[k] = Math.trunc(n);
   }
   if (Object.keys(item).length > 1) target.buffs = [...(target.buffs ?? []), item];
 }
 
-export function buffValue(s: StatusState, key: 'atk' | 'def' | 'acc' | 'evasion' | 'crit'): number {
+export function buffValue(s: StatusState, key: 'atk' | 'def' | 'acc' | 'evasion' | 'spd' | 'crit'): number {
   return (s.buffs ?? []).reduce((sum, b) => sum + (Number((b as any)[key]) || 0), 0);
 }
 

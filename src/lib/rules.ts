@@ -4,14 +4,14 @@ import { Element } from './types';
 /** Element cycle: Fire > Wood > Elec > Aqua > Fire */
 export const TYPE_ORDER: Element[] = ['Fire', 'Wood', 'Elec', 'Aqua'];
 
-/** BN-style effectiveness: 2.0 super, 0.5 resisted, 1.0 neutral */
+/** BN-style effectiveness: 1.5 super, 0.5 resisted, 1.0 neutral */
 export function typeMultiplier(att: Element | 'Neutral', def: Element | 'Neutral'): number {
   if (att === 'Neutral' || def === 'Neutral') return 1.0;
   const i = TYPE_ORDER.indexOf(att as Element);
   if (i < 0) return 1.0;
   const loses = TYPE_ORDER[(i + 1) % 4];
   const beats = TYPE_ORDER[(i + 3) % 4];
-  if (def === loses) return 2.0;
+  if (def === loses) return 1.5;
   if (def === beats) return 0.5;
   return 1.0;
 }

@@ -17,7 +17,7 @@ import {
 } from 'discord.js';
 
 import { ensureStartUnlocked, listUnlocked } from '../lib/unlock';
-import { getBundle, resolveShopInventory, listVirusesForRegionZone, formatChipName, listChips, chipCode, chipIsUpgrade, getChipById } from '../lib/data';
+import { getBundle, resolveShopInventory, listVirusesForRegionZone, formatChipName, listChips, chipCode, chipIsUpgrade, getChipById, sellValueForChip } from '../lib/data';
 import {
   getPlayer, setRegion, setZone, getZone, listSeenViruses, getInventory,
   addZenny, spendZenny, grantChip, removeChip,
@@ -2231,9 +2231,7 @@ export async function onShopBuy(ix: ButtonInteraction, chipId: string) {
 
 
 function salePriceForChip(chip: any): number {
-  const n = Number(chip?.zenny_cost ?? 0);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return Math.max(0, Math.floor(n / 2));
+  return sellValueForChip(chip);
 }
 
 function sellableInventoryRows(userId: string) {
@@ -2317,7 +2315,7 @@ async function renderJackInSellShop(
     .setDescription([
       `Your Zenny: **${p?.zenny ?? 0}z**`,
       '',
-      notice ? `📌 **${notice}**` : `Select an available BattleChip copy outside your folder. Page **${pageSafe + 1}/${pageCount}**. Sale value is half listed price.`,
+      notice ? `📌 **${notice}**` : `Select an available BattleChip copy outside your folder. Page **${pageSafe + 1}/${pageCount}**. All BattleChips sell for a flat 750z.`,
     ].join('\n'))
     .setImage(region ? (getRegionImage(region) || getTravelImage()) : getTravelImage());
 
