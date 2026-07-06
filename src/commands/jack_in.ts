@@ -1030,36 +1030,118 @@ async function renderChipIndexPanel(ix: AnyJackInInteraction, search: string, pa
 }
 
 export async function onDataVirus(ix: ButtonInteraction) {
-  await renderDataVirusPage(ix, 1);
+  const embed = new EmbedBuilder()
+    .setTitle('🧾 VirusDex')
+    .setDescription([
+      'Browse encountered viruses or search by name, element, region, zone, move, or drop table.',
+      '',
+      'Search opens a Discord text modal. Results stay in this Jack-In panel.',
+    ].join('\n'))
+    .setImage(getDataImage())
+    .setFooter({ text: 'VirusDex only shows viruses you have encountered.' });
+
+  await ix.update({
+    embeds: [embed],
+    components: [navButtons(
+      new ButtonBuilder().setCustomId('jackin:dataVirusAll').setStyle(ButtonStyle.Secondary).setLabel('Browse Seen'),
+      new ButtonBuilder().setCustomId('jackin:dataVirusSearch').setStyle(ButtonStyle.Secondary).setLabel('Search Virus'),
+      new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Back'),
+    )],
+  });
+}
+
+export async function onDataVirusAll(ix: ButtonInteraction) {
+  await renderVirusDexPanel(ix, '', 1);
 }
 
 export async function onDataVirusPage(ix: ButtonInteraction, page: number) {
-  await renderDataVirusPage(ix, page);
+  await renderVirusDexPanel(ix, '', page);
 }
 
-async function renderDataVirusPage(ix: ButtonInteraction, page: number) {
-  const b = getBundle() as any;
-  const seen = listSeenViruses(ix.user.id).map(String).filter(id => b.viruses?.[id]);
+export async function onDataVirusSearch(ix: ButtonInteraction) {
+  const modal = new ModalBuilder()
+    .setCustomId('jackin:virusSearchModal')
+    .setTitle('Search VirusDex');
 
-  if (!seen.length) {
-    const embed = new EmbedBuilder()
-      .setTitle('🧾 VirusDex')
-      .setDescription('You have not encountered any viruses yet.')
-      .setImage(getDataImage());
-    await ix.update({ embeds: [embed], components: [navButtons(makeBackButton(), new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'))] });
-    return;
-  }
+  const input = new TextInputBuilder()
+    .setCustomId('query')
+    .setLabel('Virus name, region, element, or keyword')
+    .setPlaceholder('Mettaur, Fire, ACDC, Zone 2, Blast...')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(80);
+
+  modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+  await ix.showModal(modal);
+}
+
+export async function onVirusSearchModal(ix: ModalSubmitInteraction) {
+  const q = ix.fields.getTextInputValue('query').trim();
+  await renderVirusDexPanel(ix, q, 1);
+}
+
+async function renderVirusDexPanel(ix: AnyJackInInteraction, search: string, page: number) {
+  const b = getBundle() as any;
+  const q = String(search || '').trim().toLowerCase();
+  let seen = listSeenViruses(ix.user.id).map(String).filter(id => b.viruses?.[id]);
 
   seen.sort((a, bId) => String(b.viruses[a]?.name || a).localeCompare(String(b.viruses[bId]?.name || bId)));
 
-  const perPage = 25;
+  if (q) {
+    const exact = seen.filter(id => {
+      const v = b.viruses[id];
+      return String(id).toLowerCase() === q || String(v?.name || '').toLowerCase() === q;
+    });
+    seen = exact.length ? exact : seen.filter(id => virusDexMatches(id, b.viruses[id], b.regions, q));
+  }
+
+  const baseButtons = navButtons(
+    new ButtonBuilder().setCustomId('jackin:dataVirusSearch').setStyle(ButtonStyle.Secondary).setLabel(q ? 'Search Again' : 'Search Virus'),
+    new ButtonBuilder().setCustomId('jackin:dataVirus').setStyle(ButtonStyle.Secondary).setLabel('Back'),
+  );
+
+  if (!seen.length) {
+    const embed = new EmbedBuilder()
+      .setTitle(q ? `🧾 VirusDex — ${search}` : '🧾 VirusDex — Browse')
+      .setDescription(q ? 'No encountered viruses matched that search.' : 'You have not encountered any viruses yet.')
+      .setImage(getDataImage());
+    await updatePanel(ix, { embeds: [embed], components: [baseButtons] });
+    return;
+  }
+
+  if (seen.length === 1) {
+    const embed = buildVirusDexDetailEmbed(ix.user.id, seen[0]);
+    await updatePanel(ix, { embeds: [embed], components: [baseButtons] });
+    return;
+  }
+
+  const perPage = 12;
   const pages = Math.max(1, Math.ceil(seen.length / perPage));
   const pageSafe = Math.min(Math.max(1, Math.floor(Number(page) || 1)), pages);
   const pageItems = seen.slice((pageSafe - 1) * perPage, pageSafe * perPage);
+  const lines = pageItems.map((id, idx) => {
+    const v = b.viruses[id];
+    const n = (pageSafe - 1) * perPage + idx + 1;
+    const location = formatVirusLocation(v, b.regions).replace(/\*\*/g, '');
+    const boss = isBossFlag(v) ? ' • Boss' : '';
+    return `**${n}. ${v?.name || id}** — ${v?.element || 'Neutral'} • HP ${v?.hp ?? '?'}${boss}\n${location}`;
+  });
+
+  const embed = new EmbedBuilder()
+    .setTitle(q ? `🧾 VirusDex — ${search}` : '🧾 VirusDex — Browse')
+    .setDescription([
+      `Page **${pageSafe}/${pages}** • Showing **${pageItems.length}** of **${seen.length}** encountered virus entr${seen.length === 1 ? 'y' : 'ies'}.`,
+      '',
+      ...lines,
+      '',
+      'Use the dropdown to open a full VirusDex entry, or search for a specific virus.',
+    ].join('\n'))
+    .setImage(getDataImage())
+    .setFooter({ text: 'VirusDex only shows viruses you have encountered.' });
 
   const select = new StringSelectMenuBuilder()
     .setCustomId('jackin:dataVirusSelect')
-    .setPlaceholder(`Select an encountered virus — Page ${pageSafe}/${pages}`)
+    .setPlaceholder(`Open VirusDex entry — Page ${pageSafe}/${pages}`)
     .setMinValues(1)
     .setMaxValues(1)
     .addOptions(pageItems.map(id => {
@@ -1067,24 +1149,13 @@ async function renderDataVirusPage(ix: ButtonInteraction, page: number) {
       return {
         label: String(v?.name || id).slice(0, 100),
         value: id,
-        description: `${v?.element || 'Neutral'} • HP ${v?.hp ?? '?'}`.slice(0, 100),
+        description: `${v?.element || 'Neutral'} • HP ${v?.hp ?? '?'} • ${formatVirusLocation(v, b.regions).replace(/\*\*/g, '')}`.slice(0, 100),
       };
     }));
 
-  const embed = new EmbedBuilder()
-    .setTitle('🧾 VirusDex')
-    .setDescription([
-      'Select a virus you have encountered to view stats, moves, locations, and possible drops.',
-      '',
-      `Page **${pageSafe}/${pages}** • **${seen.length}** seen virus entr${seen.length === 1 ? 'y' : 'ies'}.`,
-    ].join('\n'))
-    .setImage(getDataImage());
+  const components: any[] = [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)];
 
-  const components: any[] = [
-    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
-  ];
-
-  if (pages > 1) {
+  if (!q && pages > 1) {
     components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(`jackin:dataVirusPage:${Math.max(1, pageSafe - 1)}`)
@@ -1099,9 +1170,8 @@ async function renderDataVirusPage(ix: ButtonInteraction, page: number) {
     ));
   }
 
-  components.push(navButtons(new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Back')));
-
-  await ix.update({ embeds: [embed], components });
+  components.push(baseButtons);
+  await updatePanel(ix, { embeds: [embed], components });
 }
 
 export async function onDataVirusSelect(ix: StringSelectMenuInteraction) {
@@ -1110,11 +1180,31 @@ export async function onDataVirusSelect(ix: StringSelectMenuInteraction) {
   await ix.update({
     embeds: [embed],
     components: [navButtons(
-      new ButtonBuilder().setCustomId('jackin:dataVirus').setStyle(ButtonStyle.Secondary).setLabel('VirusDex'),
+      new ButtonBuilder().setCustomId('jackin:dataVirus').setStyle(ButtonStyle.Secondary).setLabel('Back'),
       new ButtonBuilder().setCustomId('jackin:openData').setStyle(ButtonStyle.Secondary).setLabel('Data'),
       makeBackButton(),
     )],
   });
+}
+
+function virusDexMatches(id: string, v: any, regions: Record<string, any>, q: string): boolean {
+  const hay = [
+    id,
+    v?.name,
+    v?.description,
+    v?.element,
+    v?.region_id,
+    v?.region,
+    formatVirusLocation(v, regions).replace(/\*\*/g, ''),
+    String(v?.zone ?? ''),
+    String(v?.zones ?? ''),
+    v?.drop_table_id,
+    v?.move_1json,
+    v?.move_2json,
+    v?.move_3json,
+    v?.move_4json,
+  ].map(x => String(x ?? '').toLowerCase()).join(' ');
+  return hay.includes(q);
 }
 
 export async function onOpenConfig(ix: ButtonInteraction) {
