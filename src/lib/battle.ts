@@ -1171,12 +1171,19 @@ function executeChip(
   const chipName = String(opts.displayName || formatChipName(chip) || chip.name || chipId);
   const effects = parseEffects(String(chip.effects ?? ""));
   const supportOnly = isSupportOnlyChip(chip, effects);
-  let pendingAttackPlus = opts.pendingAttackPlus ?? 0;
+
+  // MMBN-style Attack+ timing:
+  // - Attack+ already queued before this chip applies to this chip.
+  // - Attack+ printed on this chip is queued after this chip resolves.
+  // - That means Atk+ chips boost the chip played after them, not themselves.
+  const incomingAttackPlus = Math.max(0, opts.pendingAttackPlus ?? 0);
+  let outgoingAttackPlus = incomingAttackPlus;
+  let queuedAfterThisChip = 0;
 
   for (const eff of effects) {
     if (eff.attackPlus) {
-      pendingAttackPlus += eff.attackPlus;
-      playerLog.push(`**${chipName}** queued Attack+${eff.attackPlus}.`);
+      queuedAfterThisChip += eff.attackPlus;
+      playerLog.push(`**${chipName}** queued Attack+${eff.attackPlus} for the next chip.`);
     }
     if (eff.heal) {
       const before = bs.player_hp;
@@ -1199,20 +1206,20 @@ function executeChip(
   }
 
   const basePower = Math.max(0, asNum(chip.power, 0));
-  const attackPower = basePower + pendingAttackPlus;
+  const attackPower = basePower + incomingAttackPlus;
   const hasOffense = hasOffensiveEffects(effects);
   const shouldHitEnemies = !supportOnly && (attackPower > 0 || hasOffense);
 
   if (!shouldHitEnemies) {
-    return opts.forceAttackPlusReset ? 0 : pendingAttackPlus;
+    return opts.forceAttackPlusReset ? 0 : outgoingAttackPlus + queuedAfterThisChip;
   }
 
   const targetIndexes = chipTargetIndexes(bs, bs.target_enemy_index, normalizeChipTargets(chip, 1));
   if (!targetIndexes.length) {
-    return opts.forceAttackPlusReset ? 0 : pendingAttackPlus;
+    return opts.forceAttackPlusReset ? 0 : outgoingAttackPlus + queuedAfterThisChip;
   }
 
-  if (attackPower > 0) pendingAttackPlus = 0;
+  if (attackPower > 0) outgoingAttackPlus = 0;
 
   const element = toElement(chip.element);
 
@@ -1278,7 +1285,7 @@ function executeChip(
 
   advanceToNextEnemy(bs);
   ensureValidTarget(bs);
-  return opts.forceAttackPlusReset ? 0 : pendingAttackPlus;
+  return opts.forceAttackPlusReset ? 0 : outgoingAttackPlus + queuedAfterThisChip;
 }
 
 function hasOffensiveEffects(effects: ReturnType<typeof parseEffects>): boolean {
