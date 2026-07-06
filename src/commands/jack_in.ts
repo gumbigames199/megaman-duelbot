@@ -527,7 +527,7 @@ Debug — virus region_id samples: ${regionSamples.join(', ')}` : '')
     await ix.update({
       embeds: [view.embed],
       components: view.components,
-      files: view.files || [],
+      files: (view as any).files || [],
     });
   } catch (err: any) {
     console.error('onEncounter error:', err);
