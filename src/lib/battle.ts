@@ -245,7 +245,7 @@ export async function handlePick(ix: StringSelectMenuInteraction) {
     await ix.reply({
       ephemeral: true,
       content:
-        "❌ Invalid combo. Chips must share a letter, exact name, or include *.",
+        "❌ Invalid combo. Non-* chips must share one code or the same chip name.",
     });
     return;
   }

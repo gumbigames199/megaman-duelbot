@@ -41,7 +41,7 @@ function chipCodes(c: ChipRuleRef): Set<string> {
 }
 
 /**
- * Battle Network style chip-selection rule for up to 3 chips.
+ * Battle Network style chip-selection rule for up to 5 chips.
  *
  * Wildcard `*` chips are neutral helpers. They can join any otherwise-valid
  * selection and do not need to match chip name or chip code.
@@ -51,13 +51,13 @@ function chipCodes(c: ChipRuleRef): Set<string> {
  *  - all share the same exact chip code.
  *
  * Examples:
- *  - Cannon A + Cannon B + Atk+10 * => valid, because non-* chips share Cannon.
+ *  - Cannon A + Cannon B + Atk+10 * + Recover10 A => valid, because non-* chips share Cannon.
  *  - Cannon A + Sword A + Atk+10 * => valid, because non-* chips share A.
  *  - Cannon A + Sword B + Atk+10 * => invalid, because non-* chips share neither.
  */
 export function validateLetterRule(chips: ChipRuleRef[]): boolean {
   if (!chips || chips.length === 0) return true;
-  if (chips.length > 3) return false;
+  if (chips.length > 5) return false;
 
   const normalChips = chips.filter(c => !chipCodes(c).has('*'));
 

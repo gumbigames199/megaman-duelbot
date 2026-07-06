@@ -211,6 +211,7 @@ client.on('interactionCreate', async (ix) => {
     if (ix.isModalSubmit()) {
       if (!(await requireStarted(ix))) return;
       if (ix.customId === 'jackin:chipSearchModal') { await JackIn.onChipSearchModal(ix); return; }
+      if (ix.customId === 'jackin:virusSearchModal') { await JackIn.onVirusSearchModal(ix); return; }
     }
 
     if (ix.isStringSelectMenu()) {
@@ -267,6 +268,8 @@ client.on('interactionCreate', async (ix) => {
       }
       if (ix.customId === 'jackin:dataChipSearch') { await JackIn.onDataChipSearch(ix); return; }
       if (ix.customId === 'jackin:dataVirus') { await JackIn.onDataVirus(ix); return; }
+      if (ix.customId === 'jackin:dataVirusAll') { await JackIn.onDataVirusAll(ix); return; }
+      if (ix.customId === 'jackin:dataVirusSearch') { await JackIn.onDataVirusSearch(ix); return; }
       if (ix.customId.startsWith('jackin:dataVirusPage:')) {
         const page = Number(ix.customId.split(':')[2] || '1');
         await JackIn.onDataVirusPage(ix, page);
