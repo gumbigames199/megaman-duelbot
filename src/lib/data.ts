@@ -182,6 +182,19 @@ function normalizeRawBundle(raw: any): NormalizedBundle {
       (c as any).is_upgrade = String(iu).trim();
     }
 
+    // targets = number of separate enemies this chip can hit at full damage.
+    // Blank/missing stays blank so battle.ts defaults to 1.
+    const tg = (c as any).targets ?? (c as any).target_count ?? (c as any).targetCount;
+    const tgText = String(tg ?? '').trim().toLowerCase();
+    if (tgText) {
+      if (tgText === 'all' || tgText === 'screen' || tgText === 'aoe') {
+        (c as any).targets = 'all';
+      } else {
+        const tgNum = Number(tgText);
+        (c as any).targets = Number.isFinite(tgNum) ? Math.max(1, Math.trunc(tgNum)) : tg;
+      }
+    }
+
     chips[id] = c;
   }
 

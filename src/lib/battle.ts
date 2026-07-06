@@ -69,6 +69,7 @@ type BattleHandItem = {
   name: string;
   power?: number;
   hits?: number;
+  targets?: number;
   element?: string;
   effects?: string;
   description?: string;
@@ -218,6 +219,30 @@ export async function startBattleWithAssets(
   return withEnemyLineup(bs, view);
 }
 
+async function updateBattleMessage(
+  ix: ButtonInteraction | StringSelectMenuInteraction,
+  view: { embed: any; components: any; files?: any[] },
+) {
+  await (ix as any).update({
+    embeds: [view.embed],
+    components: view.components,
+    files: view.files || [],
+    attachments: [],
+  });
+}
+
+async function updateNonBattleMessage(
+  ix: ButtonInteraction | StringSelectMenuInteraction,
+  view: { embed: any; components: any },
+) {
+  await (ix as any).update({
+    embeds: [view.embed],
+    components: view.components,
+    files: [],
+    attachments: [],
+  });
+}
+
 export async function handlePick(ix: StringSelectMenuInteraction) {
   const [prefix, battleId] = parseCustom(ix.customId);
   if (prefix !== "pick") return;
@@ -266,7 +291,7 @@ export async function handlePick(ix: StringSelectMenuInteraction) {
   bs.selected = selected;
   ensureValidTarget(bs);
   const view = await renderBattleView(bs);
-  await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
+  await updateBattleMessage(ix, view);
 }
 
 export async function handleTarget(ix: StringSelectMenuInteraction) {
@@ -302,7 +327,7 @@ export async function handleTarget(ix: StringSelectMenuInteraction) {
   ensureValidTarget(bs);
 
   const view = await renderBattleView(bs);
-  await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
+  await updateBattleMessage(ix, view);
 }
 
 export async function handleLock(ix: ButtonInteraction) {
@@ -368,12 +393,12 @@ export async function handleLock(ix: ButtonInteraction) {
         enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
         victory: { title: "Victory!", rewardLines },
       });
-      const view = await withEnemyLineup(bs, endBattleView(bs, victoryView, {
+      const view = endBattleView(bs, victoryView, {
         title: `Deleted ${enemySummaryTitle(bs)}`,
         lines: rewardLines,
-      }));
+      });
 
-      await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
+      await updateNonBattleMessage(ix, view);
       battles.delete(battleId);
       return;
     }
@@ -383,12 +408,12 @@ export async function handleLock(ix: ButtonInteraction) {
       enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
       victory: { title, rewardLines: [] },
     });
-    const view = await withEnemyLineup(bs, endBattleView(bs, lossView, {
+    const view = endBattleView(bs, lossView, {
       title: `${title} vs ${enemySummaryTitle(bs)}`,
       lines: [],
-    }));
+    });
 
-    await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
+    await updateNonBattleMessage(ix, view);
     battles.delete(battleId);
     return;
   }
@@ -414,7 +439,7 @@ export async function handleLock(ix: ButtonInteraction) {
   bs.selected = [];
   bs.turn += 1;
 
-  await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
+  await updateBattleMessage(ix, view);
 }
 
 export async function handleRun(ix: ButtonInteraction) {
@@ -446,11 +471,11 @@ export async function handleRun(ix: ButtonInteraction) {
       enemy: { virusId: bs.virus_id, displayName: enemySummaryTitle(bs) },
       victory: { title: "Escaped", rewardLines: [] },
     });
-    const view = await withEnemyLineup(bs, endBattleView(bs, escapedView, {
+    const view = endBattleView(bs, escapedView, {
       title: `Escaped from ${enemySummaryTitle(bs)}`,
       lines: [],
-    }));
-    await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
+    });
+    await updateNonBattleMessage(ix, view);
     battles.delete(battleId);
     return;
   }
@@ -496,11 +521,11 @@ export async function handleRun(ix: ButtonInteraction) {
         enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
         victory: { title: "Victory!", rewardLines },
       });
-      const view = await withEnemyLineup(bs, endBattleView(bs, victoryView, {
+      const view = endBattleView(bs, victoryView, {
         title: `Deleted ${enemySummaryTitle(bs)}`,
         lines: rewardLines,
-      }));
-      await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
+      });
+      await updateNonBattleMessage(ix, view);
       battles.delete(battleId);
       return;
     }
@@ -510,11 +535,11 @@ export async function handleRun(ix: ButtonInteraction) {
       enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
       victory: { title, rewardLines: [] },
     });
-    const view = await withEnemyLineup(bs, endBattleView(bs, lossView, {
+    const view = endBattleView(bs, lossView, {
       title: `${title} vs ${enemySummaryTitle(bs)}`,
       lines: [],
-    }));
-    await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
+    });
+    await updateNonBattleMessage(ix, view);
     battles.delete(battleId);
     return;
   }
@@ -538,7 +563,7 @@ export async function handleRun(ix: ButtonInteraction) {
   }));
 
   bs.turn += 1;
-  await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
+  await updateBattleMessage(ix, view);
 }
 
 
@@ -903,6 +928,7 @@ function toHandItems(hand: ChipRef[]): BattleHandItem[] {
       name: formatChipName(chip || c.id),
       power: asNum(chip?.power),
       hits: asNum(chip?.hits),
+      targets: normalizeChipTargets(chip, 1),
       element: elem !== "Neutral" ? elem : undefined,
       effects: chip?.effects,
       description: chip?.description,
@@ -1104,10 +1130,8 @@ function resolvePlayerChips(
       displayName: pa.name,
       forceAttackPlusReset: true,
     });
-    if (bs.enemy_hp <= 0) {
-      playerLog.push(`${getVirusName(bs.virus_id)} deleted.`);
-      advanceToNextEnemy(bs);
-    }
+    advanceToNextEnemy(bs);
+    ensureValidTarget(bs);
     return;
   }
 
@@ -1119,10 +1143,8 @@ function resolvePlayerChips(
     pendingAttackPlus = executeChip(bs, chipId, playerLog, {
       pendingAttackPlus,
     });
-    if (bs.enemy_hp <= 0) {
-      playerLog.push(`${getVirusName(bs.virus_id)} deleted.`);
-      if (!advanceToNextEnemy(bs)) break;
-    }
+    if (!advanceToNextEnemy(bs)) break;
+    ensureValidTarget(bs);
   }
 }
 
@@ -1137,7 +1159,6 @@ function executeChip(
   } = {},
 ): number {
   const player = getPlayer(bs.user_id) as any;
-  const virus = getVirusById(bs.virus_id) as any;
   const chip = getChipById(chipId) as any;
 
   if (!chip) {
@@ -1178,52 +1199,108 @@ function executeChip(
   }
 
   const basePower = Math.max(0, asNum(chip.power, 0));
-  if (!supportOnly && basePower + pendingAttackPlus > 0) {
-    const element = toElement(chip.element);
-    const roll = resolveDamageRoll({
-      chip_pow: basePower + pendingAttackPlus,
-      hits: Math.max(1, asNum(chip.hits, 1)),
-      navi_atk: asNum(player?.atk, 0) + buffValue(bs.player_status, "atk"),
-      target_def: asNum(virus?.def, 0) + buffValue(bs.enemy_status, "def"),
-      chip_element: element,
-      navi_element: toElement(player?.element),
-      def_element: toElement(virus?.element),
-      acc: normalizeAcc(chip.acc, 0.95),
-      navi_acc: asNum(player?.acc, 100) + buffValue(bs.player_status, "acc"),
-      target_evasion:
-        asNum(virus?.evasion ?? virus?.eva, 0) +
-        buffValue(bs.enemy_status, "evasion"),
-      crit_chance:
-        (asNum(player?.crit, 0) + buffValue(bs.player_status, "crit")) / 100,
-      blind: bs.player_status.blind,
-      rng: Math.random,
-    });
+  const attackPower = basePower + pendingAttackPlus;
+  const hasOffense = hasOffensiveEffects(effects);
+  const shouldHitEnemies = !supportOnly && (attackPower > 0 || hasOffense);
 
-    pendingAttackPlus = opts.forceAttackPlusReset ? 0 : 0;
-
-    if (!roll.hit) {
-      playerLog.push(`**${chipName}** missed.`);
-    } else {
-      const absorbed = absorbDamage(bs.enemy_status, roll.total, element);
-      bs.enemy_hp = Math.max(0, bs.enemy_hp - absorbed.damage);
-      const tags = [
-        roll.crit ? "crit" : "",
-        roll.multiplier > 1
-          ? "super effective"
-          : roll.multiplier < 1
-            ? "resisted"
-            : "",
-      ].filter(Boolean);
-      playerLog.push(
-        `**${chipName}** dealt **${absorbed.damage}** dmg${tags.length ? ` (${tags.join(", ")})` : ""}.`,
-      );
-      for (const note of absorbed.notes) playerLog.push(note);
-    }
+  if (!shouldHitEnemies) {
+    return opts.forceAttackPlusReset ? 0 : pendingAttackPlus;
   }
 
-  for (const eff of effects)
-    applyOffensiveEffects(chipName, eff, bs.enemy_status, playerLog);
-  return pendingAttackPlus;
+  const targetIndexes = chipTargetIndexes(bs, bs.target_enemy_index, normalizeChipTargets(chip, 1));
+  if (!targetIndexes.length) {
+    return opts.forceAttackPlusReset ? 0 : pendingAttackPlus;
+  }
+
+  if (attackPower > 0) pendingAttackPlus = 0;
+
+  const element = toElement(chip.element);
+
+  for (const targetIdx of targetIndexes) {
+    const target = bs.enemies[targetIdx];
+    if (!target || target.hp <= 0) continue;
+
+    activateEnemy(bs, targetIdx);
+    const virus = getVirusById(bs.virus_id) as any;
+    const targetName = getVirusName(bs.virus_id);
+    const beforeHp = bs.enemy_hp;
+
+    if (attackPower > 0) {
+      const roll = resolveDamageRoll({
+        chip_pow: attackPower,
+        hits: Math.max(1, asNum(chip.hits, 1)),
+        navi_atk: asNum(player?.atk, 0) + buffValue(bs.player_status, "atk"),
+        target_def: asNum(virus?.def, 0) + buffValue(bs.enemy_status, "def"),
+        chip_element: element,
+        navi_element: toElement(player?.element),
+        def_element: toElement(virus?.element),
+        acc: normalizeAcc(chip.acc, 0.95),
+        navi_acc: asNum(player?.acc, 100) + buffValue(bs.player_status, "acc"),
+        target_evasion:
+          asNum(virus?.evasion ?? virus?.eva, 0) +
+          buffValue(bs.enemy_status, "evasion"),
+        crit_chance:
+          (asNum(player?.crit, 0) + buffValue(bs.player_status, "crit")) / 100,
+        blind: bs.player_status.blind,
+        rng: Math.random,
+      });
+
+      if (!roll.hit) {
+        playerLog.push(`**${chipName}** missed **${targetName}**.`);
+      } else {
+        const absorbed = absorbDamage(bs.enemy_status, roll.total, element);
+        bs.enemy_hp = Math.max(0, bs.enemy_hp - absorbed.damage);
+        const tags = [
+          roll.crit ? "crit" : "",
+          roll.multiplier > 1
+            ? "super effective"
+            : roll.multiplier < 1
+              ? "resisted"
+              : "",
+        ].filter(Boolean);
+        playerLog.push(
+          `**${chipName}** dealt **${absorbed.damage}** dmg to **${targetName}**${tags.length ? ` (${tags.join(", ")})` : ""}.`,
+        );
+        for (const note of absorbed.notes) playerLog.push(note);
+      }
+    }
+
+    if (bs.enemy_hp > 0) {
+      for (const eff of effects) {
+        applyOffensiveEffects(chipName, eff, bs.enemy_status, playerLog, targetName);
+      }
+    }
+
+    const defeatedNow = beforeHp > 0 && bs.enemy_hp <= 0;
+    saveActiveEnemy(bs);
+    if (defeatedNow) playerLog.push(`${targetName} deleted.`);
+  }
+
+  advanceToNextEnemy(bs);
+  ensureValidTarget(bs);
+  return opts.forceAttackPlusReset ? 0 : pendingAttackPlus;
+}
+
+function hasOffensiveEffects(effects: ReturnType<typeof parseEffects>): boolean {
+  return effects.some((e) => e.burn || e.poison || e.freeze || e.paralyze || e.blind);
+}
+
+function chipTargetIndexes(bs: BattleState, startIndex: number, targetCount: number): number[] {
+  saveActiveEnemy(bs);
+  const living = livingEnemyIndexes(bs);
+  if (!living.length) return [];
+
+  const count = Math.max(1, Math.trunc(targetCount || 1));
+  const primary = bs.enemies[startIndex]?.hp > 0 ? startIndex : living[0];
+  const out: number[] = [];
+
+  for (let step = 0; step < bs.enemies.length && out.length < count; step++) {
+    const idx = (primary + step) % bs.enemies.length;
+    const enemy = bs.enemies[idx];
+    if (enemy && enemy.hp > 0 && !out.includes(idx)) out.push(idx);
+  }
+
+  return out;
 }
 
 function isReflectorChip(chip: any): boolean {
@@ -1270,6 +1347,7 @@ function applyOffensiveEffects(
   eff: ReturnType<typeof parseEffects>[number],
   target: StatusState,
   log: string[],
+  targetName?: string,
 ) {
   const entries: Array<
     [
@@ -1289,7 +1367,8 @@ function applyOffensiveEffects(
     if (!value) continue;
     if (tryChance(value.chance, Math.random)) {
       applyStatusEffect(target, key, value.turns);
-      log.push(`**${chipName}** applied ${label} (${value.turns}t).`);
+      const toTarget = targetName ? ` to **${targetName}**` : "";
+      log.push(`**${chipName}** applied ${label}${toTarget} (${value.turns}t).`);
     }
   }
 }
@@ -1559,6 +1638,16 @@ function normalizeCrit(v: any) {
   return n > 1
     ? Math.max(0, Math.min(1, n / 100))
     : Math.max(0, Math.min(1, n));
+}
+
+function normalizeChipTargets(chip: any, fallback = 1): number {
+  const raw = chip?.targets ?? chip?.target_count ?? chip?.targetCount;
+  const text = String(raw ?? '').trim().toLowerCase();
+  if (!text) return Math.max(1, Math.trunc(fallback || 1));
+  if (text === 'all' || text === 'screen' || text === 'aoe') return 99;
+  const n = Number(text);
+  if (!Number.isFinite(n)) return Math.max(1, Math.trunc(fallback || 1));
+  return Math.max(1, Math.trunc(n));
 }
 
 function nextBattleId() {

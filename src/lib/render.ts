@@ -28,6 +28,7 @@ type BattleHandRenderItem = {
   name: string;
   power?: number;
   hits?: number;
+  targets?: number;
   element?: string;
   effects?: string;
   description?: string;
@@ -82,13 +83,18 @@ function statusBadges(text?: string): string {
     .replace(/aura/gi, '✨ Aura');
 }
 
+function targetText(c: BattleHandRenderItem): string {
+  const n = Math.max(1, Math.trunc(Number(c.targets || 1)));
+  return n > 1 ? ` • 🎯 ${n} targets` : '';
+}
+
 function chipRole(c: BattleHandRenderItem): string {
   const eff = String(c.effects || '').toLowerCase();
-  if (eff.includes('heal')) return '❤️ Heal';
-  if (eff.includes('barrier') || eff.includes('aura')) return '🛡️ Defense';
-  if (eff.includes('atk+') || eff.includes('attack+')) return '🔧 Boost';
-  if (Number(c.power || 0) > 0) return `💥 ${c.power} PWR${c.hits && c.hits > 1 ? ` ×${c.hits}` : ''}`;
-  return '⚙️ Support';
+  if (eff.includes('heal')) return `❤️ Heal${targetText(c)}`;
+  if (eff.includes('barrier') || eff.includes('aura')) return `🛡️ Defense${targetText(c)}`;
+  if (eff.includes('atk+') || eff.includes('attack+')) return `🔧 Boost${targetText(c)}`;
+  if (Number(c.power || 0) > 0) return `💥 ${c.power} PWR${c.hits && c.hits > 1 ? ` ×${c.hits}` : ''}${targetText(c)}`;
+  return `⚙️ Support${targetText(c)}`;
 }
 
 function selectedChipLines(hand: BattleHandRenderItem[], selectedIds: string[]): string[] {
@@ -118,6 +124,7 @@ function optionText(c: BattleHandRenderItem): { label: string; description?: str
   const bits: string[] = [];
   if (c.element) bits.push(c.element);
   if (c.power) bits.push(`${c.power} PWR${c.hits && c.hits > 1 ? ` ×${c.hits}` : ''}`);
+  if (Number(c.targets || 1) > 1) bits.push(`${Math.trunc(Number(c.targets))} targets`);
   if (c.effects) bits.push(String(c.effects).replace(/\s+/g, ' ').trim());
   return {
     label: `${c.name}`.slice(0, 100),
@@ -286,16 +293,11 @@ export function renderVictoryToHub(args: {
   victory: { title: string; rewardLines: string[] };
 }) {
   const { enemy, victory } = args;
-  const art = getVirusArt(enemy.virusId);
-
   const icon = victory.title.toLowerCase().includes('victory') ? '🏆' : victory.title.toLowerCase().includes('defeat') ? '💀' : '🏁';
   const embed = new EmbedBuilder()
     .setTitle(`${icon} ${victory.title} — ${enemy.displayName || enemy.virusId}`)
     .setDescription(victory.rewardLines.length ? victory.rewardLines.join('\n') : ' ')
     .setFooter({ text: 'Use /jack_in to continue.' });
-
-  if (art.image) embed.setThumbnail(String(art.image));
-  else if (art.sprite) embed.setThumbnail(String(art.sprite));
 
   return { embed, components: [] as const };
 }

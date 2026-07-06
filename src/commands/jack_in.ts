@@ -160,9 +160,9 @@ export async function renderJackInHUD(
   if (ix.isChatInputCommand()) {
     await ix.reply({ ephemeral: true, embeds: [embed], components: [row1, row2] });
   } else if (ix.isButton()) {
-    await (ix as ButtonInteraction).update({ embeds: [embed], components: [row1, row2] });
+    await (ix as ButtonInteraction).update({ embeds: [embed], components: [row1, row2], files: [], attachments: [] } as any);
   } else {
-    await (ix as StringSelectMenuInteraction).update({ embeds: [embed], components: [row1, row2] });
+    await (ix as StringSelectMenuInteraction).update({ embeds: [embed], components: [row1, row2], files: [], attachments: [] } as any);
   }
 }
 
@@ -528,7 +528,8 @@ Debug — virus region_id samples: ${regionSamples.join(', ')}` : '')
       embeds: [view.embed],
       components: view.components,
       files: (view as any).files || [],
-    });
+      attachments: [],
+    } as any);
   } catch (err: any) {
     console.error('onEncounter error:', err);
     const embed = new EmbedBuilder()
