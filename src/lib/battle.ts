@@ -437,15 +437,103 @@ export async function handleRun(ix: ButtonInteraction) {
       title: `Escaped from ${enemySummaryTitle(bs)}`,
       lines: [],
     });
-    await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components });
+    await ix.update({ embeds: view.embeds, components: view.components });
     battles.delete(battleId);
     return;
   }
 
-  const view = renderBattle(bs);
+  // Failed Run now consumes the turn. The player uses no chips, then the enemy phase resolves normally.
+  bs.selected = [];
+  const round = _resolveRoundInternal(bs);
+  round.playerLogLines.unshift("Run failed. You lost the turn.");
+  const won = allEnemiesDefeated(bs) && bs.player_hp > 0;
+
+  if (bs.player_hp <= 0 || won) {
+    bs.is_over = true;
+
+    if (won) {
+      const defeated = bs.enemies.slice();
+      let totalZenny = 0;
+      let totalXp = 0;
+      let leveledUp = 0;
+      const drops: string[] = [];
+      const missionDone = new Set<string>();
+
+      for (const enemy of defeated) {
+        const rewards = grantVirusRewards(bs.user_id, enemy.virus_id);
+        totalZenny += rewards.zenny_gained || 0;
+        totalXp += rewards.xp_gained || 0;
+        leveledUp += rewards.leveledUp || 0;
+        for (const d of rewards.drops || []) drops.push(`${d.item_id} x${d.qty}`);
+        for (const m of progressDefeat(bs.user_id, enemy.virus_id) || []) missionDone.add(m);
+      }
+
+      const hasBoss = defeated.some(e => e.enemy_kind === 'boss');
+      const rewardTitle = hasBoss ? "Battle Rewards" : "Rewards";
+      const rewardLines = [
+        `${rewardTitle}: +${totalZenny}z${totalXp ? ` • +${totalXp} XP` : ""}`,
+        drops.length ? `Drops: ${drops.map(d => `**${d}**`).join(", ")}` : "",
+        leveledUp ? `🆙 Level Up x${leveledUp}` : "",
+        missionDone.size ? `Mission completed: ${Array.from(missionDone).join(", ")}` : "",
+      ].filter(Boolean);
+
+      const newly = diffNewlyUnlockedRegions(bs.user_id);
+      if (newly.length) {
+        rewardLines.push(`🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`);
+      }
+
+      const victoryView = renderVictoryToHub({
+        enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
+        victory: { title: "Victory!", rewardLines },
+      });
+      const view = endBattleView(bs, victoryView, {
+        title: `Deleted ${enemySummaryTitle(bs)}`,
+        lines: rewardLines,
+      });
+
+      await ix.update({ embeds: view.embeds, components: view.components });
+      battles.delete(battleId);
+      return;
+    }
+
+    const title = bs.player_hp <= 0 ? "☠️ Navi Deleted" : "Battle End";
+    const lossView = renderVictoryToHub({
+      enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
+      victory: { title, rewardLines: [] },
+    });
+    const view = endBattleView(bs, lossView, {
+      title: `${title} vs ${enemySummaryTitle(bs)}`,
+      lines: ["Run failed. You lost the turn."],
+    });
+
+    await ix.update({ embeds: view.embeds, components: view.components });
+    battles.delete(battleId);
+    return;
+  }
+
+  drawHand(bs);
+  const view = renderRoundResultWithNextHand({
+    battleId,
+    enemy: { virusId: bs.virus_id, displayName: enemySummaryTitle(bs) },
+    enemies: enemyRenderItems(bs),
+    hp: {
+      playerHP: bs.player_hp,
+      playerHPMax: bs.player_hp_max,
+      enemyHP: bs.enemy_hp,
+      enemyHPMax: bs.enemy_hp_max,
+    },
+    round,
+    nextHand: toHandItems(bs.hand),
+    selectedIds: [],
+    targetEnemyIndex: bs.target_enemy_index,
+    ...statusPayload(bs),
+  });
+
+  bs.selected = [];
+  bs.turn += 1;
+
   await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components });
 }
-
 
 function jackInTravelImage(): string | null {
   const raw = process.env.JACK_IN_GIF_URL || process.env.JACKIN_GIF_URL || null;

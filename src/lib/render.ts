@@ -171,13 +171,14 @@ function enemyLineupRow(enemies?: EnemyRenderItem[]): string | undefined {
   const items = (enemies || []).slice(0, 3);
   if (items.length <= 1) return undefined;
 
-  const parts = items.map((e, i) => {
-    const url = enemyArtUrl(e);
-    const label = `${e.name}${items.filter(x => x.name === e.name).length > 1 ? ` ${i + 1}` : ''}`;
-    return url ? `[${label}](${url})` : `${getVirusArt(e.id).fallbackEmoji} ${label}`;
-  });
+  const links = items
+    .map((e) => enemyArtUrl(e))
+    .filter((url): url is string => !!url)
+    // Invisible labels keep the URLs out of the combat text while still letting Discord
+    // render the enemy image previews together in the top-right preview area.
+    .map((url) => `[​](${url})`);
 
-  return `🖼️ **Enemy JPGs:** ${parts.join(' + ')}`;
+  return links.length ? links.join('') : undefined;
 }
 
 function withEnemyArtEmbeds(embed: EmbedBuilder, _enemies?: EnemyRenderItem[]): EmbedBuilder[] {
