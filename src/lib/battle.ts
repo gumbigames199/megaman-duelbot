@@ -507,13 +507,27 @@ function renderJackInReturnView(bs: BattleState, result: { title: string; lines?
   return { embed, components: [row1, row2] as any[] };
 }
 
-function endBattleView(bs: BattleState, standalone: { embed: any; components: readonly any[] }, jackin: { title: string; lines?: string[] }) {
-  if (bs.return_mode !== 'jackin') return standalone;
+type BattleViewPayload = { embed: any; embeds: any[]; components: any[] };
+
+function normalizeBattleViewPayload(view: { embed: any; embeds?: any[]; components?: readonly any[] }): BattleViewPayload {
+  return {
+    embed: view.embed,
+    embeds: Array.isArray(view.embeds) ? view.embeds : [view.embed],
+    components: Array.from(view.components ?? []),
+  };
+}
+
+function endBattleView(
+  bs: BattleState,
+  standalone: { embed: any; embeds?: any[]; components: readonly any[] },
+  jackin: { title: string; lines?: string[] },
+): BattleViewPayload {
+  if (bs.return_mode !== 'jackin') return normalizeBattleViewPayload(standalone);
 
   const pending = getPendingStyleElement(bs.user_id);
-  if (pending) return renderStyleChangePromptView(bs, pending, jackin);
+  if (pending) return normalizeBattleViewPayload(renderStyleChangePromptView(bs, pending, jackin));
 
-  return renderJackInReturnView(bs, jackin);
+  return normalizeBattleViewPayload(renderJackInReturnView(bs, jackin));
 }
 
 function renderStyleChangePromptView(
