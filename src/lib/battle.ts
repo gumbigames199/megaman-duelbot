@@ -253,7 +253,7 @@ export async function handlePick(ix: StringSelectMenuInteraction) {
   bs.selected = selected;
   ensureValidTarget(bs);
   const view = renderBattle(bs);
-  await ix.update({ embeds: [view.embed], components: view.components });
+  await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components });
 }
 
 export async function handleTarget(ix: StringSelectMenuInteraction) {
@@ -289,7 +289,7 @@ export async function handleTarget(ix: StringSelectMenuInteraction) {
   ensureValidTarget(bs);
 
   const view = renderBattle(bs);
-  await ix.update({ embeds: [view.embed], components: view.components });
+  await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components });
 }
 
 export async function handleLock(ix: ButtonInteraction) {
@@ -360,7 +360,7 @@ export async function handleLock(ix: ButtonInteraction) {
         lines: rewardLines,
       });
 
-      await ix.update({ embeds: [view.embed], components: view.components });
+      await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components });
       battles.delete(battleId);
       return;
     }
@@ -375,7 +375,7 @@ export async function handleLock(ix: ButtonInteraction) {
       lines: [],
     });
 
-    await ix.update({ embeds: [view.embed], components: view.components });
+    await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components });
     battles.delete(battleId);
     return;
   }
@@ -401,7 +401,7 @@ export async function handleLock(ix: ButtonInteraction) {
   bs.selected = [];
   bs.turn += 1;
 
-  await ix.update({ embeds: [view.embed], components: view.components });
+  await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components });
 }
 
 export async function handleRun(ix: ButtonInteraction) {
@@ -437,13 +437,13 @@ export async function handleRun(ix: ButtonInteraction) {
       title: `Escaped from ${enemySummaryTitle(bs)}`,
       lines: [],
     });
-    await ix.update({ embeds: [view.embed], components: view.components });
+    await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components });
     battles.delete(battleId);
     return;
   }
 
   const view = renderBattle(bs);
-  await ix.update({ embeds: [view.embed], components: view.components });
+  await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components });
 }
 
 
@@ -626,10 +626,8 @@ function ensureValidTarget(bs: BattleState) {
 function enemySummaryTitle(bs: BattleState): string {
   saveActiveEnemy(bs);
   const names = bs.enemies.map(e => getVirusName(e.virus_id));
-  const unique = Array.from(new Set(names));
-  if (bs.enemies.length <= 1) return unique[0] || getVirusName(bs.virus_id);
-  if (unique.length === 1) return `${unique[0]} x${bs.enemies.length}`;
-  return unique.slice(0, 3).join(' + ') + (unique.length > 3 ? ` +${unique.length - 3}` : '');
+  if (names.length <= 1) return names[0] || getVirusName(bs.virus_id);
+  return names.slice(0, 3).join(' + ') + (names.length > 3 ? ` +${names.length - 3}` : '');
 }
 
 function enemyRenderItems(bs: BattleState) {

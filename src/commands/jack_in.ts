@@ -525,7 +525,7 @@ Debug — virus region_id samples: ${regionSamples.join(', ')}` : '')
     });
 
     await ix.update({
-      embeds: [view.embed],
+      embeds: view.embeds ?? [view.embed],
       components: view.components,
     });
   } catch (err: any) {

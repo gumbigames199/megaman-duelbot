@@ -161,6 +161,27 @@ function enemiesStatusBlock(enemies?: EnemyRenderItem[], fallback?: { hp: { enem
   }).join('\n');
 }
 
+function enemyArtEmbeds(enemies?: EnemyRenderItem[]): EmbedBuilder[] {
+  const items = (enemies || []).slice(0, 3);
+  if (items.length <= 1) return [];
+
+  return items.map((e, i) => {
+    const art = getVirusArt(e.id);
+    const title = `Enemy ${i + 1} — ${e.name}${e.defeated ? ' (Deleted)' : ''}`;
+    const embed = new EmbedBuilder().setTitle(title);
+    const image = art.image || art.sprite;
+
+    if (image) embed.setImage(String(image));
+    else embed.setDescription(`${art.fallbackEmoji} ${e.name}`);
+
+    return embed;
+  });
+}
+
+function withEnemyArtEmbeds(embed: EmbedBuilder, enemies?: EnemyRenderItem[]): EmbedBuilder[] {
+  return [embed, ...enemyArtEmbeds(enemies)].slice(0, 4);
+}
+
 function combatStatusBlock(args: {
   hp: { playerHP: number; playerHPMax: number; enemyHP: number; enemyHPMax: number };
   status?: { player?: string; enemy?: string };
@@ -221,7 +242,11 @@ export function renderBattleScreen(args: {
     new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run').setEmoji('🏃'),
   );
 
-  return { embed, components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const };
+  return {
+    embed,
+    embeds: withEnemyArtEmbeds(embed, enemies),
+    components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const,
+  };
 }
 
 /** Round result embed + NEW hand picker (single multi-select) with buttons. */
@@ -277,7 +302,11 @@ export function renderRoundResultWithNextHand(args: {
     new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run').setEmoji('🏃'),
   );
 
-  return { embed, components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const };
+  return {
+    embed,
+    embeds: withEnemyArtEmbeds(embed, enemies),
+    components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const,
+  };
 }
 
 /** Final screen after victory/defeat; light wrapper so callers can update once. */
