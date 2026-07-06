@@ -161,13 +161,6 @@ function enemiesStatusBlock(enemies?: EnemyRenderItem[], fallback?: { hp: { enem
   }).join('\n');
 }
 
-function withEnemyArtEmbeds(embed: EmbedBuilder, _enemies?: EnemyRenderItem[]): EmbedBuilder[] {
-  // Discord embeds only support one thumbnail image in the top-right.
-  // Do not append per-enemy art embeds below the combat card.
-  // Multi-virus names remain in the title; the combat card keeps the first enemy thumbnail.
-  return [embed];
-}
-
 function combatStatusBlock(args: {
   hp: { playerHP: number; playerHPMax: number; enemyHP: number; enemyHPMax: number };
   status?: { player?: string; enemy?: string };
@@ -228,11 +221,7 @@ export function renderBattleScreen(args: {
     new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run').setEmoji('🏃'),
   );
 
-  return {
-    embed,
-    embeds: withEnemyArtEmbeds(embed, enemies),
-    components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const,
-  };
+  return { embed, components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const };
 }
 
 /** Round result embed + NEW hand picker (single multi-select) with buttons. */
@@ -288,11 +277,7 @@ export function renderRoundResultWithNextHand(args: {
     new ButtonBuilder().setCustomId(`run:${battleId}`).setStyle(ButtonStyle.Danger).setLabel('Run').setEmoji('🏃'),
   );
 
-  return {
-    embed,
-    embeds: withEnemyArtEmbeds(embed, enemies),
-    components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const,
-  };
+  return { embed, components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const };
 }
 
 /** Final screen after victory/defeat; light wrapper so callers can update once. */

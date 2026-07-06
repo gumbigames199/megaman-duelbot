@@ -26,7 +26,7 @@ import {
   resetStyleToNeutral, normalizeStyleElement, STYLE_CHANGE_THRESHOLD,
   getXPProgress, getScaledUpgradePrice, recordUpgradePurchase, getUpgradePurchaseCount,
 } from '../lib/db';
-import { startBattle } from '../lib/battle';
+import { startBattleWithAssets } from '../lib/battle';
 import { chooseScaledEncounter } from '../lib/encounter-scaling';
 import { createOpenPvpChallenge } from '../lib/pvp';
 import { getFolder, setFolder, validateFolder, validateFolderMinimum, MAX_FOLDER, MIN_FOLDER, maxCopiesForChip, getMaxRemovableFolderSlots, getAvailableChipQty } from '../lib/folder';
@@ -519,16 +519,16 @@ Debug — virus region_id samples: ${regionSamples.join(', ')}` : '')
   }
 
   try {
-    const view = await startBattle(userId, String(picked.primary.id), picked.enemy_kind, {
+    const view = await startBattleWithAssets(userId, String(picked.primary.id), picked.enemy_kind, {
       returnMode: "jackin",
       enemies: picked.enemies,
     });
 
     await ix.update({
-      embeds: view.embeds ?? [view.embed],
+      embeds: [view.embed],
       components: view.components,
-      ...((view as any).files ? { files: (view as any).files } : {}),
-    } as any);
+      files: view.files || [],
+    });
   } catch (err: any) {
     console.error('onEncounter error:', err);
     const embed = new EmbedBuilder()
@@ -2316,7 +2316,7 @@ async function renderJackInSellShop(
     .setDescription([
       `Your Zenny: **${p?.zenny ?? 0}z**`,
       '',
-      notice ? `📌 **${notice}**` : `Select an available BattleChip copy outside your folder. Page **${pageSafe + 1}/${pageCount}**. All BattleChips sell for a flat 750z.`,
+      notice ? `📌 **${notice}**` : `Select an available BattleChip copy outside your folder. Page **${pageSafe + 1}/${pageCount}**. Sale value is fixed at 750z per chip.`,
     ].join('\n'))
     .setImage(region ? (getRegionImage(region) || getTravelImage()) : getTravelImage());
 

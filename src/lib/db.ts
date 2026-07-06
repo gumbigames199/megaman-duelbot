@@ -602,19 +602,26 @@ export function removeChip(user_id: string, chip_id: string, qty = 1): boolean {
   else db.prepare(`DELETE FROM inventory WHERE id = ?`).run(row.id);
   return true;
 }
-
-export function sellChip(user_id: string, chip_id: string, qty = 1): { ok: boolean; gained: number; sold: number; balance?: number; reason?: string } {
+export function sellChip(user_id: string, chip_id: string, qty = 1): { ok: boolean; zenny: number; qty: number; reason?: string } {
   ensurePlayer(user_id);
   const safeId = normalizeChipIdLocal(String(chip_id));
-  const count = Math.max(1, toInt(qty, 1));
+  const amount = Math.max(1, toInt(qty, 1));
   const chip = getChipById(safeId);
-  if (!chip) return { ok: false, gained: 0, sold: 0, reason: 'Unknown chip.' };
-  const removed = removeChip(user_id, safeId, count);
-  if (!removed) return { ok: false, gained: 0, sold: 0, reason: 'Not enough copies in inventory.' };
-  const gained = sellValueForChip(chip) * count;
-  addZenny(user_id, gained);
-  return { ok: true, gained, sold: count, balance: getPlayer(user_id)?.zenny ?? 0 };
+  if (!chip) return { ok: false, zenny: 0, qty: 0, reason: "Unknown chip." };
+
+  const row = db.prepare(`SELECT id, qty FROM inventory WHERE user_id = ? AND chip_id = ?`)
+    .get(user_id, safeId) as { id: number; qty: number } | undefined;
+  if (!row || row.qty < amount) return { ok: false, zenny: 0, qty: 0, reason: "Not enough copies." };
+
+  const newQty = row.qty - amount;
+  if (newQty > 0) db.prepare(`UPDATE inventory SET qty = ? WHERE id = ?`).run(newQty, row.id);
+  else db.prepare(`DELETE FROM inventory WHERE id = ?`).run(row.id);
+
+  const gained = sellValueForChip(chip) * amount;
+  if (gained > 0) addZenny(user_id, gained);
+  return { ok: true, zenny: gained, qty: amount };
 }
+
 export function listInventory(user_id: string): InventoryItem[] {
   return db.prepare(`SELECT chip_id, qty FROM inventory WHERE user_id = ? ORDER BY chip_id`).all(user_id) as InventoryItem[];
 }

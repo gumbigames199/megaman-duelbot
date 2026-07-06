@@ -19,9 +19,6 @@ export type ScaledEncounter = {
 };
 
 const DEFAULT_BOSS_ENCOUNTER = Number(process.env.BOSS_ENCOUNTER_RATE ?? process.env.BOSS_ENCOUNTER ?? 0.10);
-const NORMAL_SINGLE_CHANCE = Number(process.env.ENCOUNTER_SINGLE_RATE ?? 0.50);
-const NORMAL_DOUBLE_CHANCE = Number(process.env.ENCOUNTER_DOUBLE_RATE ?? 0.30);
-const NORMAL_TRIPLE_CHANCE = Number(process.env.ENCOUNTER_TRIPLE_RATE ?? 0.20);
 
 function isBossFlag(v: any): boolean {
   const raw = v?.boss ?? v?.is_boss;
@@ -31,14 +28,43 @@ function isBossFlag(v: any): boolean {
   return s === '1' || s === 'true' || s === 'yes' || s === 'y';
 }
 
+function rollPct(pct: number): boolean {
+  const n = Number(pct);
+  if (!Number.isFinite(n) || n <= 0) return false;
+  return Math.random() * 100 < Math.min(100, Math.max(0, n));
+}
+
 function pickOne<T>(arr: T[]): T | null {
   if (!arr.length) return null;
   return arr[Math.floor(Math.random() * arr.length)] ?? null;
 }
 
+function shuffled<T>(arr: T[]): T[] {
+  const out = arr.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
 function asInt(v: any, fallback: number): number {
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function threatScore(v: any): number {
+  const hp = Math.max(0, Number(v?.hp) || 0);
+  const atk = Math.max(0, Number(v?.atk) || 0);
+  const def = Math.max(0, Number(v?.def) || 0);
+  const statusText = JSON.stringify(v ?? {}).toLowerCase();
+  let score = 1;
+  score += Math.floor(hp / 80);
+  score += Math.floor(atk / 30);
+  score += Math.floor(def / 40);
+  if (statusText.includes('paralyze') || statusText.includes('freeze')) score += 1;
+  if (statusText.includes('poison') || statusText.includes('burn')) score += 1;
+  return Math.max(1, score);
 }
 
 function defaultRuleForRegion(regionMinLevel: number) {
@@ -56,33 +82,32 @@ function defaultRuleForRegion(regionMinLevel: number) {
   };
 }
 
-function rollNormalEncounterSize(): number {
-  const single = Math.max(0, NORMAL_SINGLE_CHANCE);
-  const double = Math.max(0, NORMAL_DOUBLE_CHANCE);
-  const triple = Math.max(0, NORMAL_TRIPLE_CHANCE);
-  const total = single + double + triple;
-  if (total <= 0) return 1;
-
-  const roll = Math.random() * total;
-  if (roll < single) return 1;
-  if (roll < single + double) return 2;
+function targetNormalSize(_rule: any, _playerLevel: number, _regionMinLevel: number): number {
+  const roll = Math.random();
+  if (roll < 0.50) return 1;
+  if (roll < 0.80) return 2;
   return 3;
 }
 
+
 function buildNormalGroup(normals: any[], targetSize: number, _budget: number): any[] {
-  if (!normals.length) return [];
+  const pool = normals.filter(Boolean);
+  if (!pool.length) return [];
 
   const out: any[] = [];
-  for (let i = 0; i < Math.max(1, Math.min(3, targetSize)); i++) {
-    const pick = pickOne(normals);
+  const count = Math.max(1, Math.min(3, Math.trunc(Number(targetSize) || 1)));
+  for (let i = 0; i < count; i++) {
+    const pick = pickOne(pool);
     if (pick) out.push(pick);
   }
   return out;
 }
 
+
 function buildBossGroup(boss: any, _normals: any[], _rule: any): any[] {
-  return boss ? [boss] : [];
+  return [boss];
 }
+
 
 export function chooseScaledEncounter(opts: {
   region_id: string;
@@ -92,6 +117,7 @@ export function chooseScaledEncounter(opts: {
   bossEncounterRate?: number;
 }): ScaledEncounter | null {
   const regionMinLevel = Math.max(1, asInt(opts.regionMinLevel, 1));
+  const playerLevel = Math.max(1, asInt(opts.playerLevel, 1));
   const rule = getEncounterRuleByRegion(opts.region_id) || defaultRuleForRegion(regionMinLevel);
   const budget = Math.max(1, asInt(rule?.encounter_budget, 2));
 
@@ -122,7 +148,7 @@ export function chooseScaledEncounter(opts: {
     };
   }
 
-  const targetSize = rollNormalEncounterSize();
+  const targetSize = targetNormalSize(rule, playerLevel, regionMinLevel);
   const group = buildNormalGroup(normals.length ? normals : bosses, targetSize, budget);
   if (!group.length) return null;
 

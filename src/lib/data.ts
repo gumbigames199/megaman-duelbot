@@ -115,6 +115,13 @@ function normLower(v: any): string {
   return normStr(v).toLowerCase();
 }
 
+
+export const CHIP_SELL_ZENNY = 750;
+
+export function sellValueForChip(_chip: any): number {
+  return CHIP_SELL_ZENNY;
+}
+
 /* ---------------------------------------------
  * Shop row (exploded)
  * -------------------------------------------*/
@@ -508,12 +515,6 @@ export function priceForShopItem(s: ShopItemRow, c: any): number {
   if (override && override > 0) return override;
   const base = Number((c as any).zenny_cost);
   return Number.isFinite(base) ? base : 0;
-}
-
-export const CHIP_SELL_ZENNY = 750;
-
-export function sellValueForChip(_chip: any): number {
-  return CHIP_SELL_ZENNY;
 }
 
 export function resolveShopInventory(region_id: string): ResolvedShopItem[] {

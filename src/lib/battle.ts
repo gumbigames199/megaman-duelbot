@@ -125,12 +125,12 @@ type EnemyMove = {
 
 const battles = new Map<string, BattleState>();
 
-function createBattleState(
+export function startBattle(
   user_id: string,
   virus_id: string,
   enemy_kind: EnemyKind = "virus",
   opts: { returnMode?: BattleReturnMode; enemies?: Array<{ virus_id: string; enemy_kind?: EnemyKind }> } = {},
-): BattleState {
+) {
   ensurePlayer(user_id);
 
   const player = getPlayer(user_id)!;
@@ -201,18 +201,21 @@ function createBattleState(
 
   drawHand(bs);
   battles.set(id, bs);
-  return bs;
+
+  const view = renderBattle(bs);
+  return { ...view, battleId: id };
 }
 
-export async function startBattle(
+export async function startBattleWithAssets(
   user_id: string,
   virus_id: string,
   enemy_kind: EnemyKind = "virus",
   opts: { returnMode?: BattleReturnMode; enemies?: Array<{ virus_id: string; enemy_kind?: EnemyKind }> } = {},
 ) {
-  const bs = createBattleState(user_id, virus_id, enemy_kind, opts);
-  const view = await renderBattle(bs);
-  return { ...view, battleId: bs.id };
+  const view = startBattle(user_id, virus_id, enemy_kind, opts);
+  const bs = battles.get(view.battleId);
+  if (!bs) return view;
+  return withEnemyLineup(bs, view);
 }
 
 export async function handlePick(ix: StringSelectMenuInteraction) {
@@ -262,8 +265,8 @@ export async function handlePick(ix: StringSelectMenuInteraction) {
 
   bs.selected = selected;
   ensureValidTarget(bs);
-  const view = await renderBattle(bs);
-  await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components, ...((view as any).files ? { files: (view as any).files } : {}) } as any);
+  const view = await renderBattleView(bs);
+  await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
 }
 
 export async function handleTarget(ix: StringSelectMenuInteraction) {
@@ -298,8 +301,8 @@ export async function handleTarget(ix: StringSelectMenuInteraction) {
   }
   ensureValidTarget(bs);
 
-  const view = await renderBattle(bs);
-  await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components, ...((view as any).files ? { files: (view as any).files } : {}) } as any);
+  const view = await renderBattleView(bs);
+  await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
 }
 
 export async function handleLock(ix: ButtonInteraction) {
@@ -365,12 +368,12 @@ export async function handleLock(ix: ButtonInteraction) {
         enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
         victory: { title: "Victory!", rewardLines },
       });
-      const view = endBattleView(bs, victoryView, {
+      const view = await withEnemyLineup(bs, endBattleView(bs, victoryView, {
         title: `Deleted ${enemySummaryTitle(bs)}`,
         lines: rewardLines,
-      });
+      }));
 
-      await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components, ...((view as any).files ? { files: (view as any).files } : {}) } as any);
+      await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
       battles.delete(battleId);
       return;
     }
@@ -380,18 +383,18 @@ export async function handleLock(ix: ButtonInteraction) {
       enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
       victory: { title, rewardLines: [] },
     });
-    const view = endBattleView(bs, lossView, {
+    const view = await withEnemyLineup(bs, endBattleView(bs, lossView, {
       title: `${title} vs ${enemySummaryTitle(bs)}`,
       lines: [],
-    });
+    }));
 
-    await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components, ...((view as any).files ? { files: (view as any).files } : {}) } as any);
+    await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
     battles.delete(battleId);
     return;
   }
 
   drawHand(bs);
-  let view: any = renderRoundResultWithNextHand({
+  const view = await withEnemyLineup(bs, renderRoundResultWithNextHand({
     battleId,
     enemy: { virusId: bs.virus_id, displayName: enemySummaryTitle(bs) },
     enemies: enemyRenderItems(bs),
@@ -406,13 +409,12 @@ export async function handleLock(ix: ButtonInteraction) {
     selectedIds: [],
     targetEnemyIndex: bs.target_enemy_index,
     ...statusPayload(bs),
-  });
+  }));
 
-  view = await attachEnemyLineup(normalizeBattleViewPayload(view), bs);
   bs.selected = [];
   bs.turn += 1;
 
-  await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components, ...((view as any).files ? { files: (view as any).files } : {}) } as any);
+  await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
 }
 
 export async function handleRun(ix: ButtonInteraction) {
@@ -437,28 +439,27 @@ export async function handleRun(ix: ButtonInteraction) {
     return;
   }
 
-  const escaped = randInt(1, 100) <= runChancePct(bs);
+  const escaped = Math.random() < runEscapeChance(bs);
   if (escaped) {
     bs.is_over = true;
     const escapedView = renderVictoryToHub({
-      enemy: { virusId: bs.virus_id, displayName: getVirusName(bs.virus_id) },
+      enemy: { virusId: bs.virus_id, displayName: enemySummaryTitle(bs) },
       victory: { title: "Escaped", rewardLines: [] },
     });
-    const view = endBattleView(bs, escapedView, {
+    const view = await withEnemyLineup(bs, endBattleView(bs, escapedView, {
       title: `Escaped from ${enemySummaryTitle(bs)}`,
       lines: [],
-    });
-    await ix.update({ embeds: view.embeds, components: view.components, ...((view as any).files ? { files: (view as any).files } : {}) } as any);
+    }));
+    await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
     battles.delete(battleId);
     return;
   }
 
-  // Failed Run now consumes the turn. The player uses no chips, then the enemy phase resolves normally.
   bs.selected = [];
   const round = _resolveRoundInternal(bs);
-  round.playerLogLines.unshift("Run failed. You lost the turn.");
-  const won = allEnemiesDefeated(bs) && bs.player_hp > 0;
+  round.playerLogLines.unshift("Failed to escape. You lost the turn.");
 
+  const won = allEnemiesDefeated(bs) && bs.player_hp > 0;
   if (bs.player_hp <= 0 || won) {
     bs.is_over = true;
 
@@ -489,41 +490,37 @@ export async function handleRun(ix: ButtonInteraction) {
       ].filter(Boolean);
 
       const newly = diffNewlyUnlockedRegions(bs.user_id);
-      if (newly.length) {
-        rewardLines.push(`🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`);
-      }
+      if (newly.length) rewardLines.push(`🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`);
 
       const victoryView = renderVictoryToHub({
         enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
         victory: { title: "Victory!", rewardLines },
       });
-      const view = endBattleView(bs, victoryView, {
+      const view = await withEnemyLineup(bs, endBattleView(bs, victoryView, {
         title: `Deleted ${enemySummaryTitle(bs)}`,
         lines: rewardLines,
-      });
-
-      await ix.update({ embeds: view.embeds, components: view.components, ...((view as any).files ? { files: (view as any).files } : {}) } as any);
+      }));
+      await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
       battles.delete(battleId);
       return;
     }
 
-    const title = bs.player_hp <= 0 ? "☠️ Navi Deleted" : "Battle End";
+    const title = "☠️ Navi Deleted";
     const lossView = renderVictoryToHub({
       enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
       victory: { title, rewardLines: [] },
     });
-    const view = endBattleView(bs, lossView, {
+    const view = await withEnemyLineup(bs, endBattleView(bs, lossView, {
       title: `${title} vs ${enemySummaryTitle(bs)}`,
-      lines: ["Run failed. You lost the turn."],
-    });
-
-    await ix.update({ embeds: view.embeds, components: view.components, ...((view as any).files ? { files: (view as any).files } : {}) } as any);
+      lines: [],
+    }));
+    await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
     battles.delete(battleId);
     return;
   }
 
   drawHand(bs);
-  let view: any = renderRoundResultWithNextHand({
+  const view = await withEnemyLineup(bs, renderRoundResultWithNextHand({
     battleId,
     enemy: { virusId: bs.virus_id, displayName: enemySummaryTitle(bs) },
     enemies: enemyRenderItems(bs),
@@ -538,14 +535,12 @@ export async function handleRun(ix: ButtonInteraction) {
     selectedIds: [],
     targetEnemyIndex: bs.target_enemy_index,
     ...statusPayload(bs),
-  });
+  }));
 
-  view = await attachEnemyLineup(normalizeBattleViewPayload(view), bs);
-  bs.selected = [];
   bs.turn += 1;
-
-  await ix.update({ embeds: view.embeds ?? [view.embed], components: view.components, ...((view as any).files ? { files: (view as any).files } : {}) } as any);
+  await ix.update({ embeds: [view.embed], components: view.components, files: view.files || [] });
 }
+
 
 function jackInTravelImage(): string | null {
   const raw = process.env.JACK_IN_GIF_URL || process.env.JACKIN_GIF_URL || null;
@@ -607,28 +602,13 @@ function renderJackInReturnView(bs: BattleState, result: { title: string; lines?
   return { embed, components: [row1, row2] as any[] };
 }
 
-type BattleViewPayload = { embed: any; embeds: any[]; components: any[]; files?: any[] };
-
-function normalizeBattleViewPayload(view: { embed: any; embeds?: any[]; components?: readonly any[] }): BattleViewPayload {
-  return {
-    embed: view.embed,
-    embeds: Array.isArray(view.embeds) ? view.embeds : [view.embed],
-    components: Array.from(view.components ?? []),
-    ...((view as any).files ? { files: (view as any).files } : {}),
-  };
-}
-
-function endBattleView(
-  bs: BattleState,
-  standalone: { embed: any; embeds?: any[]; components: readonly any[] },
-  jackin: { title: string; lines?: string[] },
-): BattleViewPayload {
-  if (bs.return_mode !== 'jackin') return normalizeBattleViewPayload(standalone);
+function endBattleView(bs: BattleState, standalone: { embed: any; components: readonly any[] }, jackin: { title: string; lines?: string[] }) {
+  if (bs.return_mode !== 'jackin') return standalone;
 
   const pending = getPendingStyleElement(bs.user_id);
-  if (pending) return normalizeBattleViewPayload(renderStyleChangePromptView(bs, pending, jackin));
+  if (pending) return renderStyleChangePromptView(bs, pending, jackin);
 
-  return normalizeBattleViewPayload(renderJackInReturnView(bs, jackin));
+  return renderJackInReturnView(bs, jackin);
 }
 
 function renderStyleChangePromptView(
@@ -740,7 +720,7 @@ function ensureValidTarget(bs: BattleState) {
 
 function enemySummaryTitle(bs: BattleState): string {
   saveActiveEnemy(bs);
-  const names = bs.enemies.map(e => getVirusName(e.virus_id));
+  const names = bs.enemies.map(e => getVirusName(e.virus_id)).filter(Boolean);
   if (names.length <= 1) return names[0] || getVirusName(bs.virus_id);
   return names.slice(0, 3).join(' + ') + (names.length > 3 ? ` +${names.length - 3}` : '');
 }
@@ -767,12 +747,13 @@ export function startEncounterBattle(init: {
   region_id?: string;
   zone?: number;
 }): { battleId: string; state: any } {
-  const bs = createBattleState(
+  const { battleId } = startBattle(
     init.user_id,
     init.enemy_id,
     init.enemy_kind,
   );
-  return { battleId: bs.id, state: toCompatState(bs) };
+  const bs = battles.get(battleId)!;
+  return { battleId, state: toCompatState(bs) };
 }
 
 export function load(battleId: string): any | null {
@@ -794,8 +775,8 @@ export function end(battleId: string): void {
   battles.delete(battleId);
 }
 
-export function tryRun(s: any): boolean {
-  return Math.random() * 100 < runChancePctFromCompat(s);
+export function tryRun(_s: any): boolean {
+  return Math.random() < 0.5;
 }
 
 export function resolveTurn(s: any, chosenIds: string[]) {
@@ -834,41 +815,26 @@ export function resolveTurn(s: any, chosenIds: string[]) {
 }
 
 // ---------------- Render helpers ----------------
-async function attachEnemyLineup(view: BattleViewPayload, bs: BattleState): Promise<BattleViewPayload> {
-  const first = view.embeds?.[0] ?? view.embed;
-  const enemies = enemyRenderItems(bs).filter(e => !e.defeated && Number(e.hp) > 0);
-
-  // Multi-virus battles must not fall back to the legacy single-virus thumbnail.
-  // The only valid multi-virus art path is one generated lineup image attachment.
-  if (enemies.length > 1) {
-    try { first?.setThumbnail?.(null); } catch {}
-  }
-
-  const lineup = await buildEnemyLineupAttachment(enemies, bs.id).catch(() => null);
-  if (!lineup) {
-    return {
-      ...view,
-      embed: first ?? view.embed,
-      embeds: view.embeds?.length ? view.embeds : [first ?? view.embed],
-    };
-  }
-
-  try { first?.setThumbnail?.(lineup.thumbnailUrl); } catch {}
-
-  return {
-    ...view,
-    embed: first ?? view.embed,
-    embeds: view.embeds?.length ? view.embeds : [first ?? view.embed],
-    files: lineup.files,
-  };
+function runEscapeChance(bs: BattleState): number {
+  const player = getPlayer(bs.user_id) as any;
+  const playerSpd = asNum(player?.spd, 0);
+  const living = livingEnemyIndexes(bs);
+  const enemySpds = living.map(i => {
+    const v = getVirusById(bs.enemies[i]?.virus_id) as any;
+    return asNum(v?.spd, 0);
+  });
+  const avgEnemySpd = enemySpds.length
+    ? enemySpds.reduce((a, b) => a + b, 0) / enemySpds.length
+    : 0;
+  return Math.max(0.20, Math.min(0.85, 0.50 + (playerSpd - avgEnemySpd) * 0.015));
 }
 
-async function renderBattle(bs: BattleState) {
+function renderBattle(bs: BattleState) {
   const playerStatus = statusSummary(bs.player_status);
   const enemyStatus = statusSummary(bs.enemy_status);
   const activePA = activeProgramAdvance(bs);
 
-  return attachEnemyLineup(normalizeBattleViewPayload(renderBattleScreen({
+  return renderBattleScreen({
     battleId: bs.id,
     enemy: { virusId: bs.virus_id, displayName: enemySummaryTitle(bs) },
     enemies: enemyRenderItems(bs),
@@ -887,7 +853,35 @@ async function renderBattle(bs: BattleState) {
     ...(activePA
       ? { programAdvance: { name: activePA.name, resultChipId: activePA.result_chip_id } }
       : {}),
-  })), bs);
+  });
+}
+
+async function renderBattleView(bs: BattleState) {
+  return withEnemyLineup(bs, renderBattle(bs));
+}
+
+async function withEnemyLineup<T extends { embed: any; components: any; files?: any[] }>(
+  bs: BattleState,
+  view: T,
+): Promise<T & { files?: any[] }> {
+  try {
+    const lineup = await buildEnemyLineupAttachment(
+      bs.enemies.map(e => ({ virus_id: e.virus_id })),
+      bs.id,
+    );
+
+    if (lineup) {
+      view.embed.setThumbnail(lineup.thumbnailUrl);
+      return { ...view, files: [lineup.attachment] };
+    }
+
+    if (bs.enemies.length > 1) view.embed.setThumbnail(null);
+    return { ...view, files: [] };
+  } catch (err) {
+    console.warn('enemy lineup thumbnail failed:', err);
+    if (bs.enemies.length > 1) view.embed.setThumbnail(null);
+    return { ...view, files: [] };
+  }
 }
 
 function activeProgramAdvance(bs: BattleState) {
@@ -1030,34 +1024,26 @@ function _resolveRoundInternal(bs: BattleState) {
     return { playerLogLines: playerLog, enemyLogLines: enemyLog };
   }
 
-  const playerFirst = playerActsFirst(bs);
-
-  if (playerFirst) {
-    resolvePlayerActionPhase(bs, playerLog);
-    discardSelected(bs);
-
-    if (allEnemiesDefeated(bs)) {
-      enemyLog.push("Enemy deleted.");
-      tickEndAllEnemyStatuses(bs);
-      tickEnd(bs.player_status);
-      return { playerLogLines: playerLog, enemyLogLines: enemyLog };
-    }
-
-    resolveAllEnemyActions(bs, enemyLog);
-    applyReflectorDamage(bs, enemyLog);
+  const playerCanAct = canActFromStatus(bs.player_status, Math.random);
+  if (!playerCanAct.canAct) {
+    playerLog.push(`You are ${playerCanAct.reason} and could not act.`);
   } else {
-    enemyLog.push("Enemy moved first on SPD advantage.");
-    resolveAllEnemyActions(bs, enemyLog);
-    applyReflectorDamage(bs, enemyLog);
-
-    if (bs.player_hp > 0) {
-      resolvePlayerActionPhase(bs, playerLog);
-    }
-    discardSelected(bs);
-
-    if (allEnemiesDefeated(bs)) enemyLog.push("Enemy deleted.");
+    ensureValidTarget(bs);
+    activateEnemy(bs, bs.target_enemy_index);
+    resolvePlayerChips(bs, selectedIndices(bs), playerLog);
   }
 
+  discardSelected(bs);
+
+  if (allEnemiesDefeated(bs)) {
+    enemyLog.push("Enemy deleted.");
+    tickEndAllEnemyStatuses(bs);
+    tickEnd(bs.player_status);
+    return { playerLogLines: playerLog, enemyLogLines: enemyLog };
+  }
+
+  resolveAllEnemyActions(bs, enemyLog);
+  applyReflectorDamage(bs, enemyLog);
   if (bs.enemy_hp <= 0) advanceToNextEnemy(bs);
   expireTurnBarriers(bs, playerLog, enemyLog);
 
@@ -1066,18 +1052,6 @@ function _resolveRoundInternal(bs: BattleState) {
 
   advanceToNextEnemy(bs);
   return { playerLogLines: playerLog, enemyLogLines: enemyLog };
-}
-
-function resolvePlayerActionPhase(bs: BattleState, playerLog: string[]) {
-  const playerCanAct = canActFromStatus(bs.player_status, Math.random);
-  if (!playerCanAct.canAct) {
-    playerLog.push(`You are ${playerCanAct.reason} and could not act.`);
-    return;
-  }
-
-  ensureValidTarget(bs);
-  activateEnemy(bs, bs.target_enemy_index);
-  resolvePlayerChips(bs, selectedIndices(bs), playerLog);
 }
 
 function applyStartTicks(
@@ -1587,46 +1561,6 @@ function normalizeCrit(v: any) {
     : Math.max(0, Math.min(1, n));
 }
 
-function playerSpeed(bs: BattleState): number {
-  const player = getPlayer(bs.user_id) as any;
-  return Math.max(0, asNum(player?.spd, 0) + buffValue(bs.player_status, "spd"));
-}
-
-function enemySpeed(enemy: BattleEnemy): number {
-  const virus = getVirusById(enemy.virus_id) as any;
-  return Math.max(0, asNum(virus?.spd, 0) + buffValue(enemy.status, "spd"));
-}
-
-function fastestLivingEnemySpeed(bs: BattleState): number {
-  saveActiveEnemy(bs);
-  return bs.enemies
-    .filter(e => e.hp > 0)
-    .reduce((max, e) => Math.max(max, enemySpeed(e)), 0);
-}
-
-function playerActsFirst(bs: BattleState): boolean {
-  return playerSpeed(bs) >= fastestLivingEnemySpeed(bs);
-}
-
-function runChancePct(bs: BattleState): number {
-  const diff = playerSpeed(bs) - fastestLivingEnemySpeed(bs);
-  return Math.max(20, Math.min(85, Math.round(50 + diff)));
-}
-
-function runChancePctFromCompat(s: any): number {
-  if (s?.id && battles.has(String(s.id))) return runChancePct(battles.get(String(s.id))!);
-
-  const p = s?.user_id ? getPlayer(String(s.user_id)) as any : null;
-  const playerSpd = asNum(p?.spd ?? s?.navi_spd, 0);
-  const enemies = Array.isArray(s?.enemies) ? s.enemies : [{ virus_id: s?.enemy_id ?? s?.virus_id }];
-  const enemySpd = enemies.reduce((max: number, e: any) => {
-    const virus = getVirusById(String(e?.virus_id ?? e?.enemy_id ?? '')) as any;
-    return Math.max(max, asNum(virus?.spd, 0));
-  }, 0);
-
-  return Math.max(20, Math.min(85, Math.round(50 + playerSpd - enemySpd)));
-}
-
 function nextBattleId() {
   const n = Math.floor(Date.now() / 1000);
   const r = randInt(1000, 9999);
@@ -1700,7 +1634,6 @@ function toCompatState(bs: BattleState) {
     player_hp_max: bs.player_hp_max,
     navi_atk: p?.atk ?? 10,
     navi_def: p?.def ?? 6,
-    navi_spd: p?.spd ?? 0,
     navi_acc: p?.acc ?? 90,
     navi_eva: p?.evasion ?? 10,
     turn: bs.turn,
