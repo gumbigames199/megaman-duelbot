@@ -161,25 +161,30 @@ function enemiesStatusBlock(enemies?: EnemyRenderItem[], fallback?: { hp: { enem
   }).join('\n');
 }
 
-function enemyArtEmbeds(enemies?: EnemyRenderItem[]): EmbedBuilder[] {
-  const items = (enemies || []).slice(0, 3);
-  if (items.length <= 1) return [];
-
-  return items.map((e, i) => {
-    const art = getVirusArt(e.id);
-    const title = `Enemy ${i + 1} — ${e.name}${e.defeated ? ' (Deleted)' : ''}`;
-    const embed = new EmbedBuilder().setTitle(title);
-    const image = art.image || art.sprite;
-
-    if (image) embed.setImage(String(image));
-    else embed.setDescription(`${art.fallbackEmoji} ${e.name}`);
-
-    return embed;
-  });
+function enemyArtUrl(e: EnemyRenderItem): string | null {
+  const art = getVirusArt(e.id);
+  const url = art.image || art.sprite;
+  return url ? String(url) : null;
 }
 
-function withEnemyArtEmbeds(embed: EmbedBuilder, enemies?: EnemyRenderItem[]): EmbedBuilder[] {
-  return [embed, ...enemyArtEmbeds(enemies)].slice(0, 4);
+function enemyLineupRow(enemies?: EnemyRenderItem[]): string | undefined {
+  const items = (enemies || []).slice(0, 3);
+  if (items.length <= 1) return undefined;
+
+  const parts = items.map((e, i) => {
+    const url = enemyArtUrl(e);
+    const label = `${e.name}${items.filter(x => x.name === e.name).length > 1 ? ` ${i + 1}` : ''}`;
+    return url ? `[${label}](${url})` : `${getVirusArt(e.id).fallbackEmoji} ${label}`;
+  });
+
+  return `🖼️ **Enemy JPGs:** ${parts.join(' + ')}`;
+}
+
+function withEnemyArtEmbeds(embed: EmbedBuilder, _enemies?: EnemyRenderItem[]): EmbedBuilder[] {
+  // Discord embeds only support one thumbnail image in the top-right.
+  // Do not append per-enemy art embeds below the combat card.
+  // Multi-virus names remain in the title; the combat card keeps the first enemy thumbnail.
+  return [embed];
 }
 
 function combatStatusBlock(args: {
@@ -214,6 +219,7 @@ export function renderBattleScreen(args: {
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
       '⚔️ **TURN CONSOLE**',
+      enemyLineupRow(enemies),
       combatStatusBlock({ hp, status, enemies }),
       '',
       chipQueueBlock(hand, selectedIds),
@@ -272,6 +278,7 @@ export function renderRoundResultWithNextHand(args: {
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
       '⚔️ **ROUND RESULT**',
+      enemyLineupRow(enemies),
       combatStatusBlock({ hp, status, enemies }),
       '',
       combinedLog.length ? `📜 **Combat Log**\n${combinedLog.join('\n')}` : '📜 **Combat Log**\n—',
