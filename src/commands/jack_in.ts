@@ -519,7 +519,7 @@ Debug — virus region_id samples: ${regionSamples.join(', ')}` : '')
   }
 
   try {
-    const view = startBattle(userId, String(picked.primary.id), picked.enemy_kind, {
+    const view = await startBattle(userId, String(picked.primary.id), picked.enemy_kind, {
       returnMode: "jackin",
       enemies: picked.enemies,
     });
@@ -527,7 +527,8 @@ Debug — virus region_id samples: ${regionSamples.join(', ')}` : '')
     await ix.update({
       embeds: view.embeds ?? [view.embed],
       components: view.components,
-    });
+      ...((view as any).files ? { files: (view as any).files } : {}),
+    } as any);
   } catch (err: any) {
     console.error('onEncounter error:', err);
     const embed = new EmbedBuilder()

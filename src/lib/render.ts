@@ -161,26 +161,6 @@ function enemiesStatusBlock(enemies?: EnemyRenderItem[], fallback?: { hp: { enem
   }).join('\n');
 }
 
-function enemyArtUrl(e: EnemyRenderItem): string | null {
-  const art = getVirusArt(e.id);
-  const url = art.image || art.sprite;
-  return url ? String(url) : null;
-}
-
-function enemyLineupRow(enemies?: EnemyRenderItem[]): string | undefined {
-  const items = (enemies || []).slice(0, 3);
-  if (items.length <= 1) return undefined;
-
-  const links = items
-    .map((e) => enemyArtUrl(e))
-    .filter((url): url is string => !!url)
-    // Invisible labels keep the URLs out of the combat text while still letting Discord
-    // render the enemy image previews together in the top-right preview area.
-    .map((url) => `[​](${url})`);
-
-  return links.length ? links.join('') : undefined;
-}
-
 function withEnemyArtEmbeds(embed: EmbedBuilder, _enemies?: EnemyRenderItem[]): EmbedBuilder[] {
   // Discord embeds only support one thumbnail image in the top-right.
   // Do not append per-enemy art embeds below the combat card.
@@ -220,7 +200,6 @@ export function renderBattleScreen(args: {
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
       '⚔️ **TURN CONSOLE**',
-      enemyLineupRow(enemies),
       combatStatusBlock({ hp, status, enemies }),
       '',
       chipQueueBlock(hand, selectedIds),
@@ -279,7 +258,6 @@ export function renderRoundResultWithNextHand(args: {
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
       '⚔️ **ROUND RESULT**',
-      enemyLineupRow(enemies),
       combatStatusBlock({ hp, status, enemies }),
       '',
       combinedLog.length ? `📜 **Combat Log**\n${combinedLog.join('\n')}` : '📜 **Combat Log**\n—',
