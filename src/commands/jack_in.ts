@@ -1404,8 +1404,16 @@ export async function onConfigFolderAdd(ix: ButtonInteraction, page = 0) {
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
       navButtons(
-        new ButtonBuilder().setCustomId(`jackin:configFolderAddPage:${Math.max(0, pageSafe - 1)}`).setStyle(ButtonStyle.Secondary).setLabel('Previous').setDisabled(pageSafe <= 0),
-        new ButtonBuilder().setCustomId(`jackin:configFolderAddPage:${Math.min(pageCount - 1, pageSafe + 1)}`).setStyle(ButtonStyle.Secondary).setLabel('Next').setDisabled(pageSafe >= pageCount - 1),
+        new ButtonBuilder()
+          .setCustomId(pagedButtonId('jackin:configFolderAddPage', Math.max(0, pageSafe - 1), pageSafe, 'prev', pageSafe <= 0))
+          .setStyle(ButtonStyle.Secondary)
+          .setLabel('Previous')
+          .setDisabled(pageSafe <= 0),
+        new ButtonBuilder()
+          .setCustomId(pagedButtonId('jackin:configFolderAddPage', Math.min(pageCount - 1, pageSafe + 1), pageSafe, 'next', pageSafe >= pageCount - 1))
+          .setStyle(ButtonStyle.Secondary)
+          .setLabel('Next')
+          .setDisabled(pageSafe >= pageCount - 1),
         new ButtonBuilder().setCustomId('jackin:configFolder').setStyle(ButtonStyle.Secondary).setLabel('Back'),
       ),
     ],
@@ -1592,6 +1600,11 @@ function formatFolderPanel(chips: string[]): string {
 function clampPage(page: number, pageCount: number): number {
   const p = Number.isFinite(page) ? Math.trunc(page) : 0;
   return Math.max(0, Math.min(Math.max(1, pageCount) - 1, p));
+}
+
+function pagedButtonId(base: string, targetPage: number, currentPage: number, direction: 'prev' | 'next', disabled: boolean): string {
+  if (!disabled) return `${base}:${targetPage}`;
+  return `${base}:disabled:${direction}:${currentPage}`;
 }
 
 function countValues(values: string[]) {
@@ -2331,8 +2344,16 @@ async function renderJackInSellShop(
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
       new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId(`jackin:shopSellPage:${Math.max(0, pageSafe - 1)}`).setStyle(ButtonStyle.Secondary).setLabel('Previous').setDisabled(pageSafe <= 0),
-        new ButtonBuilder().setCustomId(`jackin:shopSellPage:${Math.min(pageCount - 1, pageSafe + 1)}`).setStyle(ButtonStyle.Secondary).setLabel('Next').setDisabled(pageSafe >= pageCount - 1),
+        new ButtonBuilder()
+          .setCustomId(pagedButtonId('jackin:shopSellPage', Math.max(0, pageSafe - 1), pageSafe, 'prev', pageSafe <= 0))
+          .setStyle(ButtonStyle.Secondary)
+          .setLabel('Previous')
+          .setDisabled(pageSafe <= 0),
+        new ButtonBuilder()
+          .setCustomId(pagedButtonId('jackin:shopSellPage', Math.min(pageCount - 1, pageSafe + 1), pageSafe, 'next', pageSafe >= pageCount - 1))
+          .setStyle(ButtonStyle.Secondary)
+          .setLabel('Next')
+          .setDisabled(pageSafe >= pageCount - 1),
         sellBtn,
         backBtn,
       ),
