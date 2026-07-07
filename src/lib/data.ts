@@ -116,6 +116,58 @@ function normLower(v: any): string {
 }
 
 
+export type BossFamilyMeta = {
+  family_id: string;
+  version: number;
+};
+
+function parsePositiveVersion(raw: any, fallback = 1): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.trunc(n));
+}
+
+function inferBossFamilyFromText(raw: any): BossFamilyMeta {
+  const text = normStr(raw);
+  if (!text) return { family_id: '', version: 1 };
+  const m = text.match(/^(.*?)(?:[\s_-]*V(\d+))$/i);
+  if (m) {
+    const family = normStr(m[1]) || text;
+    const version = parsePositiveVersion(m[2], 1);
+    return { family_id: family, version };
+  }
+  return { family_id: text, version: 1 };
+}
+
+export function bossFamilyMeta(v: any): BossFamilyMeta {
+  const explicitFamily = normStr(
+    v?.boss_family_id ??
+    v?.bossFamilyId ??
+    v?.family_id ??
+    v?.familyId ??
+    ''
+  );
+  const explicitVersionRaw =
+    v?.boss_version ??
+    v?.bossVersion ??
+    v?.version ??
+    undefined;
+
+  const idMeta = inferBossFamilyFromText(v?.id ?? v?.name ?? '');
+  const family_id = explicitFamily || idMeta.family_id;
+  const version = explicitVersionRaw == null || explicitVersionRaw === ''
+    ? idMeta.version
+    : parsePositiveVersion(explicitVersionRaw, idMeta.version || 1);
+
+  return { family_id, version };
+}
+
+export function bossFamilyLabel(familyId: string): string {
+  return normStr(familyId) || 'Boss';
+}
+
+
+
 export const CHIP_SELL_ZENNY = 750;
 
 export function sellValueForChip(_chip: any): number {
@@ -229,6 +281,12 @@ function normalizeRawBundle(raw: any): NormalizedBundle {
     const boss = toBoolLoose((v as any).boss ?? (v as any).is_boss);
     (v as any).boss = boss ? 1 : 0;
     (v as any).is_boss = boss;
+
+    if (boss) {
+      const meta = bossFamilyMeta(v);
+      (v as any).boss_family_id = meta.family_id;
+      (v as any).boss_version = meta.version;
+    }
 
     // zones normalization (your TSV uses "zone"; older code used "zones")
     const z = parseZones((v as any).zones ?? (v as any).zone);

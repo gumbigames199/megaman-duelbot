@@ -479,6 +479,7 @@ export async function onEncounter(ix: ButtonInteraction) {
     playerLevel,
     regionMinLevel: requiredLevel,
     bossEncounterRate: BOSS_ENCOUNTER,
+    user_id: userId,
   });
 
   if (!picked) {

@@ -1,4 +1,5 @@
-import { getEncounterRuleByRegion, listVirusesForRegionZone } from './data';
+import { bossFamilyMeta, getEncounterRuleByRegion, listVirusesForRegionZone } from './data';
+import { listDefeatedBossVersions } from './db';
 
 export type EncounterEnemy = {
   virus_id: string;
@@ -104,6 +105,81 @@ function buildNormalGroup(normals: any[], targetSize: number, _budget: number): 
 }
 
 
+
+type BossFamilyGroup = {
+  family_id: string;
+  versions: Map<number, any>;
+};
+
+function groupBossesByFamily(bosses: any[]): BossFamilyGroup[] {
+  const groups = new Map<string, BossFamilyGroup>();
+  for (const boss of bosses) {
+    const meta = bossFamilyMeta(boss);
+    if (!meta.family_id) continue;
+    let group = groups.get(meta.family_id);
+    if (!group) {
+      group = { family_id: meta.family_id, versions: new Map<number, any>() };
+      groups.set(meta.family_id, group);
+    }
+    // Prefer the first row loaded for a duplicate version; duplicate IDs are already validated elsewhere.
+    if (!group.versions.has(meta.version)) group.versions.set(meta.version, boss);
+  }
+  return Array.from(groups.values());
+}
+
+function weightedVersionPick(rows: Array<{ version: number; boss: any; weight: number }>): any | null {
+  const filtered = rows.filter(r => r.boss && Number(r.weight) > 0);
+  if (!filtered.length) return null;
+  const total = filtered.reduce((sum, r) => sum + Number(r.weight), 0);
+  let roll = Math.random() * total;
+  for (const row of filtered) {
+    roll -= Number(row.weight);
+    if (roll <= 0) return row.boss;
+  }
+  return filtered[filtered.length - 1]?.boss ?? null;
+}
+
+function pickBossVersionForPlayer(userId: string | undefined, bosses: any[]): any | null {
+  const families = groupBossesByFamily(bosses);
+  if (!families.length) return pickOne(bosses);
+
+  const family = pickOne(families);
+  if (!family) return null;
+
+  const v1 = family.versions.get(1) ?? null;
+  const v2 = family.versions.get(2) ?? null;
+  const v3 = family.versions.get(3) ?? null;
+
+  if (!userId) return v1 || v2 || v3 || pickOne(Array.from(family.versions.values()));
+
+  const defeated = new Set(listDefeatedBossVersions(userId, family.family_id));
+
+  // V1 must be defeated before V2 can appear.
+  if (!defeated.has(1)) return v1 || pickOne(Array.from(family.versions.values()));
+
+  // Bass-style two-version families stay 45/55 even after V2 is defeated.
+  if (!v3) {
+    return weightedVersionPick([
+      { version: 1, boss: v1, weight: 45 },
+      { version: 2, boss: v2, weight: 55 },
+    ]) || v1 || v2 || pickOne(Array.from(family.versions.values()));
+  }
+
+  // V2 must be defeated before V3 can appear.
+  if (!defeated.has(2)) {
+    return weightedVersionPick([
+      { version: 1, boss: v1, weight: 45 },
+      { version: 2, boss: v2, weight: 55 },
+    ]) || v1 || v2;
+  }
+
+  return weightedVersionPick([
+    { version: 1, boss: v1, weight: 20 },
+    { version: 2, boss: v2, weight: 30 },
+    { version: 3, boss: v3, weight: 50 },
+  ]) || v3 || v2 || v1;
+}
+
 function buildBossGroup(boss: any, _normals: any[], _rule: any): any[] {
   return [boss];
 }
@@ -115,6 +191,7 @@ export function chooseScaledEncounter(opts: {
   playerLevel: number;
   regionMinLevel?: number;
   bossEncounterRate?: number;
+  user_id?: string;
 }): ScaledEncounter | null {
   const regionMinLevel = Math.max(1, asInt(opts.regionMinLevel, 1));
   const playerLevel = Math.max(1, asInt(opts.playerLevel, 1));
@@ -137,7 +214,7 @@ export function chooseScaledEncounter(opts: {
   const wantBoss = bosses.length > 0 && (normals.length === 0 || Math.random() < Math.max(0, Math.min(1, bossRate)));
 
   if (wantBoss) {
-    const boss = pickOne(bosses)!;
+    const boss = pickBossVersionForPlayer(opts.user_id, bosses) || pickOne(bosses)!;
     const group = buildBossGroup(boss, normals, rule);
     return {
       enemy_kind: 'boss',

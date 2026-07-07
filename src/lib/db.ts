@@ -11,7 +11,16 @@ import fs from "node:fs";
 import path from "node:path";
 
 // NOTE: used only for chip-id normalization (no circular import back to db.ts)
-import { getChipById, listChips, resolveChipForGrant, resolveChipIdLoose, sellValueForChip } from "./data";
+import {
+  bossFamilyMeta,
+  getBundle,
+  getChipById,
+  getVirusById,
+  listChips,
+  resolveChipForGrant,
+  resolveChipIdLoose,
+  sellValueForChip,
+} from "./data";
 
 // -------------------------------
 // Environment & Caps
@@ -148,6 +157,16 @@ CREATE TABLE IF NOT EXISTS upgrade_purchases (
   qty INTEGER NOT NULL DEFAULT 0,
   UNIQUE(user_id, chip_id)
 );
+
+CREATE TABLE IF NOT EXISTS defeated_boss_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  boss_family_id TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  boss_id TEXT NOT NULL,
+  defeated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, boss_family_id, version)
+);
 `);
 
 // Safe migrations
@@ -177,6 +196,7 @@ CREATE INDEX IF NOT EXISTS idx_seen_user ON seen_viruses (user_id);
 CREATE INDEX IF NOT EXISTS idx_settings_user ON player_settings (user_id);
 CREATE INDEX IF NOT EXISTS idx_missions_user ON missions_state (user_id);
 CREATE INDEX IF NOT EXISTS idx_upgrade_purchases_user ON upgrade_purchases (user_id);
+CREATE INDEX IF NOT EXISTS idx_defeated_boss_versions_user_family ON defeated_boss_versions (user_id, boss_family_id);
 `);
 
 // -------------------------------
@@ -687,6 +707,79 @@ export function addToFolder(user_id: string, chip_id: string, qty = 1) {
 
 export function listFolder(user_id: string): FolderItem[] {
   return db.prepare(`SELECT chip_id, qty FROM folder WHERE user_id = ? ORDER BY chip_id`).all(user_id) as FolderItem[];
+}
+
+
+// Boss version progression
+export type BossDefeatRecord = {
+  boss_family_id: string;
+  version: number;
+  boss_id: string;
+  defeated_at?: string;
+};
+
+export function listDefeatedBossVersions(user_id: string, boss_family_id: string): number[] {
+  ensurePlayer(user_id);
+  const rows = db.prepare(`
+    SELECT version FROM defeated_boss_versions
+    WHERE user_id = ? AND boss_family_id = ?
+    ORDER BY version ASC
+  `).all(user_id, boss_family_id) as { version: number }[];
+  return rows.map(r => toInt(r.version, 0)).filter(n => n > 0);
+}
+
+export function hasDefeatedBossVersion(user_id: string, boss_family_id: string, version: number): boolean {
+  ensurePlayer(user_id);
+  const row = db.prepare(`
+    SELECT 1 AS ok FROM defeated_boss_versions
+    WHERE user_id = ? AND boss_family_id = ? AND version = ?
+    LIMIT 1
+  `).get(user_id, boss_family_id, Math.max(1, toInt(version, 1))) as { ok: number } | undefined;
+  return !!row;
+}
+
+function maxKnownBossVersion(familyId: string): number {
+  const bundle = getBundle() as any;
+  let max = 0;
+  for (const v of Object.values(bundle.viruses || {}) as any[]) {
+    if (!v?.is_boss && !v?.boss) continue;
+    const meta = bossFamilyMeta(v);
+    if (String(meta.family_id) === String(familyId)) max = Math.max(max, meta.version);
+  }
+  return max || 1;
+}
+
+export function recordBossDefeat(user_id: string, boss_id: string): {
+  ok: boolean;
+  family_id?: string;
+  version?: number;
+  inserted?: boolean;
+  next_unlocked?: number | null;
+} {
+  ensurePlayer(user_id);
+  const boss = getVirusById(boss_id) as any;
+  if (!boss || !(boss.is_boss || boss.boss)) return { ok: false };
+
+  const meta = bossFamilyMeta(boss);
+  if (!meta.family_id || meta.version < 1) return { ok: false };
+
+  const before = hasDefeatedBossVersion(user_id, meta.family_id, meta.version);
+  db.prepare(`
+    INSERT OR IGNORE INTO defeated_boss_versions (user_id, boss_family_id, version, boss_id)
+    VALUES (?, ?, ?, ?)
+  `).run(user_id, meta.family_id, meta.version, boss_id);
+
+  const inserted = !before;
+  const maxVersion = maxKnownBossVersion(meta.family_id);
+  const nextVersion = inserted && meta.version < maxVersion ? meta.version + 1 : null;
+
+  return {
+    ok: true,
+    family_id: meta.family_id,
+    version: meta.version,
+    inserted,
+    next_unlocked: nextVersion,
+  };
 }
 
 // Seen viruses

@@ -8,7 +8,7 @@ import {
   StringSelectMenuInteraction,
 } from "discord.js";
 
-import { getBundle, getChipById, getVirusById, listChips, chipBaseId, chipCode, formatChipName, chipIsUpgrade } from "./data";
+import { bossFamilyLabel, getBundle, getChipById, getVirusById, listChips, chipBaseId, chipCode, formatChipName, chipIsUpgrade } from "./data";
 import {
   renderBattleScreen,
   renderRoundResultWithNextHand,
@@ -23,6 +23,7 @@ import {
   getPendingStyleElement,
   getStyleProgress,
   STYLE_CHANGE_THRESHOLD,
+  recordBossDefeat,
 } from "./db";
 import { grantVirusRewards } from "./rewards";
 import { validateLetterRule } from "./rules";
@@ -366,6 +367,7 @@ export async function handleLock(ix: ButtonInteraction) {
       let leveledUp = 0;
       const drops: string[] = [];
       const missionDone = new Set<string>();
+      const bossUnlocks: string[] = [];
 
       for (const enemy of defeated) {
         const rewards = grantVirusRewards(bs.user_id, enemy.virus_id);
@@ -374,6 +376,12 @@ export async function handleLock(ix: ButtonInteraction) {
         leveledUp += rewards.leveledUp || 0;
         for (const d of rewards.drops || []) drops.push(`${d.item_id} x${d.qty}`);
         for (const m of progressDefeat(bs.user_id, enemy.virus_id) || []) missionDone.add(m);
+        if (enemy.enemy_kind === 'boss') {
+          const bossProgress = recordBossDefeat(bs.user_id, enemy.virus_id);
+          if (bossProgress.next_unlocked) {
+            bossUnlocks.push(`${bossFamilyLabel(bossProgress.family_id || enemy.virus_id)} V${bossProgress.next_unlocked}`);
+          }
+        }
       }
 
       const hasBoss = defeated.some(e => e.enemy_kind === 'boss');
@@ -387,6 +395,10 @@ export async function handleLock(ix: ButtonInteraction) {
         leveledUp,
         missionDone,
       });
+
+      if (bossUnlocks.length) {
+        rewardLines.push(`⚠️ Boss version unlocked: ${bossUnlocks.join(', ')}`);
+      }
 
       const newly = diffNewlyUnlockedRegions(bs.user_id);
       if (newly.length) {
@@ -500,6 +512,7 @@ export async function handleRun(ix: ButtonInteraction) {
       let leveledUp = 0;
       const drops: string[] = [];
       const missionDone = new Set<string>();
+      const bossUnlocks: string[] = [];
 
       for (const enemy of defeated) {
         const rewards = grantVirusRewards(bs.user_id, enemy.virus_id);
@@ -508,6 +521,12 @@ export async function handleRun(ix: ButtonInteraction) {
         leveledUp += rewards.leveledUp || 0;
         for (const d of rewards.drops || []) drops.push(`${d.item_id} x${d.qty}`);
         for (const m of progressDefeat(bs.user_id, enemy.virus_id) || []) missionDone.add(m);
+        if (enemy.enemy_kind === 'boss') {
+          const bossProgress = recordBossDefeat(bs.user_id, enemy.virus_id);
+          if (bossProgress.next_unlocked) {
+            bossUnlocks.push(`${bossFamilyLabel(bossProgress.family_id || enemy.virus_id)} V${bossProgress.next_unlocked}`);
+          }
+        }
       }
 
       const hasBoss = defeated.some(e => e.enemy_kind === 'boss');
@@ -521,6 +540,8 @@ export async function handleRun(ix: ButtonInteraction) {
         leveledUp,
         missionDone,
       });
+
+      if (bossUnlocks.length) rewardLines.push(`⚠️ Boss version unlocked: ${bossUnlocks.join(', ')}`);
 
       const newly = diffNewlyUnlockedRegions(bs.user_id);
       if (newly.length) rewardLines.push(`🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`);
