@@ -405,13 +405,14 @@ export async function handleLock(ix: ButtonInteraction) {
         rewardLines.push(`🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`);
       }
 
+      const finalLines = combineLastRoundAndResultLines(round, rewardLines);
       const victoryView = renderVictoryToHub({
         enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
-        victory: { title: "Victory!", rewardLines },
+        victory: { title: "Victory!", rewardLines: finalLines },
       });
       const view = endBattleView(bs, victoryView, {
         title: `Deleted ${enemySummaryTitle(bs)}`,
-        lines: rewardLines,
+        lines: finalLines,
       });
 
       await updateNonBattleMessage(ix, view);
@@ -420,13 +421,14 @@ export async function handleLock(ix: ButtonInteraction) {
     }
 
     const title = bs.player_hp <= 0 ? "☠️ Navi Deleted" : "Battle End";
+    const finalLines = buildLastRoundResultLines(round);
     const lossView = renderVictoryToHub({
       enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
-      victory: { title, rewardLines: [] },
+      victory: { title, rewardLines: finalLines },
     });
     const view = endBattleView(bs, lossView, {
       title: `${title} vs ${enemySummaryTitle(bs)}`,
-      lines: [],
+      lines: finalLines,
     });
 
     await updateNonBattleMessage(ix, view);
@@ -546,13 +548,14 @@ export async function handleRun(ix: ButtonInteraction) {
       const newly = diffNewlyUnlockedRegions(bs.user_id);
       if (newly.length) rewardLines.push(`🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`);
 
+      const finalLines = combineLastRoundAndResultLines(round, rewardLines);
       const victoryView = renderVictoryToHub({
         enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
-        victory: { title: "Victory!", rewardLines },
+        victory: { title: "Victory!", rewardLines: finalLines },
       });
       const view = endBattleView(bs, victoryView, {
         title: `Deleted ${enemySummaryTitle(bs)}`,
-        lines: rewardLines,
+        lines: finalLines,
       });
       await updateNonBattleMessage(ix, view);
       battles.delete(battleId);
@@ -560,13 +563,14 @@ export async function handleRun(ix: ButtonInteraction) {
     }
 
     const title = "☠️ Navi Deleted";
+    const finalLines = buildLastRoundResultLines(round);
     const lossView = renderVictoryToHub({
       enemy: { virusId: bs.enemies[0]?.virus_id || bs.virus_id, displayName: enemySummaryTitle(bs) },
-      victory: { title, rewardLines: [] },
+      victory: { title, rewardLines: finalLines },
     });
     const view = endBattleView(bs, lossView, {
       title: `${title} vs ${enemySummaryTitle(bs)}`,
-      lines: [],
+      lines: finalLines,
     });
     await updateNonBattleMessage(ix, view);
     battles.delete(battleId);
@@ -594,6 +598,45 @@ export async function handleRun(ix: ButtonInteraction) {
 
   bs.turn += 1;
   await updateBattleMessage(ix, view);
+}
+
+
+function combineLastRoundAndResultLines(round: any, resultLines: string[]): string[] {
+  const lastRound = buildLastRoundResultLines(round);
+  if (!lastRound.length) return resultLines;
+  if (!resultLines.length) return lastRound;
+  return [...lastRound, '', ...resultLines];
+}
+
+function buildLastRoundResultLines(round: any): string[] {
+  const player = sanitizeRoundLogLines(round?.playerLogLines);
+  const enemy = sanitizeRoundLogLines(round?.enemyLogLines);
+  if (!player.length && !enemy.length) return [];
+
+  const out: string[] = ['📜 **Last Round**'];
+  if (player.length) {
+    out.push('Your Actions:');
+    out.push(...player.map(line => `• ${line}`));
+  }
+  if (enemy.length) {
+    out.push('Enemy Actions:');
+    out.push(...enemy.map(line => `• ${line}`));
+  }
+  return out;
+}
+
+function sanitizeRoundLogLines(lines: any): string[] {
+  if (!Array.isArray(lines)) return [];
+  const out: string[] = [];
+  for (const raw of lines) {
+    const text = String(raw ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!text || text === '—') continue;
+    out.push(text.length > 180 ? `${text.slice(0, 177)}...` : text);
+    if (out.length >= 8) break;
+  }
+  return out;
 }
 
 function buildVictoryRewardLines(args: {
@@ -1385,15 +1428,15 @@ function executeChip(
         const absorbed = absorbDamage(bs.enemy_status, roll.total, element);
         bs.enemy_hp = Math.max(0, bs.enemy_hp - absorbed.damage);
         const tags = [
-          roll.crit ? "crit" : "",
+          roll.crit ? "Crit" : "",
           roll.multiplier > 1
-            ? "super effective"
+            ? "Super Effective"
             : roll.multiplier < 1
-              ? "resisted"
+              ? "Resisted"
               : "",
         ].filter(Boolean);
         playerLog.push(
-          `**${chipName}** dealt **${absorbed.damage}** dmg to **${targetName}**${tags.length ? ` (${tags.join(", ")})` : ""}.`,
+          `**${chipName}** dealt **${absorbed.damage}**${tags.length ? ` (${tags.join(", ")})` : ""} dmg to **${targetName}**.`,
         );
         for (const note of absorbed.notes) playerLog.push(note);
       }
@@ -1586,15 +1629,15 @@ function resolveEnemyAction(bs: BattleState, enemyLog: string[]) {
   trackReflectorPrevention(bs, roll.total, absorbed.damage);
   bs.player_hp = Math.max(0, bs.player_hp - absorbed.damage);
   const tags = [
-    roll.crit ? "crit" : "",
+    roll.crit ? "Crit" : "",
     roll.multiplier > 1
-      ? "super effective"
+      ? "Super Effective"
       : roll.multiplier < 1
-        ? "resisted"
+        ? "Resisted"
         : "",
   ].filter(Boolean);
   enemyLog.push(
-    `${virus?.name ?? "Virus"} used **${name}** for **${absorbed.damage}** dmg${tags.length ? ` (${tags.join(", ")})` : ""}.`,
+    `${virus?.name ?? "Virus"} used **${name}** for **${absorbed.damage}**${tags.length ? ` (${tags.join(", ")})` : ""} dmg.`,
   );
   for (const note of absorbed.notes) enemyLog.push(note);
 
@@ -1642,7 +1685,7 @@ function resolveFallbackEnemyAttack(bs: BattleState, enemyLog: string[]) {
   trackReflectorPrevention(bs, roll.total, absorbed.damage);
   bs.player_hp = Math.max(0, bs.player_hp - absorbed.damage);
   enemyLog.push(
-    `${virus?.name ?? "Virus"} hit you for **${absorbed.damage}** dmg${roll.crit ? " (crit)" : ""}.`,
+    `${virus?.name ?? "Virus"} hit you for **${absorbed.damage}**${roll.crit ? " (Crit)" : ""} dmg.`,
   );
   for (const note of absorbed.notes) enemyLog.push(note);
 }
