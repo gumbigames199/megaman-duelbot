@@ -683,7 +683,7 @@ export function validateGameData(): DataValidationReport {
 
     const effects = String(c?.effects || '');
     if (/atk\s*\+/i.test(effects) && Number(c?.power || 0) > 0) {
-      warnings.push(`chips.tsv ${label}: Atk+ chip also has power; it will attack first, then queue its Atk+ for the next chip.`);
+      warnings.push(`chips.tsv ${label}: Atk+ chip also has power; Atk+ is intended to modify the previous attack chip, so keep Atk+ chips at 0 power.`);
     }
 
     if (chipIsUpgrade(c) && Number(c?.power || 0) > 0) {

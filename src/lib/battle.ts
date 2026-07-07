@@ -1192,17 +1192,91 @@ function resolvePlayerChips(
     return;
   }
 
-  let pendingAttackPlus = 0;
-  for (const idx of idxs) {
+  const plays = buildAttackPlusAdjustedQueue(bs, idxs, playerLog);
+
+  for (const play of plays) {
     if (allEnemiesDefeated(bs)) break;
-    const chipId = bs.hand[idx]?.id;
-    if (!chipId) continue;
-    pendingAttackPlus = executeChip(bs, chipId, playerLog, {
-      pendingAttackPlus,
+    executeChip(bs, play.chipId, playerLog, {
+      attackPlusBoost: play.attackPlusBoost,
     });
     if (!advanceToNextEnemy(bs)) break;
     ensureValidTarget(bs);
   }
+}
+
+type QueuedChipPlay = {
+  idx: number;
+  chipId: string;
+  attackPlusBoost: number;
+};
+
+function buildAttackPlusAdjustedQueue(
+  bs: BattleState,
+  idxs: number[],
+  playerLog: string[],
+): QueuedChipPlay[] {
+  const plays: QueuedChipPlay[] = [];
+
+  for (const idx of idxs) {
+    const chipId = bs.hand[idx]?.id;
+    if (!chipId) continue;
+
+    const chip = getChipById(chipId) as any;
+    if (!chip) {
+      plays.push({ idx, chipId, attackPlusBoost: 0 });
+      continue;
+    }
+
+    if (isAttackPlusModifierChip(chip)) {
+      const boost = attackPlusAmount(chip);
+      const targetPlay = findPreviousBoostablePlay(plays);
+      const boostName = String(formatChipName(chip) || chip.name || chipId);
+
+      if (targetPlay && boost > 0) {
+        targetPlay.attackPlusBoost += boost;
+        const targetChip = getChipById(targetPlay.chipId) as any;
+        const targetName = String(formatChipName(targetChip) || targetChip?.name || targetPlay.chipId);
+        playerLog.push(`**${boostName}** boosted **${targetName}** by +${boost}.`);
+      } else {
+        playerLog.push(`**${boostName}** had no previous attack chip to boost.`);
+      }
+      continue;
+    }
+
+    plays.push({ idx, chipId, attackPlusBoost: 0 });
+  }
+
+  return plays;
+}
+
+function findPreviousBoostablePlay(plays: QueuedChipPlay[]): QueuedChipPlay | null {
+  for (let i = plays.length - 1; i >= 0; i--) {
+    const chip = getChipById(plays[i].chipId) as any;
+    if (chip && isBoostableAttackChip(chip)) return plays[i];
+  }
+  return null;
+}
+
+function attackPlusAmount(chip: any): number {
+  const effects = parseEffects(String(chip?.effects ?? ''));
+  return effects.reduce((sum, eff) => sum + Math.max(0, Number(eff.attackPlus || 0)), 0);
+}
+
+function isAttackPlusModifierChip(chip: any): boolean {
+  const effects = parseEffects(String(chip?.effects ?? ''));
+  const boost = attackPlusAmount(chip);
+  if (boost <= 0) return false;
+
+  const power = Math.max(0, asNum(chip?.power, 0));
+  const hasOtherSupport = effects.some((e) => e.heal || e.barrier || e.aura);
+  const hasOffense = hasOffensiveEffects(effects);
+
+  return power <= 0 && !hasOtherSupport && !hasOffense;
+}
+
+function isBoostableAttackChip(chip: any): boolean {
+  if (!chip || chipIsUpgrade(chip)) return false;
+  return Math.max(0, asNum(chip?.power, 0)) > 0;
 }
 
 function executeChip(
@@ -1210,7 +1284,7 @@ function executeChip(
   chipId: string,
   playerLog: string[],
   opts: {
-    pendingAttackPlus?: number;
+    attackPlusBoost?: number;
     displayName?: string;
     forceAttackPlusReset?: boolean;
   } = {},
@@ -1220,7 +1294,7 @@ function executeChip(
 
   if (!chip) {
     playerLog.push(`Used ${chipId} (unknown) — no effect.`);
-    return opts.pendingAttackPlus ?? 0;
+    return 0;
   }
 
   addStyleProgress(bs.user_id, chip.element, 1);
@@ -1229,18 +1303,16 @@ function executeChip(
   const effects = parseEffects(String(chip.effects ?? ""));
   const supportOnly = isSupportOnlyChip(chip, effects);
 
-  // MMBN-style Attack+ timing:
-  // - Attack+ already queued before this chip applies to this chip.
-  // - Attack+ printed on this chip is queued after this chip resolves.
-  // - That means Atk+ chips boost the chip played after them, not themselves.
-  const incomingAttackPlus = Math.max(0, opts.pendingAttackPlus ?? 0);
-  let outgoingAttackPlus = incomingAttackPlus;
-  let queuedAfterThisChip = 0;
+  // MMBN-style Attack+ timing for this bot:
+  // - Atk+ chips are selected after the attack chip they modify.
+  // - Example: Cannon > Atk+30 means Cannon is resolved as 40+30.
+  // - Modifier-only Atk+ chips are consumed while building the queue and do not attack by themselves.
+  const incomingAttackPlus = Math.max(0, opts.attackPlusBoost ?? 0);
 
   for (const eff of effects) {
     if (eff.attackPlus) {
-      queuedAfterThisChip += eff.attackPlus;
-      playerLog.push(`**${chipName}** queued Attack+${eff.attackPlus} for the next chip.`);
+      // Modifier-only Atk+ chips are handled before execution. If a mixed chip exists,
+      // its Atk+ text is ignored here so it never boosts itself or a later chip.
     }
     if (eff.heal) {
       const before = bs.player_hp;
@@ -1268,15 +1340,13 @@ function executeChip(
   const shouldHitEnemies = !supportOnly && (attackPower > 0 || hasOffense);
 
   if (!shouldHitEnemies) {
-    return opts.forceAttackPlusReset ? 0 : outgoingAttackPlus + queuedAfterThisChip;
+    return 0;
   }
 
   const targetIndexes = chipTargetIndexes(bs, bs.target_enemy_index, normalizeChipTargets(chip, 1));
   if (!targetIndexes.length) {
-    return opts.forceAttackPlusReset ? 0 : outgoingAttackPlus + queuedAfterThisChip;
+    return 0;
   }
-
-  if (attackPower > 0) outgoingAttackPlus = 0;
 
   const element = toElement(chip.element);
 
@@ -1342,7 +1412,7 @@ function executeChip(
 
   advanceToNextEnemy(bs);
   ensureValidTarget(bs);
-  return opts.forceAttackPlusReset ? 0 : outgoingAttackPlus + queuedAfterThisChip;
+  return 0;
 }
 
 function hasOffensiveEffects(effects: ReturnType<typeof parseEffects>): boolean {

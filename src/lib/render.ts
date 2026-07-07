@@ -101,7 +101,7 @@ function chipRole(c: BattleHandRenderItem): string {
   const eff = String(c.effects || '').toLowerCase();
   const bits: string[] = [];
 
-  if (eff.includes('atk+') || eff.includes('attack+')) bits.push('Boosts next chip');
+  if (eff.includes('atk+') || eff.includes('attack+')) bits.push('Boosts previous chip');
   if (Number(c.power || 0) > 0) bits.push(`${c.power} PWR${c.hits && c.hits > 1 ? ` ×${c.hits}` : ''}`);
   if (eff.includes('heal')) bits.push('Heal');
   if (eff.includes('barrier') || eff.includes('aura')) bits.push('Defense');
