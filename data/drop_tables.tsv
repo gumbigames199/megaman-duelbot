@@ -59,7 +59,9 @@ ScrCrow3	DolThdr1:50, Thunder:5
 Handi	TimeBomb1
 Hando	TimeBomb2
 Handum	TimeBomb3
-BlastMan	BlastMan
+BlastMan	BlastMan:50
+BlastManV2	BlastManV2:50
+BlastManV3	BlastManV3:50
 Megalian	AquaAura
 Megalian2	FireAura
 Megalian3	WoodAura
