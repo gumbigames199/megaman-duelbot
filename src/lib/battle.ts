@@ -8,7 +8,7 @@ import {
   StringSelectMenuInteraction,
 } from "discord.js";
 
-import { getBundle, getChipById, getVirusById, listChips, chipBaseId, chipCode, formatChipName } from "./data";
+import { getBundle, getChipById, getVirusById, listChips, chipBaseId, chipCode, formatChipName, chipIsUpgrade } from "./data";
 import {
   renderBattleScreen,
   renderRoundResultWithNextHand,
@@ -70,6 +70,7 @@ type BattleHandItem = {
   power?: number;
   hits?: number;
   targets?: number;
+  acc?: number;
   element?: string;
   effects?: string;
   description?: string;
@@ -377,12 +378,15 @@ export async function handleLock(ix: ButtonInteraction) {
 
       const hasBoss = defeated.some(e => e.enemy_kind === 'boss');
       const rewardTitle = hasBoss ? "Battle Rewards" : "Rewards";
-      const rewardLines = [
-        `${rewardTitle}: +${totalZenny}z${totalXp ? ` • +${totalXp} XP` : ""}`,
-        drops.length ? `Drops: ${drops.map(d => `**${d}**`).join(", ")}` : "",
-        leveledUp ? `🆙 Level Up x${leveledUp}` : "",
-        missionDone.size ? `Mission completed: ${Array.from(missionDone).join(", ")}` : "",
-      ].filter(Boolean);
+      const rewardLines = buildVictoryRewardLines({
+        defeated,
+        rewardTitle,
+        totalZenny,
+        totalXp,
+        drops,
+        leveledUp,
+        missionDone,
+      });
 
       const newly = diffNewlyUnlockedRegions(bs.user_id);
       if (newly.length) {
@@ -433,6 +437,7 @@ export async function handleLock(ix: ButtonInteraction) {
     nextHand: toHandItems(bs.hand),
     selectedIds: [],
     targetEnemyIndex: bs.target_enemy_index,
+    turn: bs.turn,
     ...statusPayload(bs),
   }));
 
@@ -507,12 +512,15 @@ export async function handleRun(ix: ButtonInteraction) {
 
       const hasBoss = defeated.some(e => e.enemy_kind === 'boss');
       const rewardTitle = hasBoss ? "Battle Rewards" : "Rewards";
-      const rewardLines = [
-        `${rewardTitle}: +${totalZenny}z${totalXp ? ` • +${totalXp} XP` : ""}`,
-        drops.length ? `Drops: ${drops.map(d => `**${d}**`).join(", ")}` : "",
-        leveledUp ? `🆙 Level Up x${leveledUp}` : "",
-        missionDone.size ? `Mission completed: ${Array.from(missionDone).join(", ")}` : "",
-      ].filter(Boolean);
+      const rewardLines = buildVictoryRewardLines({
+        defeated,
+        rewardTitle,
+        totalZenny,
+        totalXp,
+        drops,
+        leveledUp,
+        missionDone,
+      });
 
       const newly = diffNewlyUnlockedRegions(bs.user_id);
       if (newly.length) rewardLines.push(`🔓 New region${newly.length > 1 ? "s" : ""}: ${newly.join(", ")}`);
@@ -559,6 +567,7 @@ export async function handleRun(ix: ButtonInteraction) {
     nextHand: toHandItems(bs.hand),
     selectedIds: [],
     targetEnemyIndex: bs.target_enemy_index,
+    turn: bs.turn,
     ...statusPayload(bs),
   }));
 
@@ -566,6 +575,26 @@ export async function handleRun(ix: ButtonInteraction) {
   await updateBattleMessage(ix, view);
 }
 
+function buildVictoryRewardLines(args: {
+  defeated: BattleEnemy[];
+  rewardTitle: string;
+  totalZenny: number;
+  totalXp: number;
+  drops: string[];
+  leveledUp: number;
+  missionDone: Set<string>;
+}): string[] {
+  const deleted = args.defeated.map(e => `• ${getVirusName(e.virus_id)}`);
+  return [
+    'Deleted:',
+    ...deleted,
+    '',
+    `${args.rewardTitle}: +${args.totalZenny}z${args.totalXp ? ` • +${args.totalXp} XP` : ''}`,
+    args.drops.length ? `Drops: ${args.drops.map(d => `**${d}**`).join(', ')}` : '',
+    args.leveledUp ? `🆙 Level Up x${args.leveledUp}` : '',
+    args.missionDone.size ? `Mission completed: ${Array.from(args.missionDone).join(', ')}` : '',
+  ].filter(line => line !== '');
+}
 
 function jackInTravelImage(): string | null {
   const raw = process.env.JACK_IN_GIF_URL || process.env.JACKIN_GIF_URL || null;
@@ -851,7 +880,11 @@ function runEscapeChance(bs: BattleState): number {
   const avgEnemySpd = enemySpds.length
     ? enemySpds.reduce((a, b) => a + b, 0) / enemySpds.length
     : 0;
-  return Math.max(0.20, Math.min(0.85, 0.50 + (playerSpd - avgEnemySpd) * 0.015));
+  const base = envFloat('RUN_BASE_CHANCE', 50) / 100;
+  const min = envFloat('RUN_MIN_CHANCE', 20) / 100;
+  const max = envFloat('RUN_MAX_CHANCE', 85) / 100;
+  const spdScale = envFloat('RUN_SPD_CHANCE_PER_POINT', 1.5) / 100;
+  return Math.max(min, Math.min(max, base + (playerSpd - avgEnemySpd) * spdScale));
 }
 
 function renderBattle(bs: BattleState) {
@@ -872,6 +905,7 @@ function renderBattle(bs: BattleState) {
     hand: toHandItems(bs.hand),
     selectedIds: bs.selected.slice(),
     targetEnemyIndex: bs.target_enemy_index,
+    turn: bs.turn,
     ...(playerStatus || enemyStatus
       ? { status: { player: playerStatus, enemy: enemyStatus } }
       : {}),
@@ -929,6 +963,7 @@ function toHandItems(hand: ChipRef[]): BattleHandItem[] {
       power: asNum(chip?.power),
       hits: asNum(chip?.hits),
       targets: normalizeChipTargets(chip, 1),
+      acc: asNum(chip?.acc),
       element: elem !== "Neutral" ? elem : undefined,
       effects: chip?.effects,
       description: chip?.description,
@@ -949,7 +984,8 @@ function buildDeckFromFolder(user_id: string): ChipRef[] {
   for (const f of folder) {
     const chipId = String((f as any).chip_id);
     const qty = Math.max(0, toInt((f as any).qty, 0));
-    if (!getChipById(chipId)) continue;
+    const chip = getChipById(chipId) as any;
+    if (!chip || chipIsUpgrade(chip)) continue;
     for (let i = 0; i < qty; i++) deck.push({ id: chipId, uid: `${chipId}:${seq++}` });
   }
   return deck;
@@ -1597,6 +1633,32 @@ function statusPayload(bs: BattleState): {
     : {};
 }
 
+
+export function debugSnapshotForInteractionId(customId: string): string | null {
+  const [prefix, battleId] = parseCustom(String(customId || ''));
+  if (!['lock', 'run', 'pick', 'target'].includes(prefix) || !battleId) return null;
+  const bs = battles.get(battleId);
+  if (!bs) return `battleId=${battleId} not found`;
+  saveActiveEnemy(bs);
+  const selected = selectedIndices(bs)
+    .map(i => {
+      const ref = bs.hand[i];
+      const chip: any = ref ? getChipById(ref.id) : null;
+      return `${i}:${chip?.name || ref?.id || '?'}`;
+    });
+  const enemies = bs.enemies.map((e, i) => `${i}${i === bs.target_enemy_index ? '*' : ''}:${getVirusName(e.virus_id)} ${e.hp}/${e.hp_max}`).join(' | ');
+  return [
+    `battleId=${bs.id}`,
+    `userId=${bs.user_id}`,
+    `turn=${bs.turn}`,
+    `playerHP=${bs.player_hp}/${bs.player_hp_max}`,
+    `target=${bs.target_enemy_index}`,
+    `enemies=${enemies}`,
+    `selected=${selected.join(', ') || 'none'}`,
+    `hand=${bs.hand.map((c, i) => `${i}:${getChipById(c.id)?.name || c.id}`).join(', ')}`,
+  ].join('\n');
+}
+
 // ---------------- Utils ----------------
 function toElement(x: unknown): Element {
   const s = String(x ?? "").toLowerCase();
@@ -1655,6 +1717,11 @@ function normalizeChipTargets(chip: any, fallback = 1): number {
   const n = Number(text);
   if (!Number.isFinite(n)) return Math.max(1, Math.trunc(fallback || 1));
   return Math.max(1, Math.trunc(n));
+}
+
+function envFloat(k: string, d: number) {
+  const n = Number(process.env[k]);
+  return Number.isFinite(n) ? n : d;
 }
 
 function nextBattleId() {

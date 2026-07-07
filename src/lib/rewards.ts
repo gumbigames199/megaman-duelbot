@@ -1,5 +1,5 @@
 // src/lib/rewards.ts
-import { getBundle, getVirusById, resolveChipForGrant, formatChipName } from './data';
+import { getBundle, getVirusById, resolveChipForGrant, getChipById, chipIsUpgrade } from './data';
 import { addZenny, addXP, grantChip, getPlayer } from './db';
 
 /**
@@ -178,7 +178,9 @@ function parseDropEntries(entries: string, _b: any): ParsedDrop[] {
 
     // Exact variants and base chip names are both valid. grantChip() resolves base names
     // into one random legal code variant when the reward is applied.
-    if (!resolveChipForGrant(id)) continue;
+    const resolved = resolveChipForGrant(id);
+    if (!resolved) continue;
+    if (chipIsUpgrade(getChipById(resolved))) continue;
 
     let weight = 1;
     const n = Number(wRaw);

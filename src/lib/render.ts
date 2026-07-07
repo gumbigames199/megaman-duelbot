@@ -29,6 +29,7 @@ type BattleHandRenderItem = {
   power?: number;
   hits?: number;
   targets?: number;
+  acc?: number;
   element?: string;
   effects?: string;
   description?: string;
@@ -62,12 +63,13 @@ function petEmoji(): string {
 }
 
 function hpBar(cur: number, max: number): string {
-  const safeMax = Math.max(1, Number(max) || 1);
-  const ratio = Math.max(0, Math.min(1, Number(cur) / safeMax));
-  const filled = Math.round(ratio * 10);
+  const safeMax = Math.max(1, Math.floor(Number(max) || 1));
+  const safeCur = Math.max(0, Math.floor(Number(cur) || 0));
+  const ratio = Math.max(0, Math.min(1, safeCur / safeMax));
+  const filled = Math.max(0, Math.min(10, Math.round(ratio * 10)));
   const empty = 10 - filled;
   const block = ratio > 0.5 ? '🟩' : ratio > 0.25 ? '🟨' : '🟥';
-  return `${block.repeat(filled)}⬛`.repeat(0) + `${block.repeat(filled)}${'⬛'.repeat(empty)} ${Math.max(0, Math.floor(cur))}/${safeMax}`;
+  return `${block.repeat(filled)}${'⬛'.repeat(empty)} ${safeCur}/${safeMax}`;
 }
 
 function statusBadges(text?: string): string {
@@ -83,18 +85,33 @@ function statusBadges(text?: string): string {
     .replace(/aura/gi, '✨ Aura');
 }
 
-function targetText(c: BattleHandRenderItem): string {
+function targetsLabel(c: BattleHandRenderItem): string {
   const n = Math.max(1, Math.trunc(Number(c.targets || 1)));
-  return n > 1 ? ` • 🎯 ${n} targets` : '';
+  return n > 1 ? `${n} targets` : '1 target';
+}
+
+function accuracyLabel(c: BattleHandRenderItem): string | null {
+  const raw = Number(c.acc);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  const pct = raw <= 1 ? Math.round(raw * 100) : Math.round(raw);
+  return `${pct}% ACC`;
 }
 
 function chipRole(c: BattleHandRenderItem): string {
   const eff = String(c.effects || '').toLowerCase();
-  if (eff.includes('heal')) return `❤️ Heal${targetText(c)}`;
-  if (eff.includes('barrier') || eff.includes('aura')) return `🛡️ Defense${targetText(c)}`;
-  if (eff.includes('atk+') || eff.includes('attack+')) return `🔧 Boost${targetText(c)}`;
-  if (Number(c.power || 0) > 0) return `💥 ${c.power} PWR${c.hits && c.hits > 1 ? ` ×${c.hits}` : ''}${targetText(c)}`;
-  return `⚙️ Support${targetText(c)}`;
+  const bits: string[] = [];
+
+  if (eff.includes('atk+') || eff.includes('attack+')) bits.push('Boosts next chip');
+  if (Number(c.power || 0) > 0) bits.push(`${c.power} PWR${c.hits && c.hits > 1 ? ` ×${c.hits}` : ''}`);
+  if (eff.includes('heal')) bits.push('Heal');
+  if (eff.includes('barrier') || eff.includes('aura')) bits.push('Defense');
+  if (c.element) bits.push(c.element);
+  bits.push(targetsLabel(c));
+  const acc = accuracyLabel(c);
+  if (acc) bits.push(acc);
+  if (c.effects) bits.push(String(c.effects).replace(/\s+/g, ' ').trim());
+
+  return bits.length ? bits.join(' • ') : 'Support';
 }
 
 function selectedChipLines(hand: BattleHandRenderItem[], selectedIds: string[]): string[] {
@@ -102,20 +119,20 @@ function selectedChipLines(hand: BattleHandRenderItem[], selectedIds: string[]):
     .map((id) => hand.find((c) => c.id === id))
     .filter((c): c is BattleHandRenderItem => !!c);
 
-  return selected.map((c, i) => `${i + 1}️⃣ **${c.name}** — ${chipRole(c)}`);
+  return selected.map((c, i) => `${i + 1}. **${c.name}** — ${chipRole(c)}`);
 }
 
 function chipQueueBlock(hand: BattleHandRenderItem[], selectedIds: string[]): string | undefined {
   const lines = selectedChipLines(hand, selectedIds);
   if (!lines.length) return undefined;
-  return [`⚡ **Chip Queue (${lines.length}/5)**`, ...lines, '', '✅ Valid queue.'].join('\n');
+  return ['🎛️ **Selected Chips**', ...lines].join('\n');
 }
 
 function programAdvanceBlock(pa?: ProgramAdvanceRenderInfo): string | undefined {
   if (!pa) return undefined;
   return [
     `${petEmoji()} **PA ACTIVATE!**`,
-    `⚡ Program Advance armed: **${pa.name}**`,
+    `Program Advance armed: **${pa.name}**`,
     'Lock Turn to unleash the sequence.',
   ].join('\n');
 }
@@ -124,7 +141,9 @@ function optionText(c: BattleHandRenderItem): { label: string; description?: str
   const bits: string[] = [];
   if (c.element) bits.push(c.element);
   if (c.power) bits.push(`${c.power} PWR${c.hits && c.hits > 1 ? ` ×${c.hits}` : ''}`);
-  if (Number(c.targets || 1) > 1) bits.push(`${Math.trunc(Number(c.targets))} targets`);
+  bits.push(targetsLabel(c));
+  const acc = accuracyLabel(c);
+  if (acc) bits.push(acc);
   if (c.effects) bits.push(String(c.effects).replace(/\s+/g, ' ').trim());
   return {
     label: `${c.name}`.slice(0, 100),
@@ -156,31 +175,48 @@ function buildTargetSelect(battleId: string, enemies?: EnemyRenderItem[], target
   return select;
 }
 
+function enemyLine(e: EnemyRenderItem, originalIndex: number): string {
+  if (e.defeated || Number(e.hp) <= 0) return `~~${originalIndex + 1}. ${e.name} — DELETED~~`;
+  const marker = e.targeted ? '🎯' : `${originalIndex + 1}.`;
+  const status = statusBadges(e.status);
+  return [
+    `${marker} **${originalIndex + 1}. ${e.name}** — ${Math.max(0, Math.floor(Number(e.hp) || 0))}/${Math.max(1, Math.floor(Number(e.hpMax) || 1))} HP`,
+    status !== '—' ? `Status: ${status}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 function enemiesStatusBlock(enemies?: EnemyRenderItem[], fallback?: { hp: { enemyHP: number; enemyHPMax: number }; status?: string }): string {
-  const live = (enemies || []).filter(e => !e.defeated);
-  if (!live.length && fallback) {
-    return ['🟥 **Enemy**', hpBar(fallback.hp.enemyHP, fallback.hp.enemyHPMax), `Status: ${statusBadges(fallback.status)}`].join('\n');
+  if (enemies && enemies.length) {
+    return ['🟥 **Enemies**', ...enemies.map((e, idx) => enemyLine(e, idx))].join('\n');
   }
-  if (!live.length) return '🟥 **Enemy**\n—';
-  return live.map((e, i) => {
-    const marker = e.targeted ? '🎯 TARGET' : `${i + 1}.`;
-    return `${marker} **${e.name}**\n${hpBar(e.hp, e.hpMax)}\nStatus: ${statusBadges(e.status)}`;
-  }).join('\n');
+  if (fallback) {
+    const status = statusBadges(fallback.status);
+    return ['🟥 **Enemy**', hpBar(fallback.hp.enemyHP, fallback.hp.enemyHPMax), status !== '—' ? `Status: ${status}` : ''].filter(Boolean).join('\n');
+  }
+  return '🟥 **Enemy**\n—';
 }
 
 function combatStatusBlock(args: {
   hp: { playerHP: number; playerHPMax: number; enemyHP: number; enemyHPMax: number };
   status?: { player?: string; enemy?: string };
   enemies?: EnemyRenderItem[];
+  turn?: number;
 }): string {
-  const { hp, status, enemies } = args;
+  const { hp, status, enemies, turn } = args;
+  const playerStatus = statusBadges(status?.player);
   return [
+    turn ? `**Turn ${turn}**` : '',
     '🟦 **You**',
     hpBar(hp.playerHP, hp.playerHPMax),
-    `Status: ${statusBadges(status?.player)}`,
+    playerStatus !== '—' ? `Status: ${playerStatus}` : '',
     '',
     enemiesStatusBlock(enemies, { hp: { enemyHP: hp.enemyHP, enemyHPMax: hp.enemyHPMax }, status: status?.enemy }),
-  ].join('\n');
+  ].filter(line => line !== '').join('\n');
+}
+
+function logBlock(title: string, lines: string[]): string {
+  if (!lines.length) return `${title}\n—`;
+  return `${title}\n${lines.map(line => `• ${line}`).join('\n')}`;
 }
 
 /** First screen of a battle with chip multi-select, target select, and Lock/Run buttons. */
@@ -194,17 +230,18 @@ export function renderBattleScreen(args: {
   enemies?: EnemyRenderItem[];
   programAdvance?: ProgramAdvanceRenderInfo;
   targetEnemyIndex?: number;
+  turn?: number;
 }) {
-  const { battleId, enemy, hp, hand, selectedIds, status, enemies, programAdvance, targetEnemyIndex } = args;
+  const { battleId, enemy, hp, hand, selectedIds, status, enemies, programAdvance, targetEnemyIndex, turn } = args;
 
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
       '⚔️ **TURN CONSOLE**',
-      combatStatusBlock({ hp, status, enemies }),
+      combatStatusBlock({ hp, status, enemies, turn }),
       '',
       chipQueueBlock(hand, selectedIds),
       programAdvanceBlock(programAdvance),
-      hand.length ? '🎛️ **Choose up to 5 chips, choose a target, then lock your turn.**' : '📁 Your hand is empty.',
+      hand.length ? 'Choose chips, choose a target, then lock your turn.' : 'Your hand is empty.',
     ].filter((line) => line !== undefined).join('\n')
   );
 
@@ -231,7 +268,7 @@ export function renderBattleScreen(args: {
   return { embed, components: [rowSel, ...(rowTarget ? [rowTarget] : []), rowBtns] as const };
 }
 
-/** Round result embed + NEW hand picker (single multi-select) with buttons. */
+/** Round result embed + next hand picker. */
 export function renderRoundResultWithNextHand(args: {
   battleId: string;
   enemy: EnemyRef;
@@ -243,24 +280,22 @@ export function renderRoundResultWithNextHand(args: {
   enemies?: EnemyRenderItem[];
   programAdvance?: ProgramAdvanceRenderInfo;
   targetEnemyIndex?: number;
+  turn?: number;
 }) {
-  const { battleId, enemy, hp, round, nextHand, selectedIds, status, enemies, programAdvance, targetEnemyIndex } = args;
-
-  const combinedLog = [
-    ...round.playerLogLines.map(line => `🟦 ${line}`),
-    ...round.enemyLogLines.map(line => `🟥 ${line}`),
-  ];
+  const { battleId, enemy, hp, round, nextHand, selectedIds, status, enemies, programAdvance, targetEnemyIndex, turn } = args;
 
   const embed = buildBattleHeaderEmbed({ virusId: enemy.virusId, displayName: enemy.displayName }).setDescription(
     [
       '⚔️ **ROUND RESULT**',
-      combatStatusBlock({ hp, status, enemies }),
+      combatStatusBlock({ hp, status, enemies, turn }),
       '',
-      combinedLog.length ? `📜 **Combat Log**\n${combinedLog.join('\n')}` : '📜 **Combat Log**\n—',
+      logBlock('📜 **Your Actions**', round.playerLogLines || []),
+      '',
+      logBlock('📜 **Enemy Actions**', round.enemyLogLines || []),
       '',
       chipQueueBlock(nextHand, selectedIds),
       programAdvanceBlock(programAdvance),
-      '🎛️ **Next hand:** pick up to 5 chips and choose a target.',
+      'Next hand: pick up to 5 chips and choose a target.',
     ].filter(Boolean).join('\n')
   );
 

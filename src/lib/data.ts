@@ -580,6 +580,96 @@ export function getVirusArt(virusId: string | number) {
   return { fallbackEmoji: '⚔️' };
 }
 
+
+export type DataValidationReport = {
+  warnings: string[];
+  errors: string[];
+};
+
+export function validateGameData(): DataValidationReport {
+  const b = getBundle();
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const seenChipIds = new Set<string>();
+  const validElements = new Set(['neutral', 'fire', 'aqua', 'water', 'elec', 'electric', 'wood', 'grass', '']);
+
+  for (const c of b.chip_list as any[]) {
+    const id = normStr(c?.id);
+    const label = id || normStr(c?.name) || '(missing chip id)';
+    if (!id) errors.push(`chips.tsv: row missing chip id/name.`);
+    if (id && seenChipIds.has(id)) errors.push(`chips.tsv: duplicate chip id ${id}.`);
+    if (id) seenChipIds.add(id);
+
+    const element = normLower(c?.element || 'Neutral');
+    if (!validElements.has(element)) warnings.push(`chips.tsv ${label}: invalid element ${c?.element}.`);
+
+    for (const key of ['power', 'hits', 'acc', 'zenny_cost']) {
+      const raw = normStr(c?.[key]);
+      if (raw && !Number.isFinite(Number(raw))) warnings.push(`chips.tsv ${label}: ${key} is not numeric (${raw}).`);
+    }
+
+    const targets = normStr(c?.targets ?? c?.target_count ?? c?.targetCount);
+    if (targets) {
+      const low = targets.toLowerCase();
+      if (!['all', 'screen', 'aoe'].includes(low)) {
+        const n = Number(targets);
+        if (!Number.isFinite(n) || n < 1) warnings.push(`chips.tsv ${label}: targets must be 1, 2, 3, or all.`);
+        else if (n > 3) warnings.push(`chips.tsv ${label}: targets ${n} is above normal encounter size; use all/screen only intentionally.`);
+      }
+    }
+
+    const upgradeRaw = normStr(c?.is_upgrade ?? c?.upgrade);
+    if (upgradeRaw && !['0', '1', 'true', 'false'].includes(upgradeRaw.toLowerCase())) {
+      warnings.push(`chips.tsv ${label}: is_upgrade should be 0/1 or true/false.`);
+    }
+
+    const effects = String(c?.effects || '');
+    if (/atk\s*\+/i.test(effects) && Number(c?.power || 0) > 0) {
+      warnings.push(`chips.tsv ${label}: Atk+ chip also has power; it will attack first, then queue its Atk+ for the next chip.`);
+    }
+
+    if (chipIsUpgrade(c) && Number(c?.power || 0) > 0) {
+      warnings.push(`chips.tsv ${label}: upgrade chip has power; upgrades are blocked from folders/battle hands.`);
+    }
+  }
+
+  for (const v of b.virus_list as any[]) {
+    const id = normStr(v?.id);
+    const label = id || normStr(v?.name) || '(missing virus id)';
+    if (!id) errors.push(`viruses.tsv: row missing virus id.`);
+    const element = normLower(v?.element || 'Neutral');
+    if (!validElements.has(element)) warnings.push(`viruses.tsv ${label}: invalid element ${v?.element}.`);
+    for (const key of ['hp', 'atk', 'def', 'spd', 'acc', 'evasion']) {
+      const raw = normStr(v?.[key]);
+      if (raw && !Number.isFinite(Number(raw))) warnings.push(`viruses.tsv ${label}: ${key} is not numeric (${raw}).`);
+    }
+    const art = normStr(v?.image || v?.image_url || v?.art_url || v?.sprite || v?.sprite_url || v?.icon_url);
+    if (!art) warnings.push(`viruses.tsv ${label}: missing image/sprite URL; enemy lineup image may omit it.`);
+  }
+
+  for (const s of b.shop_list as any[]) {
+    const regionId = normStr(s?.region_id);
+    if (regionId && !b.regions[regionId]) warnings.push(`shops.tsv ${normStr(s?.id) || regionId}: region_id ${regionId} not found.`);
+    const entries = normStr(s?.entries).split(',').map(x => x.trim()).filter(Boolean);
+    for (const entry of entries) {
+      const [itemRaw] = entry.split(':').map(x => x.trim());
+      if (itemRaw && !getChipById(itemRaw) && !listChipVariants(itemRaw).length) warnings.push(`shops.tsv ${normStr(s?.id) || regionId}: unknown shop item ${itemRaw}.`);
+    }
+  }
+
+  for (const dt of Object.values(b.dropTables) as any[]) {
+    const entries = normStr(dt?.entries).split(',').map(x => x.trim()).filter(Boolean);
+    for (const entry of entries) {
+      const [itemRaw] = entry.split(':').map(x => x.trim());
+      const resolved = resolveChipForGrant(itemRaw);
+      if (!resolved) warnings.push(`drop_tables.tsv ${normStr(dt?.id)}: unknown drop ${itemRaw}.`);
+      else if (chipIsUpgrade(getChipById(resolved))) warnings.push(`drop_tables.tsv ${normStr(dt?.id)}: upgrade drop ${itemRaw} is blocked unless explicitly handled later.`);
+    }
+  }
+
+  return { warnings, errors };
+}
+
 /* ---------------------------------------------
  * Reload (called by /reload_data)
  * -------------------------------------------*/

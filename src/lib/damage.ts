@@ -56,8 +56,8 @@ export function resolveDamageRoll(ctx: DamageCtx): DamageRoll {
   const atkScale = 1 + atk / 40;
   const defScale = 1 + def / 45;
   const elemMult = typeMultiplier(ctx.chip_element, ctx.def_element ?? 'Neutral');
-  const stab = ctx.chip_element !== 'Neutral' && ctx.chip_element === ctx.navi_element ? 1.15 : 1.0;
-  const critMult = crit ? 1.5 : 1.0;
+  const stab = ctx.chip_element !== 'Neutral' && ctx.chip_element === ctx.navi_element ? envFloat('STAB_MULT', 1.15) : 1.0;
+  const critMult = crit ? envFloat('CRIT_MULT', 1.5) : 1.0;
   const randomMult = 0.95 + 0.10 * ctx.rng();
   const multiplier = elemMult * stab * critMult;
 
@@ -86,6 +86,11 @@ function normalizeChance(v: any, fallback: number): number {
   if (!Number.isFinite(n)) return fallback;
   if (n > 1) return clamp(n / 100, 0, 1);
   return clamp(n, 0, 1);
+}
+
+function envFloat(k: string, fallback: number): number {
+  const n = Number(process.env[k]);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function clamp(n: number, lo: number, hi: number) {

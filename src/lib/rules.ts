@@ -4,15 +4,20 @@ import { Element } from './types';
 /** Element cycle: Fire > Wood > Elec > Aqua > Fire */
 export const TYPE_ORDER: Element[] = ['Fire', 'Wood', 'Elec', 'Aqua'];
 
-/** BN-style effectiveness: 1.5 super, 0.5 resisted, 1.0 neutral */
+function envFloat(k: string, fallback: number): number {
+  const n = Number(process.env[k]);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** BN-style effectiveness: configurable super/resist multipliers, 1.0 neutral */
 export function typeMultiplier(att: Element | 'Neutral', def: Element | 'Neutral'): number {
   if (att === 'Neutral' || def === 'Neutral') return 1.0;
   const i = TYPE_ORDER.indexOf(att as Element);
   if (i < 0) return 1.0;
   const loses = TYPE_ORDER[(i + 1) % 4];
   const beats = TYPE_ORDER[(i + 3) % 4];
-  if (def === loses) return 1.5;
-  if (def === beats) return 0.5;
+  if (def === loses) return envFloat('ELEMENT_ADVANTAGE_MULT', 1.5);
+  if (def === beats) return envFloat('ELEMENT_RESIST_MULT', 0.5);
   return 1.0;
 }
 

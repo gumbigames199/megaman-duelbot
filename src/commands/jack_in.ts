@@ -2122,7 +2122,7 @@ async function renderJackInShop(
   const buy = new ButtonBuilder()
     .setCustomId(`jackin:shopBuy:${selected?.item_id || '_none'}`)
     .setStyle(ButtonStyle.Success)
-    .setLabel(selected ? `Buy for ${effectiveShopPrice(userId, selected)}z` : 'Buy')
+    .setLabel(selected ? `Buy Chip — ${effectiveShopPrice(userId, selected)}z` : 'Buy Chips')
     .setDisabled(!selected);
   const sell = new ButtonBuilder()
     .setCustomId('jackin:shopSellOpen')
@@ -2134,11 +2134,11 @@ async function renderJackInShop(
     `Region: **${region.name || region.label || region.id}**`,
     `Your Zenny: **${p?.zenny ?? 0}z**`,
     '',
-    notice ? `📌 **${notice}**` : 'Pick an item, then press **Buy**.',
+    notice ? `📌 **${notice}**` : 'Buy tab: pick an item, then press **Buy Chip**. Use **Sell Chips** to sell extra copies for 750z each.',
   ];
 
   const embed = new EmbedBuilder()
-    .setTitle(`🛒 ${region.name || region.label || region.id} Shop`)
+    .setTitle(`🛒 ${region.name || region.label || region.id} Shop — Buy Chips`)
     .setDescription(desc.join('\n'))
     .setImage(getRegionImage(region) || getTravelImage());
 
@@ -2304,7 +2304,7 @@ async function renderJackInSellShop(
   const sellBtn = new ButtonBuilder()
     .setCustomId(`jackin:shopSell:${selected?.chipId || '_none'}:${pageSafe}`)
     .setStyle(ButtonStyle.Success)
-    .setLabel(selected ? `Sell for ${selected.salePrice}z` : 'Sell')
+    .setLabel(selected ? `Sell 1 — ${selected.salePrice}z` : 'Sell 1')
     .setDisabled(!selected);
 
   const backBtn = new ButtonBuilder()
@@ -2317,7 +2317,7 @@ async function renderJackInSellShop(
     .setDescription([
       `Your Zenny: **${p?.zenny ?? 0}z**`,
       '',
-      notice ? `📌 **${notice}**` : `Select an available BattleChip copy outside your folder. Page **${pageSafe + 1}/${pageCount}**. Sale value is fixed at 750z per chip.`,
+      notice ? `📌 **${notice}**` : `Sell tab: select one extra BattleChip copy outside your folder. Page **${pageSafe + 1}/${pageCount}**. Sale value is fixed at 750z per chip.`,
     ].join('\n'))
     .setImage(region ? (getRegionImage(region) || getTravelImage()) : getTravelImage());
 

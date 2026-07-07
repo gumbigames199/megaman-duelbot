@@ -35,7 +35,7 @@ function formatFolder(chips: string[]) {
   const lines: string[] = [];
   for (const [id, qty] of counts) {
     const c: any = getChipById(id) || {};
-    lines.push(`• ${formatChipName(c || String(id))} ×${qty}`);
+    lines.push(`• ${formatChipName(c || String(id))}${c?.element ? ` — ${c.element}` : ''} ×${qty}`);
   }
   return lines.join('\n');
 }
@@ -105,7 +105,7 @@ export async function onOpenAdd(ix: ButtonInteraction) {
     .map(({ row, chipId, chip, available }) => {
       const name = formatChipName(chip || chipId);
       const cap = maxCopiesForChip(chipId);
-      return { label: `${name} (available ${available}/${row.qty}, cap ${cap})`.slice(0, 100), value: chipId };
+      return { label: `${name} (available ${available}/${row.qty}, cap ${cap})`.slice(0, 100), description: `${chip.element || 'Neutral'}${chip.power ? ` • ${chip.power} PWR` : ''}${chip.effects ? ` • ${String(chip.effects)}` : ''}`.slice(0, 100), value: chipId };
     })
     .slice(0, 25);
 
@@ -140,7 +140,7 @@ export async function onOpenRemove(ix: ButtonInteraction) {
     const chipId = String(id);
     const c: any = getChipById(chipId) || {};
     const name = formatChipName(c || chipId);
-    return { label: `${i + 1}. ${name}`.slice(0, 100), value: `${i}:${chipId}` };
+    return { label: `${i + 1}. ${name}`.slice(0, 100), description: `${c.element || 'Neutral'}${c.power ? ` • ${c.power} PWR` : ''}`.slice(0, 100), value: `${i}:${chipId}` };
   });
 
   const select = new StringSelectMenuBuilder()

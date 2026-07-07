@@ -14,7 +14,7 @@ import {
 } from 'discord.js';
 
 import loadTSVBundle from './lib/tsv';
-import { invalidateBundleCache, getBundle } from './lib/data';
+import { invalidateBundleCache, getBundle, validateGameData } from './lib/data';
 import { normalizeChipIds, getPlayer } from './lib/db';
 
 import * as Start from './commands/start';
@@ -80,6 +80,7 @@ function countThing(x: any): number {
 
 async function safeInteractionError(ix: Interaction, err: any) {
   console.error('interaction error', err);
+  await sendPrivateErrorReport(ix, err);
   if (!ix.isRepliable()) return;
 
   const payload = { content: `⚠️ Error: ${err?.message || String(err)}`, ephemeral: true };
@@ -88,6 +89,31 @@ async function safeInteractionError(ix: Interaction, err: any) {
     if (anyIx.replied || anyIx.deferred) await anyIx.followUp?.(payload);
     else await anyIx.reply(payload);
   } catch {}
+}
+
+async function sendPrivateErrorReport(ix: Interaction, err: any) {
+  const ownerId = String(process.env.ERROR_REPORT_USER_ID || process.env.BOT_OWNER_ID || '').trim();
+  if (!ownerId) return;
+  try {
+    const owner = await client.users.fetch(ownerId);
+    const anyIx: any = ix as any;
+    const customId = String(anyIx.customId || '');
+    const battleSnapshot = customId ? Battle.debugSnapshotForInteractionId(customId) : null;
+    const snapshotBlock = battleSnapshot
+      ? `\n**Battle Snapshot**\n\`\`\`\n${battleSnapshot.slice(0, 1500)}\n\`\`\``
+      : '';
+    const lines = [
+      '**Net Battlers Error Report**',
+      `Command/CustomId: ${anyIx.commandName || customId || 'unknown'}`,
+      `User: ${anyIx.user?.tag || anyIx.user?.username || 'unknown'} (${anyIx.user?.id || 'unknown'})`,
+      `Channel: ${anyIx.channelId || 'unknown'}`,
+      `Error: ${err?.stack || err?.message || String(err)}`,
+      snapshotBlock,
+    ].filter(Boolean);
+    await owner.send(lines.join('\n').slice(0, 1900));
+  } catch (reportErr) {
+    console.error('error report failed', reportErr);
+  }
 }
 
 async function requireStarted(ix: Interaction): Promise<boolean> {
@@ -155,10 +181,21 @@ client.on('interactionCreate', async (ix) => {
         invalidateBundleCache();
 
         let liveSummary = '';
+        let validationSummary = '';
         let normalized = { fixedInventory: 0, fixedFolder: 0 };
         try {
           const b = getBundle() as any;
           normalized = normalizeChipIds();
+          const validation = validateGameData();
+          const validationWarnings = validation.warnings.slice(0, 20);
+          const validationErrors = validation.errors.slice(0, 20);
+          validationSummary = [
+            `Validation → warnings:${validation.warnings.length} errors:${validation.errors.length}`,
+            validationErrors.length ? `❌ Validation errors:\n- ${validationErrors.join('\n- ')}` : '',
+            validationWarnings.length ? `⚠️ Validation warnings:\n- ${validationWarnings.join('\n- ')}` : '',
+            validation.warnings.length > validationWarnings.length ? `…and ${validation.warnings.length - validationWarnings.length} more warning(s).` : '',
+            validation.errors.length > validationErrors.length ? `…and ${validation.errors.length - validationErrors.length} more error(s).` : '',
+          ].filter(Boolean).join('\n');
           liveSummary =
             `Live bundle → regions:${countThing(b.regions)} chips:${countThing(b.chips)} viruses:${countThing(b.viruses)} ` +
             `shops:${countThing(b.shop_list ?? b.shops)} dropTables:${countThing(b.dropTables)} missions:${countThing(b.missions)} PAs:${countThing(b.programAdvances)}`;
@@ -185,6 +222,7 @@ client.on('interactionCreate', async (ix) => {
           `Files: ${files.length ? files.join(', ') : '(none found)'}`,
           liveSummary,
           `Chip ID normalization → inventory:${normalized.fixedInventory} folder:${normalized.fixedFolder}`,
+          validationSummary,
           warnings,
           errors,
         ].filter(Boolean).join('\n'));
