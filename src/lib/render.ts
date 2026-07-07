@@ -176,11 +176,22 @@ function buildTargetSelect(battleId: string, enemies?: EnemyRenderItem[], target
 }
 
 function enemyLine(e: EnemyRenderItem, originalIndex: number): string {
-  if (e.defeated || Number(e.hp) <= 0) return `~~${originalIndex + 1}. ${e.name} — DELETED~~`;
-  const marker = e.targeted ? '🎯' : `${originalIndex + 1}.`;
+  const hp = Math.max(0, Math.floor(Number(e.hp) || 0));
+  const hpMax = Math.max(1, Math.floor(Number(e.hpMax) || 1));
+  const deleted = e.defeated || hp <= 0;
+  const marker = e.targeted && !deleted ? '🎯' : `${originalIndex + 1}.`;
   const status = statusBadges(e.status);
+
+  if (deleted) {
+    return [
+      `~~${originalIndex + 1}. ${e.name} — DELETED~~`,
+      `~~${hpBar(0, hpMax)}~~`,
+    ].join('\n');
+  }
+
   return [
-    `${marker} **${originalIndex + 1}. ${e.name}** — ${Math.max(0, Math.floor(Number(e.hp) || 0))}/${Math.max(1, Math.floor(Number(e.hpMax) || 1))} HP`,
+    `${marker} **${originalIndex + 1}. ${e.name}**`,
+    hpBar(hp, hpMax),
     status !== '—' ? `Status: ${status}` : '',
   ].filter(Boolean).join('\n');
 }
