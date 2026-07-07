@@ -619,7 +619,7 @@ export async function onBbsCurrent(ix: ButtonInteraction | StringSelectMenuInter
       desc.push(title);
       if (m.mission.description) desc.push(bbsTrim(String(m.mission.description), 220));
       desc.push(...m.progressLines.map(line => `  ${line}`));
-      desc.push(`  Reward: ${m.rewardLines.join(' • ')}`);
+      desc.push('  Reward: Hidden until completion');
       desc.push('');
     });
   }
@@ -679,7 +679,7 @@ export async function onBbsBoard(ix: ButtonInteraction | StringSelectMenuInterac
       desc.push(`Region: **${region?.name || region?.label || m.region_id || '—'}** • Type: **${m.type || 'Mission'}**`);
       if (m.description) desc.push(bbsTrim(String(m.description), 220));
       desc.push(`Requirement: ${ev.progressLines.map(x => x.replace(/^•\s*/, '')).join(' • ')}`);
-      desc.push(`Reward: ${ev.rewardLines.join(' • ')}`);
+      desc.push('Reward: Hidden until completion');
       desc.push('');
     });
   }
@@ -760,7 +760,7 @@ async function renderBbsMissionPost(ix: ButtonInteraction | StringSelectMenuInte
     ...ev.progressLines.map(line => line.replace(/^•\s*/, '• ')),
     '',
     '**Reward**',
-    ev.rewardLines.join(' • '),
+    'Hidden until completion',
   ].filter(Boolean);
 
   const embed = new EmbedBuilder()
@@ -805,7 +805,7 @@ async function renderBbsCurrentMissionPost(ix: ButtonInteraction | StringSelectM
     ...row.progressLines.map(line => line.replace(/^•\s*/, '• ')),
     '',
     '**Reward**',
-    row.rewardLines.join(' • '),
+    'Hidden until completion',
   ].filter(Boolean);
 
   const buttons: ButtonBuilder[] = [];
