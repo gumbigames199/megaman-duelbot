@@ -41,14 +41,8 @@ export function computeDamage(ctx: DamageCtx): number {
 
 export function resolveDamageRoll(ctx: DamageCtx): DamageRoll {
   const hc = hitChance(ctx);
-  const hit = ctx.rng() < hc;
-  if (!hit) {
-    return { hit: false, crit: false, total: 0, perHit: 0, hits: Math.max(1, Math.trunc(ctx.hits || 1)), multiplier: 1, hitChance: hc };
-  }
-
-  const critChance = normalizeChance(ctx.crit_chance ?? 0.06, 0.06);
-  const crit = ctx.rng() < critChance;
   const hits = Math.max(1, Math.trunc(Number(ctx.hits) || 1));
+  const critChance = normalizeChance(ctx.crit_chance ?? 0.06, 0.06);
   const power = Math.max(0, Number(ctx.chip_pow) || 0);
 
   const atk = Math.max(0, Number(ctx.navi_atk) || 0);
@@ -57,19 +51,41 @@ export function resolveDamageRoll(ctx: DamageCtx): DamageRoll {
   const defScale = 1 + def / 45;
   const elemMult = typeMultiplier(ctx.chip_element, ctx.def_element ?? 'Neutral');
   const stab = ctx.chip_element !== 'Neutral' && ctx.chip_element === ctx.navi_element ? envFloat('STAB_MULT', 1.15) : 1.0;
-  const critMult = crit ? envFloat('CRIT_MULT', 1.5) : 1.0;
-  const randomMult = 0.95 + 0.10 * ctx.rng();
-  const multiplier = elemMult * stab * critMult;
-
-  const raw = power * (atkScale / defScale) * multiplier * randomMult;
-  const perHit = Math.max(1, Math.floor(raw));
 
   let total = 0;
+  let firstHitDamage = 0;
+  let landedHits = 0;
+  let anyCrit = false;
+
   for (let i = 0; i < hits; i++) {
-    total += Math.max(1, Math.floor(perHit * Math.pow(0.85, i)));
+    // Multi-hit moves are separate attacks. Each hit makes its own accuracy,
+    // crit, and random-damage roll. Damage is not decayed or split.
+    const landed = ctx.rng() < hc;
+    if (!landed) continue;
+
+    const crit = ctx.rng() < critChance;
+    if (crit) anyCrit = true;
+
+    const critMult = crit ? envFloat('CRIT_MULT', 1.5) : 1.0;
+    const randomMult = 0.95 + 0.10 * ctx.rng();
+    const multiplier = elemMult * stab * critMult;
+    const raw = power * (atkScale / defScale) * multiplier * randomMult;
+    const dmg = Math.max(1, Math.floor(raw));
+
+    if (!firstHitDamage) firstHitDamage = dmg;
+    landedHits += 1;
+    total += dmg;
   }
 
-  return { hit, crit, total, perHit, hits, multiplier: elemMult, hitChance: hc };
+  return {
+    hit: landedHits > 0,
+    crit: anyCrit,
+    total,
+    perHit: firstHitDamage,
+    hits,
+    multiplier: elemMult,
+    hitChance: hc,
+  };
 }
 
 export function hitChance(ctx: DamageCtx): number {
