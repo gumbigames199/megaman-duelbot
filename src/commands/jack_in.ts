@@ -53,6 +53,28 @@ const BOSS_ENCOUNTER =
 
 const MENU_PAGE_SIZE = 25;
 
+type ShopSellSelection = { ids: string[]; page: number; updatedAt: number };
+const shopSellSelections = new Map<string, ShopSellSelection>();
+
+function getShopSellSelection(userId: string, page: number): string[] {
+  const cur = shopSellSelections.get(userId);
+  if (!cur || cur.page !== page) return [];
+  return cur.ids.slice();
+}
+
+function setShopSellSelection(userId: string, ids: string[], page: number) {
+  const clean = Array.from(new Set(ids.map(x => String(x || '').trim()).filter(Boolean))).slice(0, 25);
+  if (!clean.length) {
+    shopSellSelections.delete(userId);
+    return;
+  }
+  shopSellSelections.set(userId, { ids: clean, page, updatedAt: Date.now() });
+}
+
+function clearShopSellSelection(userId: string) {
+  shopSellSelections.delete(userId);
+}
+
 /* ------------------------------ helpers ------------------------------ */
 
 function isBossFlag(v: any): boolean {
@@ -2252,7 +2274,7 @@ function sellableInventoryRows(userId: string) {
 
 async function renderJackInSellShop(
   ix: ButtonInteraction | StringSelectMenuInteraction,
-  selectedId: string | null,
+  selectedIds: string[] = [],
   notice?: string,
   page = 0,
 ) {
@@ -2263,6 +2285,7 @@ async function renderJackInSellShop(
   const sellable = sellableInventoryRows(userId);
 
   if (!sellable.length) {
+    clearShopSellSelection(userId);
     const embed = new EmbedBuilder()
       .setTitle('💰 Sell BattleChips')
       .setDescription([
@@ -2279,58 +2302,77 @@ async function renderJackInSellShop(
     return;
   }
 
-  const selected = selectedId
-    ? sellable.find(x => x.chipId === selectedId) || null
-    : null;
-
   const pageCount = Math.max(1, Math.ceil(sellable.length / MENU_PAGE_SIZE));
-  const selectedIndex = selected ? sellable.findIndex(x => x.chipId === selected.chipId) : -1;
-  const pageSafe = selectedIndex >= 0 ? Math.floor(selectedIndex / MENU_PAGE_SIZE) : clampPage(page, pageCount);
-  const options = sellable
-    .slice(pageSafe * MENU_PAGE_SIZE, (pageSafe + 1) * MENU_PAGE_SIZE)
-    .map(({ row, chipId, chip, salePrice, available }) => ({
-      label: `${formatChipName(chip)} — sell ${salePrice}z`.slice(0, 100),
-      value: chipId,
-      description: `Available ${available} of ${row.qty} owned`.slice(0, 100),
-      default: selected?.chipId === chipId,
-    }));
+  const pageSafe = clampPage(page, pageCount);
+  const pageItems = sellable.slice(pageSafe * MENU_PAGE_SIZE, (pageSafe + 1) * MENU_PAGE_SIZE);
+  const pageIds = new Set(pageItems.map(x => x.chipId));
+  const selectedSet = new Set(
+    Array.from(new Set((selectedIds || []).map(x => String(x || '').trim()).filter(Boolean)))
+      .filter(id => pageIds.has(id))
+      .slice(0, pageItems.length)
+  );
+  const selectedRows = pageItems.filter(x => selectedSet.has(x.chipId));
+  const selectedCount = selectedRows.length;
+  const totalSale = selectedRows.reduce((sum, x) => sum + Number(x.salePrice || 0), 0);
+
+  if (selectedCount) setShopSellSelection(userId, selectedRows.map(x => x.chipId), pageSafe);
+  else clearShopSellSelection(userId);
+
+  const options = pageItems.map(({ row, chipId, chip, salePrice, available }) => ({
+    label: `${formatChipName(chip)} — sell ${salePrice}z`.slice(0, 100),
+    value: chipId,
+    description: `Available ${available} of ${row.qty} owned`.slice(0, 100),
+    default: selectedSet.has(chipId),
+  }));
 
   const select = new StringSelectMenuBuilder()
     .setCustomId(`jackin:shopSellSelect:${pageSafe}`)
-    .setPlaceholder(selected ? `Selected: ${formatChipName(selected.chip)}` : 'Select a chip to sell')
+    .setPlaceholder(selectedCount ? `${selectedCount} selected — ${totalSale}z total` : 'Select chips to sell')
     .setMinValues(1)
-    .setMaxValues(1)
+    .setMaxValues(Math.max(1, Math.min(options.length, 25)))
     .addOptions(options);
 
   const sellBtn = new ButtonBuilder()
-    .setCustomId(`jackin:shopSell:${selected?.chipId || '_none'}:${pageSafe}`)
+    .setCustomId(`jackin:shopSell:_selected:${pageSafe}`)
     .setStyle(ButtonStyle.Success)
-    .setLabel(selected ? `Sell 1 — ${selected.salePrice}z` : 'Sell 1')
-    .setDisabled(!selected);
+    .setLabel(selectedCount ? `Sell ${selectedCount} — ${totalSale}z` : 'Sell Selected')
+    .setDisabled(selectedCount <= 0);
 
   const backBtn = new ButtonBuilder()
     .setCustomId('jackin:openShop')
     .setStyle(ButtonStyle.Secondary)
     .setLabel('Back');
 
+  const selectedLine = selectedRows.length
+    ? selectedRows.map(x => `• ${formatChipName(x.chip)} — **${x.salePrice}z**`).join('\n')
+    : '—';
+
   const embed = new EmbedBuilder()
     .setTitle('💰 Sell BattleChips')
     .setDescription([
       `Your Zenny: **${p?.zenny ?? 0}z**`,
       '',
-      notice ? `📌 **${notice}**` : `Sell tab: select one extra BattleChip copy outside your folder. Page **${pageSafe + 1}/${pageCount}**. Sale value is fixed at 750z per chip.`,
+      notice ? `📌 **${notice}**` : `Sell tab: select one or more extra BattleChip copies outside your folder. Page **${pageSafe + 1}/${pageCount}**. Sale value is fixed at 750z per selected chip.`,
     ].join('\n'))
     .setImage(region ? (getRegionImage(region) || getTravelImage()) : getTravelImage());
 
-  if (selected) {
-    const chip: any = selected.chip || {};
+  embed.addFields({
+    name: selectedCount ? `Selected to Sell (${selectedCount})` : 'Selected to Sell',
+    value: [
+      selectedLine,
+      selectedCount ? `\nTotal: **${totalSale}z**` : '',
+    ].filter(Boolean).join('\n'),
+  });
+
+  if (selectedRows.length === 1) {
+    const chip: any = selectedRows[0].chip || {};
     embed.addFields({
       name: formatChipName(chip),
       value: [
         `Listed Price: **${priceText(chip.zenny_cost) || '0z'}**`,
-        `Sell Value: **${selected.salePrice}z**`,
-        `Owned: **${selected.row.qty}**`,
-        `Available to Sell: **${selected.available}**`,
+        `Sell Value: **${selectedRows[0].salePrice}z**`,
+        `Owned: **${selectedRows[0].row.qty}**`,
+        `Available to Sell: **${selectedRows[0].available}**`,
         chip.element ? `Element: **${chip.element}**` : '',
         Number.isFinite(Number(chip.power)) && Number(chip.power) > 0 ? `Power: **${chip.power}**` : '',
         chip.effects ? `Effects: ${String(chip.effects)}` : '',
@@ -2363,42 +2405,64 @@ async function renderJackInSellShop(
 }
 
 export async function onShopSellOpen(ix: ButtonInteraction) {
-  await renderJackInSellShop(ix, null);
+  clearShopSellSelection(ix.user.id);
+  await renderJackInSellShop(ix, []);
 }
 
 export async function onShopSellPage(ix: ButtonInteraction, page = 0) {
-  await renderJackInSellShop(ix, null, undefined, page);
+  clearShopSellSelection(ix.user.id);
+  await renderJackInSellShop(ix, [], undefined, page);
 }
 
 export async function onShopSellSelect(ix: StringSelectMenuInteraction) {
   const page = Number(ix.customId.split(':')[2] || '0');
-  await renderJackInSellShop(ix, ix.values?.[0] || null, undefined, page);
+  const ids = (ix.values || []).map(v => String(v));
+  setShopSellSelection(ix.user.id, ids, page);
+  await renderJackInSellShop(ix, ids, undefined, page);
 }
 
 export async function onShopSell(ix: ButtonInteraction, chipId: string, page = 0) {
-  if (!chipId || chipId === '_none') {
-    await renderJackInSellShop(ix, null, 'Please select a BattleChip first.', page);
-    return;
-  }
-
   const userId = ix.user.id;
+  const ids = chipId === '_selected'
+    ? getShopSellSelection(userId, page)
+    : [String(chipId || '').trim()].filter(Boolean);
+
+  if (!ids.length || ids[0] === '_none') {
+    await renderJackInSellShop(ix, [], 'Please select at least one BattleChip first.', page);
+    return;
+  }
+
   const sellable = sellableInventoryRows(userId);
-  const item = sellable.find(x => x.chipId === chipId);
-  if (!item) {
-    await renderJackInSellShop(ix, null, 'That chip cannot be sold. All owned copies may be committed to your folder or no longer in your inventory.', page);
+  const byId = new Map(sellable.map(x => [x.chipId, x]));
+  const targets = Array.from(new Set(ids)).map(id => byId.get(id)).filter(Boolean) as ReturnType<typeof sellableInventoryRows>;
+
+  if (!targets.length) {
+    clearShopSellSelection(userId);
+    await renderJackInSellShop(ix, [], 'Those chips cannot be sold. All owned copies may be committed to your folder or no longer in your inventory.', page);
     return;
   }
 
-  const removed = removeChip(userId, chipId, 1);
-  if (!removed) {
-    await renderJackInSellShop(ix, chipId, 'Could not remove that chip from inventory.', page);
+  const sold: string[] = [];
+  let total = 0;
+
+  for (const item of targets) {
+    const removed = removeChip(userId, item.chipId, 1);
+    if (!removed) continue;
+    addZenny(userId, item.salePrice);
+    total += item.salePrice;
+    sold.push(formatChipName(item.chip));
+  }
+
+  clearShopSellSelection(userId);
+
+  if (!sold.length) {
+    await renderJackInSellShop(ix, [], 'Could not remove the selected chips from inventory.', page);
     return;
   }
 
-  addZenny(userId, item.salePrice);
-  await renderJackInSellShop(ix, null, `Sold ${formatChipName(item.chip)} for ${item.salePrice}z.`, page);
+  const summary = sold.length <= 5 ? sold.join(', ') : `${sold.slice(0, 5).join(', ')} +${sold.length - 5} more`;
+  await renderJackInSellShop(ix, [], `Sold ${sold.length} BattleChip${sold.length === 1 ? '' : 's'} for ${total}z: ${summary}.`, page);
 }
-
 
 /* ------------------------------ PvP Hub ------------------------------ */
 
