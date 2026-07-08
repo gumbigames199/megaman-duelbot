@@ -1445,7 +1445,7 @@ export async function onConfigFolderAdd(ix: ButtonInteraction, page = 0) {
   });
 }
 
-export async function onConfigFolderRemove(ix: ButtonInteraction) {
+export async function onConfigFolderRemove(ix: ButtonInteraction, page = 0) {
   const folder = getFolder(ix.user.id);
   if (!folder.length) {
     await onConfigFolder(ix, 'Folder is empty.');
@@ -1453,24 +1453,35 @@ export async function onConfigFolderRemove(ix: ButtonInteraction) {
   }
 
   const maxRemovable = getMaxRemovableFolderSlots(ix.user.id, folder.length);
-  const options = folder.slice(0, 25).map((id, i) => {
+  if (maxRemovable <= 0) {
+    await onConfigFolder(ix, 'No folder entries can be removed right now.');
+    return;
+  }
+
+  const pageCount = Math.max(1, Math.ceil(folder.length / MENU_PAGE_SIZE));
+  const pageSafe = clampPage(page, pageCount);
+  const start = pageSafe * MENU_PAGE_SIZE;
+  const end = Math.min(folder.length, start + MENU_PAGE_SIZE);
+  const options = folder.slice(start, end).map((id, offset) => {
+    const i = start + offset;
     const c: any = getChipById(id) || {};
     return {
       label: `${i + 1}. ${formatChipName(c || id)}`.slice(0, 100),
       value: `${i}:${id}`,
+      description: `${c?.element || 'Neutral'}${c?.power ? ` • ${c.power} PWR` : ''}`.slice(0, 100),
     };
   });
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId('jackin:folderRemoveSelect')
-    .setPlaceholder('Select folder slots to remove')
+    .setCustomId(`jackin:folderRemoveSelect:${pageSafe}`)
+    .setPlaceholder(`Select folder slots ${start + 1}–${end} to remove`)
     .setMinValues(1)
     .setMaxValues(Math.min(10, options.length, maxRemovable))
     .addOptions(options);
 
   const embed = new EmbedBuilder()
     .setTitle('🗂️ Remove Chips')
-    .setDescription('Select one or more folder entries to remove.')
+    .setDescription(`Select one or more folder entries to remove. Page **${pageSafe + 1}/${pageCount}** — showing slots **${start + 1}–${end}**.`)
     .setFooter({ text: `${folder.length}/${MAX_FOLDER} • Required exactly ${MAX_FOLDER}` })
     .setImage(getConfigImage());
 
@@ -1478,9 +1489,25 @@ export async function onConfigFolderRemove(ix: ButtonInteraction) {
     embeds: [embed],
     components: [
       new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select),
-      navButtons(new ButtonBuilder().setCustomId('jackin:configFolder').setStyle(ButtonStyle.Secondary).setLabel('Back')),
+      navButtons(
+        new ButtonBuilder()
+          .setCustomId(pagedButtonId('jackin:configFolderRemovePage', Math.max(0, pageSafe - 1), pageSafe, 'prev', pageSafe <= 0))
+          .setStyle(ButtonStyle.Secondary)
+          .setLabel('Previous')
+          .setDisabled(pageSafe <= 0),
+        new ButtonBuilder()
+          .setCustomId(pagedButtonId('jackin:configFolderRemovePage', Math.min(pageCount - 1, pageSafe + 1), pageSafe, 'next', pageSafe >= pageCount - 1))
+          .setStyle(ButtonStyle.Secondary)
+          .setLabel('Next')
+          .setDisabled(pageSafe >= pageCount - 1),
+        new ButtonBuilder().setCustomId('jackin:configFolder').setStyle(ButtonStyle.Secondary).setLabel('Back'),
+      ),
     ],
   });
+}
+
+export async function onConfigFolderRemovePage(ix: ButtonInteraction, page = 0) {
+  await onConfigFolderRemove(ix, page);
 }
 
 export async function onConfigFolderAddPage(ix: ButtonInteraction, page = 0) {
