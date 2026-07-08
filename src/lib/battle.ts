@@ -1643,8 +1643,9 @@ function resolveEnemyAction(bs: BattleState, enemyLog: string[]) {
     return;
   }
 
-  const absorbed = absorbDamage(bs.player_status, roll.total, element);
-  trackReflectorPrevention(bs, roll.total, absorbed.damage);
+  const enemyDamage = scaleEnemyDamage(roll.total);
+  const absorbed = absorbDamage(bs.player_status, enemyDamage, element);
+  trackReflectorPrevention(bs, enemyDamage, absorbed.damage);
   bs.player_hp = Math.max(0, bs.player_hp - absorbed.damage);
   const tags = [
     roll.crit ? "Crit" : "",
@@ -1699,8 +1700,9 @@ function resolveFallbackEnemyAttack(bs: BattleState, enemyLog: string[]) {
     return;
   }
 
-  const absorbed = absorbDamage(bs.player_status, roll.total, element);
-  trackReflectorPrevention(bs, roll.total, absorbed.damage);
+  const enemyDamage = scaleEnemyDamage(roll.total);
+  const absorbed = absorbDamage(bs.player_status, enemyDamage, element);
+  trackReflectorPrevention(bs, enemyDamage, absorbed.damage);
   bs.player_hp = Math.max(0, bs.player_hp - absorbed.damage);
   enemyLog.push(
     `${virus?.name ?? "Virus"} hit you for **${absorbed.damage}**${roll.crit ? " (Crit)" : ""} dmg.`,
@@ -1870,6 +1872,17 @@ function enemyCritChanceValue(moveCrit: any, virus: any) {
   if (virusText) return virusCrit;
 
   return process.env.ENEMY_CRIT_CHANCE ?? 0.06;
+}
+
+function scaleEnemyDamage(raw: number): number {
+  const base = Math.max(0, Math.trunc(Number(raw) || 0));
+  if (base <= 0) return 0;
+
+  const mult = envFloat('ENEMY_DAMAGE_MULT', 1);
+  const safeMult = Number.isFinite(mult) ? Math.max(0, mult) : 1;
+  if (safeMult <= 0) return 0;
+
+  return Math.max(1, Math.floor(base * safeMult));
 }
 
 function normalizeChipTargets(chip: any, fallback = 1): number {
