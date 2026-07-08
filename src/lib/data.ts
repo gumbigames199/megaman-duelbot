@@ -288,6 +288,13 @@ function normalizeRawBundle(raw: any): NormalizedBundle {
       (v as any).boss_version = meta.version;
     }
 
+    // Crit chance normalization. Current viruses.tsv uses "crit".
+    // Keep legacy "cr" fallback so older data files still work.
+    const critRaw = (v as any).crit ?? (v as any).cr;
+    if (critRaw !== undefined && critRaw !== null && String(critRaw).trim() !== '') {
+      (v as any).crit = critRaw;
+    }
+
     // zones normalization (your TSV uses "zone"; older code used "zones")
     const z = parseZones((v as any).zones ?? (v as any).zone);
     (v as any).zones = z;
@@ -697,7 +704,7 @@ export function validateGameData(): DataValidationReport {
     if (!id) errors.push(`viruses.tsv: row missing virus id.`);
     const element = normLower(v?.element || 'Neutral');
     if (!validElements.has(element)) warnings.push(`viruses.tsv ${label}: invalid element ${v?.element}.`);
-    for (const key of ['hp', 'atk', 'def', 'spd', 'acc', 'evasion']) {
+    for (const key of ['hp', 'atk', 'def', 'spd', 'acc', 'evasion', 'crit']) {
       const raw = normStr(v?.[key]);
       if (raw && !Number.isFinite(Number(raw))) warnings.push(`viruses.tsv ${label}: ${key} is not numeric (${raw}).`);
     }

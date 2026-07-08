@@ -1633,7 +1633,7 @@ function resolveEnemyAction(bs: BattleState, enemyLog: string[]) {
     navi_acc: asNum(virus?.acc, 95) + buffValue(bs.enemy_status, "acc"),
     target_evasion:
       asNum(player?.evasion, 0) + buffValue(bs.player_status, "evasion"),
-    crit_chance: normalizeCrit(move.crit ?? virus?.cr),
+    crit_chance: normalizeCrit(enemyCritChanceValue(move.crit, virus)),
     blind: bs.enemy_status.blind,
     rng: Math.random,
   });
@@ -1689,7 +1689,7 @@ function resolveFallbackEnemyAttack(bs: BattleState, enemyLog: string[]) {
     navi_acc: asNum(virus?.acc, 95) + buffValue(bs.enemy_status, "acc"),
     target_evasion:
       asNum(player?.evasion, 0) + buffValue(bs.player_status, "evasion"),
-    crit_chance: normalizeCrit(virus?.cr),
+    crit_chance: normalizeCrit(enemyCritChanceValue(undefined, virus)),
     blind: bs.enemy_status.blind,
     rng: Math.random,
   });
@@ -1859,6 +1859,17 @@ function normalizeCrit(v: any) {
   return n > 1
     ? Math.max(0, Math.min(1, n / 100))
     : Math.max(0, Math.min(1, n));
+}
+
+function enemyCritChanceValue(moveCrit: any, virus: any) {
+  const moveText = String(moveCrit ?? '').trim();
+  if (moveText) return moveCrit;
+
+  const virusCrit = virus?.crit ?? virus?.cr;
+  const virusText = String(virusCrit ?? '').trim();
+  if (virusText) return virusCrit;
+
+  return process.env.ENEMY_CRIT_CHANCE ?? 0.06;
 }
 
 function normalizeChipTargets(chip: any, fallback = 1): number {

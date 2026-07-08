@@ -26,7 +26,7 @@ export async function execute(ix: ChatInputCommandInteraction) {
       .addFields(
         { name: 'Element', value: String(v.element || 'Neutral'), inline: true },
         { name: 'HP', value: String(v.hp || 0), inline: true },
-        { name: 'CR', value: String(v.cr || 1), inline: true },
+        { name: 'Crit', value: `${String(v.crit ?? v.cr ?? 0)}%`, inline: true },
         { name: 'Location', value: formatVirusLocation(v, b.regions), inline: false },
         { name: 'Moveset', value: formatMoves(v), inline: false },
       )

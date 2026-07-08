@@ -87,7 +87,9 @@ export interface VirusRow {
   name: string;
   element: Element | 'Neutral' | string;
   hp: number; atk: number; def: number; spd: number; acc: number;
-  cr: number;
+  crit: number;
+  /** Legacy alias from older viruses.tsv files. */
+  cr?: number;
 
   region: string;
 
