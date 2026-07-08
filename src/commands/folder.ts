@@ -129,31 +129,91 @@ export async function onOpenAdd(ix: ButtonInteraction) {
 }
 
 export async function onOpenRemove(ix: ButtonInteraction) {
-  const folder = getFolder(ix.user.id);
-  if (!folder.length) {
-    await ix.reply({ ephemeral: true, content: 'Folder is empty.' });
+  const message = buildRemovePageMessage(ix.user.id, 0);
+  if (!message.ok) {
+    await ix.reply({ ephemeral: true, content: message.error });
     return;
   }
 
-  const maxRemovable = getMaxRemovableFolderSlots(ix.user.id, folder.length);
-  const options = folder.slice(0, 25).map((id, i) => {
+  await ix.reply({
+    ephemeral: true,
+    content: message.content,
+    components: message.components,
+  });
+}
+
+export async function onRemovePage(ix: ButtonInteraction, page: number) {
+  const message = buildRemovePageMessage(ix.user.id, page);
+  if (!message.ok) {
+    await ix.reply({ ephemeral: true, content: message.error });
+    return;
+  }
+
+  await ix.update({
+    content: message.content,
+    components: message.components,
+  });
+}
+
+function buildRemovePageMessage(userId: string, rawPage: number):
+  | { ok: true; content: string; components: any[] }
+  | { ok: false; error: string } {
+  const folder = getFolder(userId);
+  if (!folder.length) return { ok: false, error: 'Folder is empty.' };
+
+  const maxRemovable = getMaxRemovableFolderSlots(userId, folder.length);
+  if (maxRemovable <= 0) {
+    return { ok: false, error: 'No folder entries can be removed right now.' };
+  }
+
+  const pageSize = 25;
+  const totalPages = Math.max(1, Math.ceil(folder.length / pageSize));
+  const page = Math.min(Math.max(0, Number.isFinite(rawPage) ? Math.trunc(rawPage) : 0), totalPages - 1);
+  const start = page * pageSize;
+  const end = Math.min(folder.length, start + pageSize);
+  const options = buildRemoveOptions(folder, start, end);
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`folder:removeSelect:${page}`)
+    .setMinValues(1)
+    .setMaxValues(Math.min(10, options.length, maxRemovable))
+    .setPlaceholder(`Remove chips ${start + 1}–${end}`)
+    .addOptions(options);
+
+  const selectRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+
+  const prevBtn = new ButtonBuilder()
+    .setCustomId(`folder:removePage:${page - 1}`)
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel('Prev')
+    .setDisabled(page <= 0);
+
+  const nextBtn = new ButtonBuilder()
+    .setCustomId(`folder:removePage:${page + 1}`)
+    .setStyle(ButtonStyle.Secondary)
+    .setLabel('Next')
+    .setDisabled(page >= totalPages - 1);
+
+  const navRow = new ActionRowBuilder<ButtonBuilder>().addComponents(prevBtn, nextBtn);
+
+  return {
+    ok: true,
+    content: `Pick entries to remove. Page **${page + 1}/${totalPages}** — showing slots **${start + 1}–${end}**.`,
+    components: totalPages > 1 ? [selectRow, navRow] : [selectRow],
+  };
+}
+
+function buildRemoveOptions(folder: string[], start: number, end: number) {
+  return folder.slice(start, end).map((id, offset) => {
+    const i = start + offset;
     const chipId = String(id);
     const c: any = getChipById(chipId) || {};
     const name = formatChipName(c || chipId);
-    return { label: `${i + 1}. ${name}`.slice(0, 100), description: `${c.element || 'Neutral'}${c.power ? ` • ${c.power} PWR` : ''}`.slice(0, 100), value: `${i}:${chipId}` };
-  });
-
-  const select = new StringSelectMenuBuilder()
-    .setCustomId('folder:removeSelect')
-    .setMinValues(1)
-    .setMaxValues(Math.min(10, options.length, maxRemovable))
-    .setPlaceholder('Select chips to remove')
-    .addOptions(options);
-
-  await ix.reply({
-    ephemeral: true,
-    content: 'Pick entries to remove:',
-    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
+    return {
+      label: `${i + 1}. ${name}`.slice(0, 100),
+      description: `${c.element || 'Neutral'}${c.power ? ` • ${c.power} PWR` : ''}`.slice(0, 100),
+      value: `${i}:${chipId}`,
+    };
   });
 }
 

@@ -266,7 +266,7 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId.startsWith('jackin:folderAddSelect')) { await JackIn.onConfigFolderAddSelect(ix); return; }
       if (ix.customId === 'jackin:folderRemoveSelect') { await JackIn.onConfigFolderRemoveSelect(ix); return; }
       if (ix.customId === 'folder:addSelect') { await Folder.onAddSelect(ix); return; }
-      if (ix.customId === 'folder:removeSelect') { await Folder.onRemoveSelect(ix); return; }
+      if (ix.customId === 'folder:removeSelect' || ix.customId.startsWith('folder:removeSelect:')) { await Folder.onRemoveSelect(ix); return; }
       if (ix.customId === 'shop:select') { await ShopCmd.handleShopSelect(ix); return; }
       if (ix.customId.startsWith('pvp:pick:')) { await PvP.onSelect(ix); return; }
       if (ix.customId.startsWith('pick:')) { await Battle.handlePick(ix); return; }
@@ -359,6 +359,11 @@ client.on('interactionCreate', async (ix) => {
       if (ix.customId === 'folder:edit') { await Folder.onEdit(ix); return; }
       if (ix.customId === 'folder:addOpen') { await Folder.onOpenAdd(ix); return; }
       if (ix.customId === 'folder:removeOpen') { await Folder.onOpenRemove(ix); return; }
+      if (ix.customId.startsWith('folder:removePage:')) {
+        const page = Number(ix.customId.split(':')[2] || '0');
+        await Folder.onRemovePage(ix, page);
+        return;
+      }
       if (ix.customId === 'folder:save') { await Folder.onSave(ix); return; }
 
       if (ix.customId.startsWith('pvp:')) { await PvP.onButton(ix); return; }
