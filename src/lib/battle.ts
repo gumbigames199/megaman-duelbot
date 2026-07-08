@@ -1064,21 +1064,39 @@ function fallbackDeck(): ChipRef[] {
 }
 
 function drawHand(bs: BattleState) {
-  // Unselected chips remain unused and go back into the available cycle.
-  if (bs.hand.length) {
-    bs.deck.push(...bs.hand);
-    bs.hand = [];
-    shuffle(bs.deck);
+  // MMBN-style Custom Screen behavior:
+  // - Used/selected chips are removed by discardSelected().
+  // - Unselected chips remain in hand.
+  // - Only empty hand slots are refilled from the folder/deck cycle.
+  const targetHandSize = 5;
+  const needed = Math.max(0, targetHandSize - bs.hand.length);
+  if (needed <= 0) return;
+
+  // If the unused deck is low, refresh the chip cycle but preserve the current hand
+  // so held chips are not duplicated in the new deck.
+  if (bs.deck.length < needed || bs.deck.length < FOLDER_REFRESH_MIN_UNUSED) {
+    refreshChipCyclePreservingHand(bs);
   }
 
-  // Once fewer than the configured minimum unused chip instances remain, refresh the entire folder.
-  if (bs.deck.length < FOLDER_REFRESH_MIN_UNUSED) {
-    refreshChipCycle(bs);
-  }
-
-  while (bs.hand.length < 5 && bs.deck.length > 0) {
+  while (bs.hand.length < targetHandSize && bs.deck.length > 0) {
     bs.hand.push(bs.deck.shift()!);
   }
+
+  // Very small/fallback folders may still fail to fill after one pass. Refresh once
+  // more while preserving the current hand, then draw whatever is available.
+  if (bs.hand.length < targetHandSize && bs.full_deck.length > bs.hand.length) {
+    refreshChipCyclePreservingHand(bs);
+    while (bs.hand.length < targetHandSize && bs.deck.length > 0) {
+      bs.hand.push(bs.deck.shift()!);
+    }
+  }
+}
+
+function refreshChipCyclePreservingHand(bs: BattleState) {
+  const held = new Set(bs.hand.map((c) => c.uid));
+  bs.deck = cloneDeck(bs.full_deck).filter((c) => !held.has(c.uid));
+  bs.discard = [];
+  shuffle(bs.deck);
 }
 
 function refreshChipCycle(bs: BattleState) {
